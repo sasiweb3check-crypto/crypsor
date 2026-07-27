@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.25rem;
+
+  /* ── Bloomberg Terminal Dark Theme ──────────────────────────────────── */
+  --background:              215 28% 7%;    /* #0d1117 */
+  --foreground:              210 17% 82%;   /* #c9d1d9 */
+  --card:                    214 21% 11%;   /* #161b22 */
+  --card-foreground:         210 17% 82%;
+  --popover:                 214 21% 11%;
+  --popover-foreground:      210 17% 82%;
+  --primary:                 38 92% 50%;    /* #f59e0b amber */
+  --primary-foreground:      215 28% 7%;
+  --secondary:               212 14% 16%;  /* #1c2128 */
+  --secondary-foreground:    210 17% 82%;
+  --muted:                   212 14% 16%;
+  --muted-foreground:        210 12% 57%;  /* #8b949e */
+  --accent:                  212 14% 16%;
+  --accent-foreground:       210 17% 82%;
+  --destructive:             0 84% 60%;    /* #ef4444 */
+  --border:                  212 12% 21%;  /* #30363d */
+  --input:                   212 12% 21%;
+  --ring:                    38 92% 50%;
+
+  --sidebar:                 215 28% 7%;
+  --sidebar-foreground:      210 17% 82%;
+  --sidebar-primary:         38 92% 50%;
+  --sidebar-primary-foreground: 215 28% 7%;
+  --sidebar-accent:          212 14% 16%;
+  --sidebar-accent-foreground: 210 17% 82%;
+  --sidebar-border:          212 12% 21%;
+  --sidebar-ring:            38 92% 50%;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  background-color: #0d1117;
+  color: #c9d1d9;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* ── Pulsing dot ─────────────────────────────────────────────────────── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
+  50%       { opacity: 0.8; transform: scale(0.9); box-shadow: 0 0 0 4px rgba(34,197,94,0); }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* ── Amber glow ──────────────────────────────────────────────────────── */
+.glow-amber { box-shadow: 0 0 12px rgba(245,158,11,0.2); }
+
+/* ── Terminal gradient text ──────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.gradient-text-pink {
+  background: linear-gradient(135deg, #f59e0b 0%, #22c55e 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── pb-safe for mobile ─────────────────────────────────────────────── */
+.pb-safe { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+}
