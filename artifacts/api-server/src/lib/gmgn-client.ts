@@ -104,18 +104,28 @@ export async function gmgnFetchOnce(url: string, proxy?: string): Promise<GmgnRe
  * Fetch with proxy rotation.  Pass `stickyProxy` to pin all calls in a
  * single request to the same exit IP (avoids Cloudflare multi-IP signals).
  * Retries up to maxAttempts times rotating through the pool on block/error.
- * With no pool configured this behaves exactly like a direct fetch.
+ * With no pool configured, retries up to 3 times on 429 with exponential
+ * backoff (2 s → 4 s → 8 s) before giving up.
  */
 export async function gmgnFetch(
   url: string,
   stickyProxy?: string,
 ): Promise<GmgnResult> {
-  const maxAttempts = Math.max(1, PROXY_POOL.length === 0 ? 1 : Math.min(3, PROXY_POOL.length));
+  // With a proxy pool rotate proxies; without one, allow up to 3 attempts
+  // only when we're being rate-limited (429), with exponential back-off.
+  const maxAttempts = PROXY_POOL.length > 0 ? Math.min(3, PROXY_POOL.length) : 3;
   let last: GmgnResult | undefined;
   for (let i = 0; i < maxAttempts; i++) {
     const proxy = i === 0 ? stickyProxy : nextProxy();
     last = await gmgnFetchOnce(url, proxy);
     if (last.ok) return last;
+    if (last.status === 429) {
+      // Exponential back-off: 2 s, 4 s, 8 s
+      const delay = Math.min(2_000 * Math.pow(2, i), 8_000);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+    // Non-429 failure without a proxy pool — no point retrying
     if (PROXY_POOL.length === 0) break;
   }
   return last!;
@@ -208,9 +218,26 @@ export async function persistHolders(
     return 0;
   }
 
+  // Deduplicate within the batch by (tokenId, walletAddress).
+  // GMGN occasionally returns the same wallet twice in one response; PostgreSQL's
+  // ON CONFLICT DO UPDATE rejects batches that try to update the same row twice.
+  // Keep the last occurrence so labels from both entries are unioned below.
+  const dedupMap = new Map<string, HolderRow>();
+  for (const row of rows) {
+    const key = `${row.tokenId}::${row.walletAddress}`;
+    const existing = dedupMap.get(key);
+    if (existing) {
+      // Union labels from both occurrences
+      existing.labels = [...new Set([...existing.labels, ...row.labels])];
+    } else {
+      dedupMap.set(key, row);
+    }
+  }
+  const dedupedRows = Array.from(dedupMap.values());
+
   // Upsert: merge (union) labels so historical labels accumulate; refresh all
   // position/trade fields with the latest values from GMGN.
-  await db.insert(token_holders).values(rows)
+  await db.insert(token_holders).values(dedupedRows)
     .onConflictDoUpdate({
       target: [token_holders.tokenId, token_holders.walletAddress],
       set: {
@@ -233,7 +260,8 @@ export async function persistHolders(
   // ── Sync wallet identity to wallet_profiles (deduplicates across tokens) ──
   // Labels and twitter handles are merged so a wallet known as "smart_degen"
   // from one token retains that label regardless of which token you look it up from.
-  const profileRows = rows.map(r => ({
+  // Use dedupedRows (not the original rows) so wallet_profiles also has no duplicates.
+  const profileRows = dedupedRows.map(r => ({
     walletAddress:  r.walletAddress,
     labels:         r.labels,
     twitterName:    r.twitterName,
@@ -269,8 +297,8 @@ export async function persistHolders(
 export interface GmgnSecurityData {
   isHoneypot:          boolean | null;
   ownerRenounced:      boolean | null;
-  mintRenounced:       boolean | null;   // SOL: renounced_mint
-  freezeRenounced:     boolean | null;   // SOL: renounced_freeze_account
+  mintRenounced:       boolean | null;   // SOL: mint authority renounced
+  freezeRenounced:     boolean | null;   // SOL: freeze authority renounced
   openSource:          boolean | null;
   top10HolderRate:     number | null;
   rugRatio:            number | null;
@@ -288,10 +316,40 @@ export interface GmgnSecurityData {
   creatorCreatedCount: number | null;
 }
 
+// RugCheck report shape (partial — only the fields we use)
+interface RugCheckReport {
+  mint?:          string;
+  creator?:       string;
+  creatorBalance?: number;
+  token?: {
+    mintAuthority:   string | null;
+    freezeAuthority: string | null;
+  };
+  tokenMeta?: {
+    updateAuthority: string;
+    mutable:         boolean;
+  };
+  topHolders?: Array<{ pct: number }>;
+  risks?:          Array<{ name: string; level: string; score: number }>;
+  score_normalised?: number;
+  lpLockedPct?:    number;
+}
+
+const RUGCHECK_BASE = "https://api.rugcheck.xyz/v1";
+// The "null authority" address on Solana — signals renounced mint/freeze/update
+const NULL_AUTHORITY = "11111111111111111111111111111111";
+
 /**
- * Fetch GMGN token security data.
- * Tries /api/v1/token_security first; falls back to extracting fields from
- * /api/v1/token_info if the dedicated endpoint is unavailable.
+ * Fetch token security data.
+ *
+ * Primary source: RugCheck API (api.rugcheck.xyz) — returns on-chain
+ * authority state, top-holder concentration, LP lock %, risk score, and
+ * creator address.  No API key required; no Cloudflare, so native fetch works.
+ *
+ * Supplementary: GMGN /vas/api/v1/token_holder_stat — returns sniper_count
+ * and other wallet-category counts that RugCheck doesn't provide.
+ *
+ * The old GMGN /api/v1/token_security endpoint was retired (returns 404).
  */
 export async function fetchTokenSecurity(
   chain: string,
@@ -300,72 +358,82 @@ export async function fetchTokenSecurity(
 ): Promise<{ ok: boolean; security: GmgnSecurityData; raw: unknown }> {
   const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
 
-  // Try dedicated security endpoint first
-  const secRes = await gmgnFetch(`https://gmgn.ai/api/v1/token_security/${c}/${address}`, proxy);
-  const infoRes = await gmgnFetch(`https://gmgn.ai/api/v1/token_info/${c}/${address}`, proxy);
-
-  // The security endpoint and token_info both carry overlapping fields.
-  // Merge: prefer the security endpoint for security fields, token_info as fallback.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sec  = (secRes.data  as any)?.data ?? (secRes.data  as any) ?? {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const info = (infoRes.data as any)?.data?.token ?? (infoRes.data as any)?.data ?? (infoRes.data as any) ?? {};
-
-  function pick<T>(a: T | null | undefined, b: T | null | undefined): T | null {
-    if (a !== null && a !== undefined) return a;
-    if (b !== null && b !== undefined) return b;
-    return null;
-  }
-  function boolPick(a: unknown, b: unknown): boolean | null {
-    const val = a !== undefined && a !== null ? a : b;
-    if (val === null || val === undefined) return null;
-    if (typeof val === "boolean") return val;
-    if (val === 1 || val === "1" || val === "yes" || val === true) return true;
-    if (val === 0 || val === "0" || val === "no"  || val === false) return false;
-    return null;
-  }
-  function numPick(a: unknown, b: unknown): number | null {
-    const val = a !== undefined && a !== null ? a : b;
-    if (val === null || val === undefined) return null;
-    const n = typeof val === "number" ? val : parseFloat(String(val));
-    return isNaN(n) ? null : n;
+  // ── RugCheck (primary — Solana only; skip for EVM chains) ────────────────
+  let rugReport: RugCheckReport | null = null;
+  let rugOk = false;
+  if (c === "sol") {
+    try {
+      const res = await fetch(`${RUGCHECK_BASE}/tokens/${address}/report`, {
+        signal: AbortSignal.timeout(12_000),
+        headers: { "Accept": "application/json" },
+      });
+      if (res.ok) {
+        rugReport = await res.json() as RugCheckReport;
+        rugOk = true;
+      }
+    } catch {
+      // non-fatal — fall through with null rugReport
+    }
   }
 
-  // LP lock info
+  // ── GMGN holder stat (supplementary — sniper_count etc.) ─────────────────
+  const statRes = await gmgnFetch(
+    `https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`,
+    proxy,
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lockInfo: any = pick(sec?.lockInfo, info?.lockInfo);
-  const lpLocked      = lockInfo?.isLock != null ? Boolean(lockInfo.isLock) : null;
-  const lpLockPercent = numPick(lockInfo?.lockPercent, null);
+  const stat = (statRes.data as any)?.data ?? {};
+
+  // ── Build security object ─────────────────────────────────────────────────
+  const top10Rate = rugReport?.topHolders?.length
+    ? rugReport.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct ?? 0), 0) / 100
+    : null;
+
+  const rugScore  = rugReport?.score_normalised ?? null;
+  // risks is an array; presence of a "Honeypot" risk indicates honeypot
+  const honeypot  = rugReport?.risks
+    ? rugReport.risks.some(r => r.name?.toLowerCase().includes("honeypot"))
+    : null;
+
+  const creatorAddress = rugReport?.creator ?? null;
+  const creatorClose   = rugReport != null
+    ? (rugReport.creatorBalance ?? 1) === 0
+    : null;
 
   const security: GmgnSecurityData = {
-    isHoneypot:          boolPick(sec?.is_honeypot,              info?.is_honeypot),
-    ownerRenounced:      boolPick(sec?.owner_renounced ?? sec?.renounced, info?.renounced),
-    mintRenounced:       boolPick(sec?.renounced_mint,            info?.renounced_mint),
-    freezeRenounced:     boolPick(sec?.renounced_freeze_account,  info?.renounced_freeze_account),
-    openSource:          boolPick(sec?.open_source ?? sec?.is_open_source, info?.is_open_source),
-    top10HolderRate:     numPick(sec?.top_10_holder_rate,         info?.top_10_holder_rate),
-    rugRatio:            numPick(sec?.rug_ratio,                  info?.rug_ratio),
-    sniperCount:         numPick(sec?.sniper_count,               info?.sniper_count),
-    creatorAddress:      pick<string>(sec?.creator || null,       info?.creator || null),
-    creatorClose:        boolPick(sec?.creator_close,             info?.creator_close),
-    creatorTokenStatus:  pick<string>(sec?.creator_token_status || null, info?.creator_token_status || null),
-    buyTax:              numPick(sec?.buy_tax,                    info?.buy_tax),
-    sellTax:             numPick(sec?.sell_tax,                   info?.sell_tax),
-    lpLocked,
-    lpLockPercent,
-    ctoFlag:             boolPick(sec?.cto_flag,                  info?.cto_flag),
-    bluechipOwnerPct:    numPick(sec?.bluechip_owner_percentage,  info?.bluechip_owner_percentage),
-    ratTraderAmtRate:    numPick(sec?.rat_trader_amount_rate,     info?.rat_trader_amount_rate),
-    creatorCreatedCount: numPick(
-      pick(sec?.creator_created_open_count, sec?.creator_created_inner_count),
-      pick(info?.creator_created_open_count, info?.creator_created_inner_count),
-    ),
+    isHoneypot:          rugOk ? honeypot : null,
+    ownerRenounced:      rugReport?.tokenMeta
+                           ? rugReport.tokenMeta.updateAuthority === NULL_AUTHORITY
+                           : null,
+    mintRenounced:       rugReport?.token
+                           ? rugReport.token.mintAuthority === null
+                           : null,
+    freezeRenounced:     rugReport?.token
+                           ? rugReport.token.freezeAuthority === null
+                           : null,
+    openSource:          null,   // not available from RugCheck
+    top10HolderRate:     top10Rate,
+    rugRatio:            rugScore != null ? rugScore / 10 : null,
+    sniperCount:         stat?.sniper_count ?? null,
+    creatorAddress,
+    creatorClose,
+    creatorTokenStatus:  creatorClose === true  ? "creator_close"
+                       : creatorClose === false ? "creator_hold"
+                       : null,
+    buyTax:              null,
+    sellTax:             null,
+    lpLocked:            rugReport != null ? (rugReport.lpLockedPct ?? 0) > 0 : null,
+    lpLockPercent:       rugReport?.lpLockedPct ?? null,
+    ctoFlag:             null,
+    bluechipOwnerPct:    null,
+    ratTraderAmtRate:    null,
+    creatorCreatedCount: null,
   };
 
   return {
-    ok: secRes.ok || infoRes.ok,
+    ok: rugOk || statRes.ok,
     security,
-    raw: { secEndpoint: secRes.data, tokenInfo: infoRes.data },
+    raw: { rugcheck: rugReport, holderStat: statRes.data },
   };
 }
 

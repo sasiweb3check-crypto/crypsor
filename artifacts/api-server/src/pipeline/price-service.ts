@@ -5,6 +5,22 @@ import { logger } from "../lib/logger";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
 
+// PostgreSQL timestamp range: 4713 BC – 294276 AD (as Unix ms)
+const PG_TS_MAX_MS = new Date("294276-01-01T00:00:00Z").getTime();
+const PG_TS_MIN_MS = new Date("4713-01-01T00:00:00Z").getTime() * -1; // ~approx
+
+/**
+ * Convert a Unix-second timestamp from DexScreener to a Date, clamping to
+ * PostgreSQL's supported timestamp range.  DexScreener sometimes returns
+ * millisecond timestamps or wildly out-of-range values that crash the DB.
+ */
+function clampTimestamp(raw: number): Date | null {
+  // DexScreener pairCreatedAt is in seconds; detect ms values (> year 3000 in seconds)
+  const ms = raw > 32_503_680_000 ? raw : raw * 1_000;
+  if (!isFinite(ms) || ms < PG_TS_MIN_MS || ms > PG_TS_MAX_MS) return null;
+  return new Date(ms);
+}
+
 const DEXCHAIN: Record<string, string> = {
   solana: "solana", eth: "ethereum", base: "base",
   bsc: "bsc", polygon: "polygon", arbitrum: "arbitrum", avalanche: "avalanche",
@@ -76,7 +92,7 @@ async function fetchBatch(chain: string, addresses: string[]): Promise<Map<strin
           fdvUsd:       pair.fdv !== undefined ? String(pair.fdv) : null,
           liquidityUsd: pair.liquidity?.usd !== undefined ? String(pair.liquidity.usd) : null,
           volume24hUsd: pair.volume?.h24   !== undefined ? String(pair.volume.h24)   : null,
-          tokenCreatedAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null,
+          tokenCreatedAt: pair.pairCreatedAt ? clampTimestamp(pair.pairCreatedAt) : null,
         });
       }
     } catch { /* skip this batch */ }

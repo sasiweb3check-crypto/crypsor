@@ -23,9 +23,7 @@ import { eventBus, type TokenBoughtEvent } from "./event-bus";
 import {
   fetchTokenSecurity,
   fetchTokenPool,
-  fetchTopTraders,
   fetchWalletProfile,
-  persistTraders,
   CHAIN_MAP,
   nextProxy,
   type GmgnSecurityData,
@@ -56,12 +54,21 @@ async function fetchAndPersistSecurity(token: {
   const tokenLabel = [token.name, token.symbol].filter(Boolean).join(" / ") || token.address.slice(0, 8);
 
   try {
-    // Fetch security + pool + top traders in parallel
-    const [secResult, poolResult, tradersResult] = await Promise.all([
+    // Fetch security (RugCheck + GMGN holder stat) — pool is supplementary
+    // fetchTopTraders uses a GMGN endpoint that was retired (404); removed.
+    const [secResult, poolResult] = await Promise.all([
       fetchTokenSecurity(token.chain, token.address, proxy),
       fetchTokenPool(token.chain, token.address, proxy),
-      fetchTopTraders(token.chain, token.address, proxy, 40),
     ]);
+
+    // If both endpoints were blocked/failed, don't overwrite existing data with nulls
+    if (!secResult.ok) {
+      log.debug(
+        { tokenId: token.id, tokenLabel, secStatus: secResult.ok, infoStatus: secResult.ok },
+        "Security fetch blocked — skipping persist to avoid overwriting with nulls",
+      );
+      return;
+    }
 
     const s = secResult.security;
 
@@ -105,17 +112,6 @@ async function fetchAndPersistSecurity(token: {
       },
       "Security data persisted",
     );
-
-    // Persist top traders
-    const traderList: unknown[] =
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (tradersResult.data as any)?.data?.list ??
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (tradersResult.data as any)?.data ??
-      [];
-    if (Array.isArray(traderList) && traderList.length > 0) {
-      await persistTraders(token.id, traderList, tokenLabel);
-    }
 
     // Fetch dev/creator wallet profile if we have an address
     if (s.creatorAddress && s.creatorAddress.length > 8) {

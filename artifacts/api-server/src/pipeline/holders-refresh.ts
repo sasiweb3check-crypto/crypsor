@@ -59,12 +59,12 @@ async function fetchAndPersistToken(
     const mcUsd       = token.marketCapUsd ? parseFloat(token.marketCapUsd) : null;
     const mcLabel     = mcUsd != null ? `$${(mcUsd / 1000).toFixed(1)}K` : "unknown";
 
-    const [res, tokenInfoRes, holderStatRes, topBuyersRes] = await Promise.all([
-      gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holders/${chain}/${token.address}?limit=200`, stickyProxy),
-      gmgnFetch(`https://gmgn.ai/api/v1/token_info/${chain}/${token.address}`, stickyProxy),
-      gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${chain}/${token.address}`, stickyProxy),
-      gmgnFetch(`https://gmgn.ai/defi/quotation/v1/tokens/top_buyers/${chain}/${token.address}`, stickyProxy),
-    ]);
+    // Fetch sequentially to avoid hammering GMGN with 4 simultaneous requests
+    // per job (queue concurrency=2 × 4 parallel = 8 concurrent hits → 429).
+    const res           = await gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holders/${chain}/${token.address}?limit=200`, stickyProxy);
+    const tokenInfoRes  = await gmgnFetch(`https://gmgn.ai/api/v1/token_info/${chain}/${token.address}`, stickyProxy);
+    const holderStatRes = await gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${chain}/${token.address}`, stickyProxy);
+    // top_buyers endpoint was retired by GMGN (returns 404) — omitted
 
     const responseData = res.data as {
       data?: { data?: { list?: unknown[] }; list?: unknown[] };
@@ -97,7 +97,7 @@ async function fetchAndPersistToken(
       holderIntel: buildHolderIntel({
         tokenInfo: tokenInfoRes.data,
         holderStat: holderStatRes.data,
-        topBuyers: topBuyersRes.data,
+        // topBuyers omitted — GMGN endpoint retired (404)
         fetchedTopCount: list.length,
         rawHolderList: list,
       }),
@@ -156,7 +156,8 @@ async function refreshCycle(): Promise<void> {
           isNull(tracked_tokens.lastHoldersUpdatedAt),
           lt(tracked_tokens.lastHoldersUpdatedAt, sql`NOW() - INTERVAL '30 minutes'`),
         ),
-      );
+      )
+      .limit(30); // cap per cycle — prevents flooding the queue with hundreds of jobs at startup
 
     if (tokens.length === 0) {
       healthMonitor.ok("holders-refresh", Date.now() - t0);
