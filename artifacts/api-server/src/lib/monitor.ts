@@ -25,6 +25,7 @@ import { startMigrationChecker } from "../pipeline/migration-checker";
 import { startHoldersRefresh } from "../pipeline/holders-refresh";
 import { startTokenUpdater } from "../pipeline/token-updater";
 import { startIntelligenceEngine } from "../pipeline/intelligence-engine";
+import { startSecurityService } from "../pipeline/security-service";
 import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
@@ -477,6 +478,7 @@ export function startMonitor(): void {
   startMigrationChecker();
   startHoldersRefresh();
   startIntelligenceEngine();
+  startSecurityService();
 
   logger.info("Token Intelligence Pipeline started");
 

@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tracked_tokens, token_buys, token_sells, walletdatasource, token_holders } from "@workspace/db";
-import { eq, desc, asc, count, sql, and, or, ilike } from "drizzle-orm";
+import { tracked_tokens, token_buys, token_sells, walletdatasource, token_holders, token_traders, wallet_profiles } from "@workspace/db";
+import { eq, desc, asc, count, sql, and, or, ilike, isNotNull } from "drizzle-orm";
 import { fetchLivePrice } from "../pipeline/price-service";
-import { gmgnFetch, nextProxy, persistHolders, CHAIN_MAP, fetchAndPersistHolders } from "../lib/gmgn-client";
+import {
+  gmgnFetch, nextProxy, persistHolders, CHAIN_MAP, fetchAndPersistHolders,
+  fetchTokenSecurity, fetchTokenPool, fetchTopTraders, fetchWalletProfile,
+  fetchWalletHoldings, persistTraders,
+} from "../lib/gmgn-client";
 import { buildHolderIntel } from "../lib/holder-intel";
 
 const router = Router();
@@ -73,6 +77,30 @@ function mapToken(t: typeof tracked_tokens.$inferSelect) {
     intelligenceUpdatedAt:  t.intelligenceUpdatedAt?.toISOString() ?? null,
     consecutivePositiveChecks: t.consecutivePositiveChecks,
     peakMcUsd:              t.peakMcUsd,
+    // Security / CA analysis
+    security: t.secFetchedAt ? {
+      isHoneypot:          t.secIsHoneypot,
+      ownerRenounced:      t.secOwnerRenounced,
+      mintRenounced:       t.secMintRenounced,
+      freezeRenounced:     t.secFreezeRenounced,
+      openSource:          t.secOpenSource,
+      top10HolderRate:     t.secTop10HolderRate,
+      rugRatio:            t.secRugRatio,
+      sniperCount:         t.secSniperCount,
+      creatorAddress:      t.secCreatorAddress,
+      creatorClose:        t.secCreatorClose,
+      creatorTokenStatus:  t.secCreatorTokenStatus,
+      buyTax:              t.secBuyTax,
+      sellTax:             t.secSellTax,
+      lpLocked:            t.secLpLocked,
+      lpLockPercent:       t.secLpLockPercent,
+      ctoFlag:             t.secCtoFlag,
+      bluechipOwnerPct:    t.secBluechipOwnerPct,
+      ratTraderAmtRate:    t.secRatTraderAmtRate,
+      creatorCreatedCount: t.secCreatorCreatedCount,
+      fetchedAt:           t.secFetchedAt?.toISOString() ?? null,
+    } : null,
+    lastHoldersUpdatedAt: t.lastHoldersUpdatedAt?.toISOString() ?? null,
     // Multi-type momentum object
     momentum: {
       composite_momentum:        t.compositeMomentum,
@@ -577,6 +605,342 @@ router.get("/:id/gmgn", async (req, res) => {
         holderStatsSource: holderStatRes.ok ? "gmgn-live" : holderStatOverride ? "database-fallback" : "unavailable",
         fetchedAt:         new Date().toISOString(),
       },
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/tokens/:id/security ─────────────────────────────────────────────
+// Returns security data for a token: DB-cached first, live GMGN on ?refresh=1
+
+router.get("/:id/security", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const [token] = await db
+      .select({
+        address:      tracked_tokens.address,
+        chain:        tracked_tokens.chain,
+        name:         tracked_tokens.name,
+        symbol:       tracked_tokens.symbol,
+        marketCapUsd: tracked_tokens.marketCapUsd,
+        // security columns
+        secIsHoneypot:          tracked_tokens.secIsHoneypot,
+        secOwnerRenounced:      tracked_tokens.secOwnerRenounced,
+        secMintRenounced:       tracked_tokens.secMintRenounced,
+        secFreezeRenounced:     tracked_tokens.secFreezeRenounced,
+        secOpenSource:          tracked_tokens.secOpenSource,
+        secTop10HolderRate:     tracked_tokens.secTop10HolderRate,
+        secRugRatio:            tracked_tokens.secRugRatio,
+        secSniperCount:         tracked_tokens.secSniperCount,
+        secCreatorAddress:      tracked_tokens.secCreatorAddress,
+        secCreatorClose:        tracked_tokens.secCreatorClose,
+        secCreatorTokenStatus:  tracked_tokens.secCreatorTokenStatus,
+        secBuyTax:              tracked_tokens.secBuyTax,
+        secSellTax:             tracked_tokens.secSellTax,
+        secLpLocked:            tracked_tokens.secLpLocked,
+        secLpLockPercent:       tracked_tokens.secLpLockPercent,
+        secCtoFlag:             tracked_tokens.secCtoFlag,
+        secBluechipOwnerPct:    tracked_tokens.secBluechipOwnerPct,
+        secRatTraderAmtRate:    tracked_tokens.secRatTraderAmtRate,
+        secCreatorCreatedCount: tracked_tokens.secCreatorCreatedCount,
+        secFetchedAt:           tracked_tokens.secFetchedAt,
+      })
+      .from(tracked_tokens)
+      .where(eq(tracked_tokens.id, id))
+      .limit(1);
+
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const forceRefresh = req.query.refresh === "1";
+    const stale = !token.secFetchedAt ||
+      (Date.now() - new Date(token.secFetchedAt).getTime() > 30 * 60_000);
+
+    // Return DB cache unless refresh forced or data is stale and we have nothing
+    if (!forceRefresh && token.secFetchedAt && !stale) {
+      return res.json({
+        source: "cache",
+        security: {
+          isHoneypot:          token.secIsHoneypot,
+          ownerRenounced:      token.secOwnerRenounced,
+          mintRenounced:       token.secMintRenounced,
+          freezeRenounced:     token.secFreezeRenounced,
+          openSource:          token.secOpenSource,
+          top10HolderRate:     token.secTop10HolderRate,
+          rugRatio:            token.secRugRatio,
+          sniperCount:         token.secSniperCount,
+          creatorAddress:      token.secCreatorAddress,
+          creatorClose:        token.secCreatorClose,
+          creatorTokenStatus:  token.secCreatorTokenStatus,
+          buyTax:              token.secBuyTax,
+          sellTax:             token.secSellTax,
+          lpLocked:            token.secLpLocked,
+          lpLockPercent:       token.secLpLockPercent,
+          ctoFlag:             token.secCtoFlag,
+          bluechipOwnerPct:    token.secBluechipOwnerPct,
+          ratTraderAmtRate:    token.secRatTraderAmtRate,
+          creatorCreatedCount: token.secCreatorCreatedCount,
+        },
+        secFetchedAt: token.secFetchedAt,
+        // creator wallet profile if available
+        creatorProfile: null,
+      });
+    }
+
+    // Live fetch
+    const chain = CHAIN_MAP[token.chain.toLowerCase()] ?? "sol";
+    const proxy = nextProxy();
+    const { ok, security, raw } = await fetchTokenSecurity(token.chain, token.address, proxy);
+
+    // Persist to DB
+    if (ok) {
+      const s = security;
+      await db.update(tracked_tokens).set({
+        secIsHoneypot:          s.isHoneypot,
+        secOwnerRenounced:      s.ownerRenounced,
+        secMintRenounced:       s.mintRenounced,
+        secFreezeRenounced:     s.freezeRenounced,
+        secOpenSource:          s.openSource,
+        secTop10HolderRate:     s.top10HolderRate,
+        secRugRatio:            s.rugRatio,
+        secSniperCount:         s.sniperCount != null ? Math.round(s.sniperCount) : null,
+        secCreatorAddress:      s.creatorAddress || null,
+        secCreatorClose:        s.creatorClose,
+        secCreatorTokenStatus:  s.creatorTokenStatus,
+        secBuyTax:              s.buyTax,
+        secSellTax:             s.sellTax,
+        secLpLocked:            s.lpLocked,
+        secLpLockPercent:       s.lpLockPercent,
+        secCtoFlag:             s.ctoFlag,
+        secBluechipOwnerPct:    s.bluechipOwnerPct,
+        secRatTraderAmtRate:    s.ratTraderAmtRate,
+        secCreatorCreatedCount: s.creatorCreatedCount != null ? Math.round(s.creatorCreatedCount) : null,
+        secFetchedAt:           new Date(),
+      }).where(eq(tracked_tokens.id, id));
+    }
+
+    // Fetch creator profile if we have an address
+    let creatorProfile = null;
+    if (security.creatorAddress && security.creatorAddress.length > 8) {
+      const cpProxy = nextProxy();
+      const [cpRes] = await Promise.all([
+        fetchWalletProfile(token.chain, security.creatorAddress, cpProxy),
+      ]);
+      if (cpRes.ok) creatorProfile = cpRes.data;
+    }
+
+    res.json({
+      source: ok ? "live" : "partial",
+      security,
+      secFetchedAt: new Date().toISOString(),
+      creatorProfile,
+      _raw: raw,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/tokens/:id/traders ──────────────────────────────────────────────
+// Top traders for a token, ranked by profit. DB fallback when GMGN blocked.
+
+router.get("/:id/traders", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const forceRefresh = req.query.refresh === "1";
+    const limit = Math.min(100, parseInt(String(req.query.limit ?? "40"), 10) || 40);
+
+    const [token] = await db
+      .select({ address: tracked_tokens.address, chain: tracked_tokens.chain,
+                name: tracked_tokens.name, symbol: tracked_tokens.symbol,
+                marketCapUsd: tracked_tokens.marketCapUsd })
+      .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    // Check DB cache
+    const dbTraders = await db.select().from(token_traders)
+      .where(eq(token_traders.tokenId, id))
+      .orderBy(desc(token_traders.profitUsd))
+      .limit(limit);
+
+    const newestFetch = dbTraders[0]?.fetchedAt;
+    const cacheAge = newestFetch ? Date.now() - new Date(newestFetch).getTime() : Infinity;
+    const stale = cacheAge > 10 * 60_000; // 10 min
+
+    if (!forceRefresh && dbTraders.length > 0 && !stale) {
+      return res.json({
+        source: "cache",
+        traders: dbTraders,
+        fetchedAt: newestFetch,
+      });
+    }
+
+    // Live GMGN fetch
+    const proxy = nextProxy();
+    const tradersRes = await fetchTopTraders(token.chain, token.address, proxy, limit);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const traderList: unknown[] = (tradersRes.data as any)?.data?.list
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ?? (tradersRes.data as any)?.data ?? [];
+
+    if (tradersRes.ok && Array.isArray(traderList) && traderList.length > 0) {
+      const label = [token.name, token.symbol].filter(Boolean).join(" / ") || token.address.slice(0, 8);
+      await persistTraders(id, traderList, label);
+
+      // Return freshly-persisted data from DB for consistent shape
+      const fresh = await db.select().from(token_traders)
+        .where(eq(token_traders.tokenId, id))
+        .orderBy(desc(token_traders.profitUsd))
+        .limit(limit);
+
+      return res.json({ source: "live", traders: fresh, fetchedAt: new Date().toISOString() });
+    }
+
+    // Fallback to whatever is in DB
+    res.json({
+      source: dbTraders.length > 0 ? "cache-fallback" : "empty",
+      traders: dbTraders,
+      fetchedAt: newestFetch ?? null,
+      _gmgnStatus: tradersRes.status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/tokens/:id/pool ─────────────────────────────────────────────────
+// Live pool/DEX info from GMGN (not cached in DB).
+
+router.get("/:id/pool", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const [token] = await db
+      .select({ address: tracked_tokens.address, chain: tracked_tokens.chain })
+      .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const proxy = nextProxy();
+    const poolRes = await fetchTokenPool(token.chain, token.address, proxy);
+
+    res.json({
+      ok:       poolRes.ok,
+      status:   poolRes.status,
+      pool:     poolRes.data,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/tokens/:id/dev ──────────────────────────────────────────────────
+// Creator / dev wallet: profile, PnL, all holdings.
+
+router.get("/:id/dev", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const [token] = await db
+      .select({
+        address:           tracked_tokens.address,
+        chain:             tracked_tokens.chain,
+        secCreatorAddress: tracked_tokens.secCreatorAddress,
+        secCreatorClose:   tracked_tokens.secCreatorClose,
+        secCreatorTokenStatus: tracked_tokens.secCreatorTokenStatus,
+      })
+      .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const creatorAddr = token.secCreatorAddress;
+
+    // Try to get cached profile from wallet_profiles
+    let cachedProfile = null;
+    if (creatorAddr) {
+      const [wp] = await db.select().from(wallet_profiles)
+        .where(eq(wallet_profiles.walletAddress, creatorAddr)).limit(1);
+      cachedProfile = wp ?? null;
+    }
+
+    // If no creator known yet, trigger security fetch
+    if (!creatorAddr) {
+      const proxy = nextProxy();
+      const { security } = await fetchTokenSecurity(token.chain, token.address, proxy);
+      if (security.creatorAddress) {
+        await db.update(tracked_tokens).set({
+          secCreatorAddress: security.creatorAddress,
+          secCreatorClose:   security.creatorClose,
+          secCreatorTokenStatus: security.creatorTokenStatus,
+          secFetchedAt: new Date(),
+        }).where(eq(tracked_tokens.id, id));
+      }
+      return res.json({
+        creatorAddress: security.creatorAddress,
+        creatorClose:   security.creatorClose,
+        creatorStatus:  security.creatorTokenStatus,
+        profile:        null,
+        holdings:       null,
+        _note: "Profile fetch queued; refresh in 30s",
+      });
+    }
+
+    // Live fetch: profile + holdings in parallel
+    const proxy   = nextProxy();
+    const [profileRes, holdingsRes] = await Promise.all([
+      fetchWalletProfile(token.chain, creatorAddr, proxy),
+      fetchWalletHoldings(token.chain, creatorAddr, proxy, 50),
+    ]);
+
+    res.json({
+      creatorAddress: creatorAddr,
+      creatorClose:   token.secCreatorClose,
+      creatorStatus:  token.secCreatorTokenStatus,
+      profile:        profileRes.ok ? profileRes.data : cachedProfile,
+      holdings:       holdingsRes.ok ? holdingsRes.data : null,
+      profileSource:  profileRes.ok ? "live" : (cachedProfile ? "cache" : "unavailable"),
+      holdingsSource: holdingsRes.ok ? "live" : "unavailable",
+      fetchedAt:      new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/wallets/:address/profile ────────────────────────────────────────
+// Wallet profile: labels, PnL stats, token holdings from GMGN.
+// Also accessible via /api/tokens/:id/dev for the creator wallet.
+
+router.get("/wallet/:address/profile", async (req, res) => {
+  try {
+    const { address } = req.params;
+    const chain = String(req.query.chain ?? "sol");
+    const proxy = nextProxy();
+
+    const [profileRes, holdingsRes] = await Promise.all([
+      fetchWalletProfile(chain, address, proxy),
+      fetchWalletHoldings(chain, address, proxy, 50),
+    ]);
+
+    // Also check our DB for aggregated label history
+    const [dbProfile] = await db.select().from(wallet_profiles)
+      .where(eq(wallet_profiles.walletAddress, address)).limit(1);
+
+    res.json({
+      walletAddress: address,
+      chain,
+      profile:  profileRes.ok ? profileRes.data : null,
+      holdings: holdingsRes.ok ? holdingsRes.data : null,
+      dbProfile: dbProfile ?? null,
+      profileStatus:  profileRes.status,
+      holdingsStatus: holdingsRes.status,
+      fetchedAt: new Date().toISOString(),
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });

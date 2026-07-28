@@ -264,6 +264,273 @@ export async function persistHolders(
   return rows.length;
 }
 
+// ── Token security fetch ──────────────────────────────────────────────────────
+
+export interface GmgnSecurityData {
+  isHoneypot:          boolean | null;
+  ownerRenounced:      boolean | null;
+  mintRenounced:       boolean | null;   // SOL: renounced_mint
+  freezeRenounced:     boolean | null;   // SOL: renounced_freeze_account
+  openSource:          boolean | null;
+  top10HolderRate:     number | null;
+  rugRatio:            number | null;
+  sniperCount:         number | null;
+  creatorAddress:      string | null;
+  creatorClose:        boolean | null;
+  creatorTokenStatus:  string | null;    // "creator_close" | "creator_hold"
+  buyTax:              number | null;
+  sellTax:             number | null;
+  lpLocked:            boolean | null;
+  lpLockPercent:       number | null;
+  ctoFlag:             boolean | null;
+  bluechipOwnerPct:    number | null;
+  ratTraderAmtRate:    number | null;
+  creatorCreatedCount: number | null;
+}
+
+/**
+ * Fetch GMGN token security data.
+ * Tries /api/v1/token_security first; falls back to extracting fields from
+ * /api/v1/token_info if the dedicated endpoint is unavailable.
+ */
+export async function fetchTokenSecurity(
+  chain: string,
+  address: string,
+  proxy?: string,
+): Promise<{ ok: boolean; security: GmgnSecurityData; raw: unknown }> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+
+  // Try dedicated security endpoint first
+  const secRes = await gmgnFetch(`https://gmgn.ai/api/v1/token_security/${c}/${address}`, proxy);
+  const infoRes = await gmgnFetch(`https://gmgn.ai/api/v1/token_info/${c}/${address}`, proxy);
+
+  // The security endpoint and token_info both carry overlapping fields.
+  // Merge: prefer the security endpoint for security fields, token_info as fallback.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec  = (secRes.data  as any)?.data ?? (secRes.data  as any) ?? {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const info = (infoRes.data as any)?.data?.token ?? (infoRes.data as any)?.data ?? (infoRes.data as any) ?? {};
+
+  function pick<T>(a: T | null | undefined, b: T | null | undefined): T | null {
+    if (a !== null && a !== undefined) return a;
+    if (b !== null && b !== undefined) return b;
+    return null;
+  }
+  function boolPick(a: unknown, b: unknown): boolean | null {
+    const val = a !== undefined && a !== null ? a : b;
+    if (val === null || val === undefined) return null;
+    if (typeof val === "boolean") return val;
+    if (val === 1 || val === "1" || val === "yes" || val === true) return true;
+    if (val === 0 || val === "0" || val === "no"  || val === false) return false;
+    return null;
+  }
+  function numPick(a: unknown, b: unknown): number | null {
+    const val = a !== undefined && a !== null ? a : b;
+    if (val === null || val === undefined) return null;
+    const n = typeof val === "number" ? val : parseFloat(String(val));
+    return isNaN(n) ? null : n;
+  }
+
+  // LP lock info
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lockInfo: any = pick(sec?.lockInfo, info?.lockInfo);
+  const lpLocked      = lockInfo?.isLock != null ? Boolean(lockInfo.isLock) : null;
+  const lpLockPercent = numPick(lockInfo?.lockPercent, null);
+
+  const security: GmgnSecurityData = {
+    isHoneypot:          boolPick(sec?.is_honeypot,              info?.is_honeypot),
+    ownerRenounced:      boolPick(sec?.owner_renounced ?? sec?.renounced, info?.renounced),
+    mintRenounced:       boolPick(sec?.renounced_mint,            info?.renounced_mint),
+    freezeRenounced:     boolPick(sec?.renounced_freeze_account,  info?.renounced_freeze_account),
+    openSource:          boolPick(sec?.open_source ?? sec?.is_open_source, info?.is_open_source),
+    top10HolderRate:     numPick(sec?.top_10_holder_rate,         info?.top_10_holder_rate),
+    rugRatio:            numPick(sec?.rug_ratio,                  info?.rug_ratio),
+    sniperCount:         numPick(sec?.sniper_count,               info?.sniper_count),
+    creatorAddress:      pick<string>(sec?.creator || null,       info?.creator || null),
+    creatorClose:        boolPick(sec?.creator_close,             info?.creator_close),
+    creatorTokenStatus:  pick<string>(sec?.creator_token_status || null, info?.creator_token_status || null),
+    buyTax:              numPick(sec?.buy_tax,                    info?.buy_tax),
+    sellTax:             numPick(sec?.sell_tax,                   info?.sell_tax),
+    lpLocked,
+    lpLockPercent,
+    ctoFlag:             boolPick(sec?.cto_flag,                  info?.cto_flag),
+    bluechipOwnerPct:    numPick(sec?.bluechip_owner_percentage,  info?.bluechip_owner_percentage),
+    ratTraderAmtRate:    numPick(sec?.rat_trader_amount_rate,     info?.rat_trader_amount_rate),
+    creatorCreatedCount: numPick(
+      pick(sec?.creator_created_open_count, sec?.creator_created_inner_count),
+      pick(info?.creator_created_open_count, info?.creator_created_inner_count),
+    ),
+  };
+
+  return {
+    ok: secRes.ok || infoRes.ok,
+    security,
+    raw: { secEndpoint: secRes.data, tokenInfo: infoRes.data },
+  };
+}
+
+// ── Token pool fetch ──────────────────────────────────────────────────────────
+
+export async function fetchTokenPool(
+  chain: string,
+  address: string,
+  proxy?: string,
+): Promise<GmgnResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  return gmgnFetch(`https://gmgn.ai/api/v1/token_pool/${c}/${address}`, proxy);
+}
+
+// ── Top traders fetch + persist ───────────────────────────────────────────────
+
+type RawTrader = {
+  address?: string;
+  wallet_address?: string;
+  twitter_name?: string | null;
+  twitter_username?: string | null;
+  tags?: string[];
+  maker_token_tags?: string[];
+  // P&L
+  profit?: number | null;
+  profit_usd?: number | null;
+  realized_profit?: number | null;
+  unrealized_profit?: number | null;
+  // Volume
+  buy_volume_cur?: number | null;
+  sell_volume_cur?: number | null;
+  // Trade counts
+  buy_tx_count_cur?: number | null;
+  sell_tx_count_cur?: number | null;
+  // Avg price
+  avg_buy?: number | null;
+  avg_sell?: number | null;
+  avg_buy_price?: number | null;
+  avg_sell_price?: number | null;
+  // Position
+  amount_percentage?: number | null;
+};
+
+export async function fetchTopTraders(
+  chain: string,
+  address: string,
+  proxy?: string,
+  limit = 40,
+): Promise<GmgnResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  const url = `https://gmgn.ai/defi/quotation/v1/tokens/top_traders/${c}/${address}?orderby=profit&direction=desc&limit=${limit}`;
+  return gmgnFetch(url, proxy);
+}
+
+export async function persistTraders(
+  tokenId: number,
+  traderList: unknown[],
+  tokenLabel?: string,
+): Promise<number> {
+  if (traderList.length === 0) return 0;
+
+  // Lazy import to avoid circular dep at module load
+  const { db } = await import("@workspace/db");
+  const { token_traders, wallet_profiles } = await import("@workspace/db");
+  const { sql: drizzleSql } = await import("drizzle-orm");
+
+  const rows = (traderList as RawTrader[]).map(t => {
+    const walletAddress = (t.address ?? t.wallet_address ?? "").trim();
+    if (!walletAddress) return null;
+    const rawLabels = [...(t.tags ?? []), ...(t.maker_token_tags ?? [])];
+    const labels    = [...new Set(rawLabels.filter(Boolean))];
+    const buyVol    = t.buy_volume_cur  ?? null;
+    const sellVol   = t.sell_volume_cur ?? null;
+    return {
+      tokenId,
+      walletAddress,
+      twitterName:     t.twitter_name     ?? null,
+      twitterUsername: t.twitter_username ?? null,
+      labels,
+      profit:            t.profit           ?? null,
+      profitUsd:         t.profit_usd       ?? null,
+      realizedProfit:    t.realized_profit  ?? null,
+      unrealizedProfit:  t.unrealized_profit ?? null,
+      buyVolumeUsd:      buyVol,
+      sellVolumeUsd:     sellVol,
+      netFlowUsd:        buyVol != null && sellVol != null ? buyVol - sellVol : null,
+      buyCount:          t.buy_tx_count_cur  ?? 0,
+      sellCount:         t.sell_tx_count_cur ?? 0,
+      avgBuyPriceUsd:    t.avg_buy_price  ?? t.avg_buy  ?? null,
+      avgSellPriceUsd:   t.avg_sell_price ?? t.avg_sell ?? null,
+      holdingPct:        t.amount_percentage ?? null,
+      fetchedAt:         new Date(),
+    };
+  }).filter((x): x is NonNullable<typeof x> => x !== null);
+
+  if (rows.length === 0) return 0;
+
+  await db.insert(token_traders).values(rows).onConflictDoUpdate({
+    target: [token_traders.tokenId, token_traders.walletAddress],
+    set: {
+      labels:           drizzleSql`ARRAY(SELECT DISTINCT unnest(token_traders.labels || excluded.labels))`,
+      profit:           drizzleSql`excluded.profit`,
+      profitUsd:        drizzleSql`excluded.profit_usd`,
+      realizedProfit:   drizzleSql`excluded.realized_profit`,
+      unrealizedProfit: drizzleSql`excluded.unrealized_profit`,
+      buyVolumeUsd:     drizzleSql`excluded.buy_volume_usd`,
+      sellVolumeUsd:    drizzleSql`excluded.sell_volume_usd`,
+      netFlowUsd:       drizzleSql`excluded.net_flow_usd`,
+      buyCount:         drizzleSql`excluded.buy_count`,
+      sellCount:        drizzleSql`excluded.sell_count`,
+      avgBuyPriceUsd:   drizzleSql`excluded.avg_buy_price_usd`,
+      avgSellPriceUsd:  drizzleSql`excluded.avg_sell_price_usd`,
+      holdingPct:       drizzleSql`excluded.holding_pct`,
+      twitterName:      drizzleSql`COALESCE(NULLIF(excluded.twitter_name, ''), token_traders.twitter_name)`,
+      twitterUsername:  drizzleSql`COALESCE(NULLIF(excluded.twitter_username, ''), token_traders.twitter_username)`,
+      fetchedAt:        drizzleSql`excluded.fetched_at`,
+    },
+  });
+
+  // Sync trader identities to wallet_profiles
+  const profileRows = rows.map(r => ({
+    walletAddress:  r.walletAddress,
+    labels:         r.labels,
+    twitterName:    r.twitterName,
+    twitterUsername: r.twitterUsername,
+    lastSeenAt:     r.fetchedAt,
+  }));
+  await db.insert(wallet_profiles).values(profileRows).onConflictDoUpdate({
+    target: wallet_profiles.walletAddress,
+    set: {
+      labels:          drizzleSql`ARRAY(SELECT DISTINCT unnest(wallet_profiles.labels || excluded.labels))`,
+      twitterName:     drizzleSql`COALESCE(NULLIF(excluded.twitter_name, ''), wallet_profiles.twitter_name)`,
+      twitterUsername: drizzleSql`COALESCE(NULLIF(excluded.twitter_username, ''), wallet_profiles.twitter_username)`,
+      lastSeenAt:      drizzleSql`excluded.last_seen_at`,
+    },
+  });
+
+  log.info({ tokenId, tokenLabel, count: rows.length }, "Traders persisted");
+  return rows.length;
+}
+
+// ── Wallet profile fetch ──────────────────────────────────────────────────────
+
+export async function fetchWalletProfile(
+  chain: string,
+  walletAddress: string,
+  proxy?: string,
+): Promise<GmgnResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  return gmgnFetch(`https://gmgn.ai/api/v1/wallet_info/${c}/${walletAddress}`, proxy);
+}
+
+export async function fetchWalletHoldings(
+  chain: string,
+  walletAddress: string,
+  proxy?: string,
+  limit = 50,
+): Promise<GmgnResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  return gmgnFetch(
+    `https://gmgn.ai/api/v1/wallet_holdings/${c}/${walletAddress}?limit=${limit}&orderby=unrealized_profit&direction=desc`,
+    proxy,
+  );
+}
+
 // ── Paginated fetch + persist ─────────────────────────────────────────────────
 // GMGN hard-caps each page at 20 holders regardless of the `limit` param.
 // We walk pages with offset=0,20,40,… until an empty page or MAX_PAGES.

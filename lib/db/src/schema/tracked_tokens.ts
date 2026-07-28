@@ -115,6 +115,27 @@ export const tracked_tokens = pgTable(
     socialSentimentScore: real("social_sentiment_score").default(0).notNull(),
     socialNoveltyScore:   real("social_novelty_score").default(0).notNull(),
     socialUpdatedAt:      timestamp("social_updated_at"),
+    // ── Security / CA analysis (GMGN token_security + token_info) ─────────────
+    secIsHoneypot:          boolean("sec_is_honeypot"),
+    secOwnerRenounced:      boolean("sec_owner_renounced"),
+    secMintRenounced:       boolean("sec_mint_renounced"),         // SOL: renounced_mint
+    secFreezeRenounced:     boolean("sec_freeze_renounced"),       // SOL: renounced_freeze_account
+    secOpenSource:          boolean("sec_open_source"),
+    secTop10HolderRate:     real("sec_top10_holder_rate"),
+    secRugRatio:            real("sec_rug_ratio"),
+    secSniperCount:         integer("sec_sniper_count"),
+    secCreatorAddress:      text("sec_creator_address"),
+    secCreatorClose:        boolean("sec_creator_close"),
+    secCreatorTokenStatus:  text("sec_creator_token_status"),      // "creator_close" | "creator_hold"
+    secBuyTax:              real("sec_buy_tax"),
+    secSellTax:             real("sec_sell_tax"),
+    secLpLocked:            boolean("sec_lp_locked"),
+    secLpLockPercent:       real("sec_lp_lock_percent"),
+    secCtoFlag:             boolean("sec_cto_flag"),
+    secBluechipOwnerPct:    real("sec_bluechip_owner_pct"),
+    secRatTraderAmtRate:    real("sec_rat_trader_amt_rate"),
+    secCreatorCreatedCount: integer("sec_creator_created_count"),  // how many tokens creator launched
+    secFetchedAt:           timestamp("sec_fetched_at"),
   },
   (t) => [unique("token_chain_unique").on(t.address, t.chain)],
 );
