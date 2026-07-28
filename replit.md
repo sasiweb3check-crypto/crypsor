@@ -1,50 +1,58 @@
-# Crypsor — Token Intelligence
+# Crypsor — Token Intelligence Dashboard
 
-Solana token monitoring and intelligence platform. Watches wallet activity, scores tokens by momentum/holder quality, and surfaces early signals.
+A Solana token intelligence platform that monitors wallets, detects new token purchases, and runs a real-time analysis pipeline.
 
 ## Stack
 
-- **Frontend**: React + Vite + Tailwind + TanStack Query + SSE (artifacts/crypsor)
-- **Backend**: Express v5 + TypeScript + Drizzle ORM + PostgreSQL (artifacts/api-server)
-- **Monorepo**: pnpm workspaces
-- **Database**: Aiven PostgreSQL (schema managed by Drizzle)
-- **Cache/queues**: Aiven Redis is configured for a future durable queue migration; the current pipeline still uses in-process queues
+| Layer | Tech |
+|---|---|
+| Frontend | React 19 · Vite · Tailwind v4 · TanStack Query · Wouter |
+| Backend | Node.js · Express v5 · TypeScript |
+| Database | PostgreSQL (Drizzle ORM) |
+| Job queue | BullMQ (backed by Redis) |
+| Real-time | SSE (Server-Sent Events) |
 
-## How to run
+## Project structure
 
-Both workflows start automatically:
+```
+artifacts/
+  api-server/   Express API + Token Intelligence Pipeline
+  crypsor/      React/Vite frontend
+lib/
+  db/           Drizzle schema + migrations
+  api-zod/      Shared Zod schemas
+  api-client-react/  Type-safe React query hooks
+```
 
-| Workflow | Command | URL |
-|---|---|---|
-| `artifacts/crypsor: web` | `pnpm --filter @workspace/crypsor run dev` | `/` |
-| `artifacts/api-server: API Server` | `pnpm --filter @workspace/api-server run dev` | `/api` |
+## Running locally
+
+Two workflows run in parallel:
+
+- **API Server** — `pnpm --filter @workspace/api-server run dev`  
+  Builds TypeScript with esbuild then starts the server.
+- **Crypsor (frontend)** — `pnpm --filter @workspace/crypsor run dev`  
+  Vite dev server with HMR.
 
 ## Required secrets
 
-| Key | Purpose |
+| Secret | Description |
 |---|---|
-| `HELIUS_API_KEY` | Solana RPC + wallet scan data |
-| `SESSION_SECRET` | Session signing |
-| `GMGN_PROXIES` | (optional) Proxy config for GMGN market data API |
+| `AIVEN_REDIS_URL` | Redis connection string (`redis://` or `rediss://`) for BullMQ job queues and pub/sub |
+| `HELIUS_API_KEY` | Helius API key for Solana RPC / wallet transaction data |
 
-`AIVEN_DATABASE_URL` is the primary database connection and is stored as a Replit Secret. The app falls back to Replit's runtime-managed `DATABASE_URL` only when the Aiven secret is unavailable.
+PostgreSQL is provided automatically by Replit (`DATABASE_URL`).
 
-`AIVEN_REDIS_URL` is stored as a Replit Secret but is not used by the current implementation yet. The current pipeline queue and event bus are in-process.
+**Optional:**
+- `GMGN_PROXIES` — comma-separated proxy URLs for GMGN metadata requests
 
-## Schema
+## Database
 
-Push schema changes to the configured database:
-```
+Schema is managed with Drizzle Kit. To push schema changes to the database:
+
+```bash
 pnpm --filter @workspace/db run push
 ```
 
-## Architecture
-
-See `ARCHITECTURE.md` for a full breakdown of the event-driven pipeline:
-- Aiven PostgreSQL stores durable state; queue and event delivery currently use in-process memory
-- Price cycle: 20s | Scheduler poll: 30s | Lifecycle: 2 consecutive checks to archive
-- SSE replaces WebSockets for real-time push to the frontend
-
 ## User preferences
 
-_No preferences recorded yet._
+- Keep the existing pnpm monorepo structure
