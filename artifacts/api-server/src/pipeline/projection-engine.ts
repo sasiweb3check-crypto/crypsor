@@ -73,8 +73,8 @@ async function projectToken(tokenId: number): Promise<void> {
   }
 }
 
-/** Full pass — reproject every token. Runs on startup and every 60 s. */
-async function projectAll(): Promise<void> {
+/** Full pass — reproject every token. Driven by BullMQ repeatable job every 60 s. */
+export async function projectAll(): Promise<void> {
   try {
     const tokens = await db.select({ id: tracked_tokens.id }).from(tracked_tokens);
     await Promise.allSettled(tokens.map(t => projectToken(t.id)));
@@ -83,6 +83,11 @@ async function projectAll(): Promise<void> {
   }
 }
 
+/**
+ * Start the projection engine.
+ * Periodic full-pass is driven by a BullMQ repeatable job (`projection:full-pass`).
+ * Event-driven per-token projections still fire immediately via eventBus.
+ */
 export function startProjectionEngine(): void {
   healthMonitor.register("projection-engine");
 
@@ -96,9 +101,5 @@ export function startProjectionEngine(): void {
     await projectToken(evt.tokenId);
   });
 
-  // Full pass on startup then every 60 s
-  setTimeout(() => projectAll(), 3_000);
-  setInterval(() => projectAll(), 60_000);
-
-  logger.info("Projection engine started");
+  logger.info("Projection engine started (event-driven per-token + BullMQ 60 s full-pass)");
 }

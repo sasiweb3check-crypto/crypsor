@@ -299,12 +299,12 @@ export async function refreshAllPrices(): Promise<void> {
   }
 }
 
-const INTERVAL_MS = 20_000;
-
+/**
+ * Start the price service.
+ * In the new architecture the periodic refresh is driven by a BullMQ
+ * repeatable job (`price:refresh` in the pipeline-scheduler queue) so
+ * this function only registers the service with the health monitor.
+ */
 export function startPriceService() {
-  const loop = () => {
-    refreshAllPrices().catch(() => {}).finally(() => setTimeout(loop, INTERVAL_MS));
-  };
-  setTimeout(loop, 8_000);
-  logger.info("Price service started (20s cycle; DexScreener + PumpFun + CoinGecko)");
+  logger.info("Price service ready (BullMQ-driven 20 s cycle; DexScreener + PumpFun + CoinGecko)");
 }

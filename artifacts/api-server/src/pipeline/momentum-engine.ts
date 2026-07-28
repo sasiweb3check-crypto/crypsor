@@ -25,8 +25,6 @@ function stddev(vals: number[]): number {
 }
 
 // ── Raw signal extraction ─────────────────────────────────────────────────────
-// Returns un-normalised scalars for each momentum signal type.
-// These are batch-normalised across all tokens before being stored.
 
 function extractRawSignals(t: {
   momentum5m: number; momentum15m: number; momentum30m: number;
@@ -38,24 +36,14 @@ function extractRawSignals(t: {
   liquidityUsd: string | null;
   firstDetectedAt: Date;
 }) {
-  // price_momentum proxy: recent buy velocity weighted by recency windows
   const rawPrice = t.momentum5m * 3 + t.momentum1h * 0.5 + t.momentum6h * 0.1;
-
-  // volume_momentum proxy: hourly rate vs 24h rate (intensity)
   const rawVolume = (t.momentum1h * 6) / Math.max(t.momentum24h, 1);
-
-  // buy_pressure_momentum: existing weighted score
   const rawBuyPressure = t.buyPressure;
-
-  // holder_momentum: KOL+Smart density × holder quality score
   const kolSmartDensity =
     (t.holderKolCount + t.holderSmartCount) / Math.max(t.holderCount, 1);
   const rawHolder = kolSmartDensity * 60 + t.holderMomentumScore * 0.4;
-
-  // liquidity: null (no per-window historical data stored)
   const liqUsd = t.liquidityUsd ? parseFloat(t.liquidityUsd) : null;
   const lowLiquidityFlag = liqUsd !== null && liqUsd < 10_000;
-
   return { rawPrice, rawVolume, rawBuyPressure, rawHolder, lowLiquidityFlag, liqUsd };
 }
 
@@ -72,14 +60,12 @@ function buildMomentum(
   normed: { price: number; volume: number; buyPressure: number; holder: number },
 ) {
   const { price, volume, buyPressure, holder } = normed;
-  const liqComponent = 0; // no historical liquidity data
+  const liqComponent = 0;
 
-  // composite_momentum = 0.30×price + 0.25×volume + 0.25×buyPressure + 0.15×holder + 0.05×liquidity
   const compositeMomentum = Math.min(100, Math.max(0,
     0.30 * price + 0.25 * volume + 0.25 * buyPressure + 0.15 * holder + 0.05 * liqComponent
   ));
 
-  // volatility_adjusted_momentum: rewards consistent movers over spikes
   const perFiveRates = [
     t.momentum5m,
     t.momentum15m / 3,
@@ -91,20 +77,17 @@ function buildMomentum(
     compositeMomentum / Math.max(sd / 5 + 1, 1)
   ));
 
-  // early_momentum: biased toward very new tokens (first 2 hours)
   const ageHours = (Date.now() - t.firstDetectedAt.getTime()) / 3_600_000;
   const earlyBias = ageHours <= 1 ? 1.3 : ageHours <= 2 ? 1.15 : 1.0;
   const earlyMomentum = Math.min(100, Math.max(0,
     (0.6 * price + 0.3 * volume + 0.1 * holder) * earlyBias
   ));
 
-  // sustained_momentum: penalises one-time spikes (6h consistency)
   const h6Ratio = t.momentum6h / Math.max(t.momentum1h * 6, 1);
   const sustainedMomentum = Math.min(100, Math.max(0,
     0.4 * price * Math.min(1, h6Ratio) + 0.4 * volume + 0.2 * holder
   ));
 
-  // revival_potential: detects dead-cat bounce candidates
   const recentSpike = t.momentum5m / Math.max(t.momentum1h / 12 + 0.01, 1);
   const gainRecovery = Math.min(100, Math.max(0, t.gainPct ?? 0));
   const revivalPotential = Math.min(100, Math.max(0,
@@ -151,7 +134,6 @@ async function fetchBuyCounts(tokenId: number) {
 }
 
 // ── Single-token update (on buy event) ───────────────────────────────────────
-// Updates buy-window counts immediately; full momentum recomputed every 5 min.
 
 async function updateMomentumOnBuy(e: TokenBoughtEvent): Promise<void> {
   const t0 = Date.now();
@@ -174,9 +156,8 @@ async function updateMomentumOnBuy(e: TokenBoughtEvent): Promise<void> {
   }
 }
 
-// ── Full batch refresh (all tokens, runs every 5 minutes) ────────────────────
-// Fetches all tokens, computes raw signals, normalises across the batch,
-// then writes the complete multi-type momentum object back.
+// ── Full batch refresh (all tokens) ──────────────────────────────────────────
+// Called by the BullMQ pipeline-scheduler every 5 minutes.
 
 export async function refreshAllMomentum(): Promise<void> {
   try {
@@ -200,19 +181,16 @@ export async function refreshAllMomentum(): Promise<void> {
 
     if (tokens.length === 0) return;
 
-    // Step 1: extract raw (un-normalised) signals for every token
     const withRaw = tokens.map(t => ({
       t,
       raw: extractRawSignals({ ...t, gainPct: t.gainPct ?? null }),
     }));
 
-    // Step 2: collect raw arrays for min-max normalisation
-    const allRawPrice      = withRaw.map(r => r.raw.rawPrice);
-    const allRawVolume     = withRaw.map(r => r.raw.rawVolume);
+    const allRawPrice       = withRaw.map(r => r.raw.rawPrice);
+    const allRawVolume      = withRaw.map(r => r.raw.rawVolume);
     const allRawBuyPressure = withRaw.map(r => r.raw.rawBuyPressure);
-    const allRawHolder     = withRaw.map(r => r.raw.rawHolder);
+    const allRawHolder      = withRaw.map(r => r.raw.rawHolder);
 
-    // Step 3: normalise + build + persist for each token
     for (const { t, raw } of withRaw) {
       const normed = {
         price:       minMaxNorm(allRawPrice,       raw.rawPrice),
@@ -227,7 +205,6 @@ export async function refreshAllMomentum(): Promise<void> {
       );
 
       await db.update(tracked_tokens).set({
-        // Legacy buy-window counts (preserved for lifecycle engine)
         momentum5m:   t.momentum5m,
         momentum15m:  t.momentum15m,
         momentum30m:  t.momentum30m,
@@ -235,7 +212,6 @@ export async function refreshAllMomentum(): Promise<void> {
         momentum6h:   t.momentum6h,
         momentum24h:  t.momentum24h,
         activeWallets: t.momentum24h,
-        // Multi-type momentum (new)
         compositeMomentum:      m.compositeMomentum,
         priceMomentum:          m.priceMomentum,
         volumeMomentum:         m.volumeMomentum,
@@ -256,9 +232,12 @@ export async function refreshAllMomentum(): Promise<void> {
   }
 }
 
+/**
+ * Start the momentum engine.
+ * Periodic batch refresh is driven by a BullMQ repeatable job (`momentum:refresh`).
+ * Event-driven per-buy updates still fire immediately via the eventBus.
+ */
 export function startMomentumEngine() {
   eventBus.on("token:bought", (e) => { updateMomentumOnBuy(e).catch(() => {}); });
-  // Full batch refresh every 5 minutes (normalises across all tokens)
-  setInterval(() => refreshAllMomentum().catch(() => {}), 5 * 60 * 1000);
-  logger.info("Momentum engine started");
+  logger.info("Momentum engine started (event-driven buy updates + BullMQ 5 min batch refresh)");
 }
