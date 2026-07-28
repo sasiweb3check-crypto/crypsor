@@ -1,41 +1,49 @@
 # Crypsor
 
-Solana token intelligence dashboard. Monitors wallets via Helius, scores tokens through an in-process pipeline, and surfaces results in a real-time React UI.
+A Solana token intelligence dashboard that monitors wallets, scores tokens in real-time, and surfaces KOL/smart-money signals.
 
 ## Stack
 
-- **Frontend** — React 19 + Vite + Tailwind + TanStack Query + SSE (`artifacts/crypsor`)
-- **API server** — Express v5 + TypeScript + Drizzle ORM + BullMQ (`artifacts/api-server`)
-- **Database** — PostgreSQL via Aiven (Drizzle schema in `lib/db`)
-- **Queue** — Redis via Aiven (BullMQ job queues)
-- **Shared libs** — `lib/api-zod` (Zod schemas), `lib/api-client-react` (typed hooks), `lib/db` (Drizzle schema)
+- **Frontend**: React + Vite + Tailwind + TanStack Query + Wouter (`artifacts/crypsor`)
+- **Backend**: Express v5 + TypeScript + Drizzle ORM + PostgreSQL (`artifacts/api-server`)
+- **Jobs/Queues**: BullMQ + Redis (`AIVEN_REDIS_URL`)
+- **Database**: Aiven PostgreSQL (`AIVEN_DATABASE_URL`) — Replit's built-in `DATABASE_URL` also supported
+- **Solana RPC**: Helius (`HELIUS_API_KEY`)
+- **Shared libs**: `lib/db`, `lib/api-zod`, `lib/api-client-react`
 
-## Running locally on Replit
+## Running Locally on Replit
 
-Both services start automatically via the configured workflows:
+Both workflows start automatically:
 
 | Workflow | Command |
 |---|---|
 | `artifacts/crypsor: web` | `pnpm --filter @workspace/crypsor run dev` |
 | `artifacts/api-server: API Server` | `pnpm --filter @workspace/api-server run dev` |
 
-## Required secrets
+The frontend is served at `/` and the API at `/api`.
+
+## Required Secrets
 
 | Secret | Purpose |
 |---|---|
-| `AIVEN_DATABASE_URL` | Aiven PostgreSQL connection string |
-| `AIVEN_REDIS_URL` | Aiven Redis connection string (BullMQ) |
-| `HELIUS_API_KEY` | Helius API key for Solana RPC / wallet scanning |
+| `HELIUS_API_KEY` | Solana RPC + wallet scanning |
+| `AIVEN_REDIS_URL` | BullMQ job queues + SSE pub/sub |
+| `AIVEN_DATABASE_URL` | Primary Aiven PostgreSQL database |
 | `SESSION_SECRET` | Express session signing |
 
-`DATABASE_URL` is also provided automatically by Replit's built-in PostgreSQL (unused when `AIVEN_DATABASE_URL` is set).
+## Database Schema
 
-## DB schema
-
-Push schema changes to the Aiven database:
-
-```bash
+Push schema changes with:
+```
 pnpm --filter @workspace/db run push
 ```
 
-## User preferences
+## Architecture
+
+See `ARCHITECTURE.md` for the full pipeline breakdown. Key points:
+- No message broker — plain Node.js `EventEmitter` as internal bus
+- All pipeline services run in the same process as the API server
+- SSE replaces WebSockets for real-time push to the frontend
+- Scan loop runs every 120s; price updates every 20s
+
+## User Preferences
