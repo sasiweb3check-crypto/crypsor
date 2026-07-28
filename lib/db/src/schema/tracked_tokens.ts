@@ -140,6 +140,14 @@ export const tracked_tokens = pgTable(
     secRatTraderAmtRate:    real("sec_rat_trader_amt_rate"),
     secCreatorCreatedCount: integer("sec_creator_created_count"),  // how many tokens creator launched
     secFetchedAt:           timestamp("sec_fetched_at"),
+    // ── Caller Score (Two-Phase — isolated from existing scores) ─────────────
+    // Incremented by TokenUpdater on every holder snapshot; used to determine
+    // Early Degen (< 5) vs Survival (≥ 5) phase for the caller score.
+    holderSnapshotCount:    integer("holder_snapshot_count").default(0).notNull(),
+    // Caller score result — kept separate from qualityScore / momentumScore.
+    callerScore:            real("caller_score"),
+    callerPhase:            text("caller_phase"),   // "Early Degen" | "Survival"
+    callerLabel:            text("caller_label"),   // "STRONG MOON CALL" | "GOOD CALL" | "WATCH" | "SKIP"
   },
   (t) => [unique("token_chain_unique").on(t.address, t.chain)],
 );
