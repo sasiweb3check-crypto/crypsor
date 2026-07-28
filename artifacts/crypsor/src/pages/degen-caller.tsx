@@ -261,7 +261,7 @@ export default function DegenCaller() {
             <div>
               <div className="text-[#c9d1d9] font-bold text-sm uppercase tracking-widest">Degen Caller</div>
               <div className="text-[#484f58] text-[10px] mt-0.5">
-                Two-phase caller score · Early Degen (1–4 snaps) → Survival (5+ snaps)
+                Two-phase caller score · Early Degen (1–2 snaps) → Survival (3+ snaps)
               </div>
             </div>
           </div>
@@ -434,7 +434,7 @@ export default function DegenCaller() {
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         <span className={cn(
                           "font-bold",
-                          token.holderSnapshotCount >= 5 ? "text-[#60a5fa]" : "text-[#8b949e]",
+                          token.holderSnapshotCount >= 3 ? "text-[#60a5fa]" : "text-[#8b949e]",
                         )}>
                           {token.holderSnapshotCount}
                         </span>

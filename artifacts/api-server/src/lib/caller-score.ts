@@ -4,13 +4,13 @@
  * Parallel to (and fully isolated from) qualityScore / momentumScore.
  * Do NOT mix with existing holder intel scores.
  *
- * Phase 1 — Early Degen (snapshots 1-4):
+ * Phase 1 — Early Degen (snapshots 1-2):
  *   Core signals only — catches fast runners before ATH.
  *
- * Phase 2 — Survival (snapshots 5+):
+ * Phase 2 — Survival (snapshots 3+):
  *   Core signals + ATH Gap bonus — filters tokens with real upside remaining.
  *
- * Threshold: 5 snapshots (upgraded from original 3).
+ * Threshold: 3 snapshots.
  *
  * Labels:
  *   ≥ 82  → STRONG MOON CALL
@@ -19,7 +19,7 @@
  *   < 55  → SKIP
  */
 
-export const SURVIVAL_SNAPSHOT_THRESHOLD = 5;
+export const SURVIVAL_SNAPSHOT_THRESHOLD = 3;
 
 export interface CallerScoreInput {
   /** USD market cap — stored as text in DB, parsed here */
@@ -55,9 +55,9 @@ export function computeCallerScore(
 
   // ── Core factors (always applied) ───────────────────────────────────────────
 
-  // Low MC Bonus: small-cap tokens have more upside room
+  // Low MC Bonus: ultra-low cap (<$12K) has most upside room for meme coins
   const mcUsd = parseFloat(input.marketCapUsd ?? "0") || 0;
-  if (mcUsd > 0 && mcUsd < 100_000) baseScore += 20;
+  if (mcUsd > 0 && mcUsd < 12_000) baseScore += 28;
 
   // MC Growth: strong upward momentum in market cap
   if (input.mcGrowthScore > 70) baseScore += 22;
@@ -65,8 +65,9 @@ export function computeCallerScore(
   // Holder Velocity: rapid holder accumulation
   if (input.holderVelocityScore > 78) baseScore += 20;
 
-  // Low Top-10 concentration: decentralised supply is healthier
-  if (input.holderTop10Pct > 0 && input.holderTop10Pct < 30) baseScore += 10;
+  // Low Top-10 concentration: top 10 hold < 68% of supply → decentralised
+  // holderTop10Pct is stored as 0–100 in DB; 0.68 fraction = 68 in our units
+  if (input.holderTop10Pct > 0 && input.holderTop10Pct < 68) baseScore += 15;
 
   // KOL / Smart money presence
   if (input.kolSmartScore > 55) baseScore += 12;
