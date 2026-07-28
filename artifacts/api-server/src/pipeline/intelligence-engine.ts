@@ -37,8 +37,8 @@ const WEIGHTS = {
   mcGrowth:     0.35,
   volume:       0.25,
   holderVel:    0.20,
-  kolSmart:     0.15,
-  liquidity:    0.05,
+  kolSmart:     0.12,  // spec: 12% (was 15%)
+  liquidity:    0.08,  // spec: 8%  (was 5%)
 } as const;
 
 const GRADUATION_SCORE_THRESHOLD = 55;
@@ -165,18 +165,31 @@ function computeHolderVelocityScore(
 }
 
 // ── 4. KOL / Smart Signal Score ───────────────────────────────────────────────
+// Spec formula: weighted density of KOL + smart holders relative to total.
+// kolWeight   = (kolCount  / total) * 100 * 2.5  (capped at 100)
+// smartWeight = (smartCount / total) * 100 * 2.0  (capped at 100)
 
 function computeKolSmartScore(
-  holderKolCount:     number,
-  holderSmartCount:   number,
-  holderCount:        number,
-  labeledBuyFraction: number,
+  holderKolCount:   number,
+  holderSmartCount: number,
+  holderCount:      number,
 ): number {
-  const base = Math.max(holderCount, 1);
-  const density = (holderKolCount + holderSmartCount) / base;
-  const densityScore = clamp(density * 300, 0, 70);
-  const buyScore = clamp(labeledBuyFraction * 150, 0, 30);
-  return clamp(densityScore + buyScore);
+  if (holderCount <= 0) return 0;
+  const kolWeight   = (holderKolCount   / holderCount) * 100 * 2.5;
+  const smartWeight = (holderSmartCount / holderCount) * 100 * 2.0;
+  return clamp(Math.round(kolWeight + smartWeight));
+}
+
+// ── Quality label from final score ────────────────────────────────────────────
+
+function computeQualityLabel(score: number): string {
+  if (score >= 82) return "Elite";
+  if (score >= 72) return "Excellent";
+  if (score >= 62) return "Strong";
+  if (score >= 52) return "Good";
+  if (score >= 40) return "Average";
+  if (score >= 25) return "Speculative";
+  return "Weak";
 }
 
 // ── 5. Liquidity Health Score ─────────────────────────────────────────────────
@@ -234,6 +247,7 @@ export async function refreshAllIntelligence(): Promise<void> {
       holderCount:       tracked_tokens.holderCount,
       holderKolCount:    tracked_tokens.holderKolCount,
       holderSmartCount:  tracked_tokens.holderSmartCount,
+      holderTop10Pct:    tracked_tokens.holderTop10Pct,
       lowLiquidityFlag:  tracked_tokens.lowLiquidityFlag,
       peakMcUsd:         tracked_tokens.peakMcUsd,
       athMarketCapUsd:   tracked_tokens.athMarketCapUsd,
@@ -343,7 +357,7 @@ export async function refreshAllIntelligence(): Promise<void> {
       const volumeIntensityScore  = r1(clamp(volResult.score));
       const holderVelResult       = computeHolderVelocityScore(hSnaps, t.holderCount, cohortVelocities[group]);
       const holderVelocityScore   = r1(clamp(holderVelResult.score));
-      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount, labeledFraction)));
+      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount)));
       const liquidityHealthScore  = r1(clamp(computeLiquidityHealthScore(t.liquidityUsd, t.lowLiquidityFlag, pSnaps)));
 
       const ageHrs  = (Date.now() - t.firstDetectedAt.getTime()) / 3_600_000;
@@ -356,7 +370,27 @@ export async function refreshAllIntelligence(): Promise<void> {
         WEIGHTS.kolSmart  * kolSmartScore +
         WEIGHTS.liquidity * liquidityHealthScore;
 
-      const intelligenceScore = r1(clamp(rawMaster * ageMult));
+      // Apply age multiplier then quality risk/bonus adjustments
+      let rawScore = rawMaster * ageMult;
+
+      // ── Risk penalties ──────────────────────────────────────────────────────
+      // holderTop10Pct is stored 0–100; spec thresholds are 0–1 (multiply by 100)
+      const top10Frac = (t.holderTop10Pct ?? 0) / 100;
+      if      (top10Frac > 0.78) rawScore -= 28;
+      else if (top10Frac > 0.68) rawScore -= 18;
+      else if (top10Frac > 0.58) rawScore -= 8;
+
+      // Micro-cap penalty: tokens under $5k market cap are highly speculative
+      const mcUsdNum = t.marketCapUsd ? parseFloat(t.marketCapUsd) : 0;
+      if (mcUsdNum > 0 && mcUsdNum < 5_000) rawScore -= 10;
+
+      // ── Bonuses ─────────────────────────────────────────────────────────────
+      if ((t.holderCount ?? 0) > 75) rawScore += 9;
+      if (kolSmartScore > 85)         rawScore += 6;
+      if (volumeIntensityScore > 90 && mcGrowthScore > 85) rawScore += 7;
+
+      const intelligenceScore = r1(clamp(rawScore));
+      const qualityLabel      = computeQualityLabel(intelligenceScore);
 
       const subScoresAboveFloor = [mcGrowthScore, volumeIntensityScore, holderVelocityScore, kolSmartScore, liquidityHealthScore]
         .filter(s => s >= SIGNAL_POSITIVE_FLOOR).length;
@@ -410,7 +444,8 @@ export async function refreshAllIntelligence(): Promise<void> {
       }
 
       await db.update(tracked_tokens).set({
-        intelligenceScore, mcGrowthScore, volumeIntensityScore, holderVelocityScore,
+        intelligenceScore, qualityLabel,
+        mcGrowthScore, volumeIntensityScore, holderVelocityScore,
         kolSmartScore, liquidityHealthScore, intelligenceUpdatedAt: new Date(),
         consecutivePositiveChecks: newConsecutive, peakMcUsd: newPeak ?? undefined,
         ...(statusOverride ? { status: statusOverride, lastStatusChangeAt: new Date() } : {}),

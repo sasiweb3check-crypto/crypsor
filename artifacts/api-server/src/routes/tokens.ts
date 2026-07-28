@@ -69,6 +69,7 @@ function mapToken(t: typeof tracked_tokens.$inferSelect) {
     imageStatus:      t.imageStatus,
     // Intelligence layer
     intelligenceScore:      t.intelligenceScore,
+    qualityLabel:           t.qualityLabel,
     mcGrowthScore:          t.mcGrowthScore,
     volumeIntensityScore:   t.volumeIntensityScore,
     holderVelocityScore:    t.holderVelocityScore,

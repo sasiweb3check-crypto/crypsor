@@ -1,0 +1,102 @@
+✅ Full Clear Explanation + Complete Quality Scoring System
+
+I'll explain everything from scratch so your agent (or you) can integrate it perfectly.
+
+1. What is Quality Score?
+
+Quality Score (0–100) tells how good / trustworthy / promising a token is right now.
+
+It combines 5 main factors from your UI + important risk checks from snapshots.
+
+2. The 5 Core Factors (Explained Simply)
+
+| Factor                | What it means                                      | Good Value     | Weight |
+|-----------------------|----------------------------------------------------|----------------|--------|
+| MC Growth         | How fast market cap is growing                     | > 80           | 35%    |
+| Volume Intensity  | How strong the trading volume is                   | > 85           | 25%    |
+| Holder Velocity   | How fast new holders are coming in                 | > 70           | 20%    |
+| KOL / Smart       | Presence of smart money & KOLs                     | > 70           | 12%    |
+| Liquidity Health  | How safe and deep the liquidity is                 | > 60           | 8%     |
+
+3. Final Quality Scoring Algorithm (Clean & Dynamic)
+
+function calculateQualityScore(data: any) {
+  const {
+    mcGrowth = 0,
+    volumeIntensity = 0,
+    holderVelocity = 0,
+    kolSmartScore = 0,        // 0-100
+    liquidityHealth = 0,
+    top10Pct = 1.0,
+    marketCapUsd = 0,
+    holderCount = 0
+  } = data;
+
+  // Base Score
+  let score = 
+    (mcGrowth * 0.35) +
+    (volumeIntensity * 0.25) +
+    (holderVelocity * 0.20) +
+    (kolSmartScore * 0.12) +
+    (liquidityHealth * 0.08);
+
+  // === Risk Penalties ===
+  if (top10Pct > 0.78) score -= 28;
+  else if (top10Pct > 0.68) score -= 18;
+  else if (top10Pct > 0.58) score -= 8;
+
+  if (marketCapUsd  75) score += 9;
+  if (kolSmartScore > 85) score += 6;
+
+  if (volumeIntensity > 90 && mcGrowth > 85) score += 7;
+
+  score = Math.max(5, Math.min(100, Math.round(score)));
+
+  // Label
+  let label = "Weak";
+  if (score >= 82) label = "Elite";
+  else if (score >= 72) label = "Excellent";
+  else if (score >= 62) label = "Strong";
+  else if (score >= 52) label = "Good";
+  else if (score >= 40) label = "Average";
+  else if (score >= 25) label = "Speculative";
+
+  return {
+    score,
+    label,
+    breakdown: {
+      mcGrowth: Math.round(mcGrowth * 0.35),
+      volume: Math.round(volumeIntensity * 0.25),
+      holderVelocity: Math.round(holderVelocity * 0.20),
+      kolSmart: Math.round(kolSmartScore * 0.12),
+      liquidity: Math.round(liquidityHealth * 0.08),
+      finalScore: score
+    }
+  };
+}
+
+4. How to Calculate kolSmartScore
+
+function calculateKolSmartScore(kolCount: number, smartCount: number, totalHolders: number) {
+  if (totalHolders = 62 && 
+                      marketCapUsd > 8000 &&
+                      quality.label !== "Weak";
+
+  let alertType = null;
+
+  if (status === "new" && shouldAlert) alertType = "NEW_HIGH_QUALITY";
+  else if (status === "revived" && shouldAlert) alertType = "REVIVED";
+  else if (status === "active" && qualityScore >= 75) alertType = "STRONG_ACTIVE";
+
+  return { alertType, shouldAlert };
+}
+
+Alert Types for Telegram:
+NEW_HIGH_QUALITY
+STRONG_ACTIVE
+REVIVED
+ELITE (score ≥ 82)
+
+Would you like me to give you the complete ready-to-paste code (including integration with your snapshot table) right now?
+
+Just say “give full code” and I’ll deliver everything.

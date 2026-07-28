@@ -33,6 +33,7 @@ interface RichToken {
   detectionGainPct?: number | null;
   athGainPct?: number | null;
   intelligenceScore?: number;
+  qualityLabel?: string;
 }
 
 interface PaginatedTokenPage {
@@ -101,16 +102,29 @@ function LiveAge({ dateStr }: { dateStr: string | null | undefined }) {
   return <span>{text || "—"}</span>;
 }
 
-function IntelBadge({ score }: { score?: number }) {
+function qualityTier(score: number, label?: string) {
+  const lbl = label ?? (
+    score >= 82 ? "Elite" : score >= 72 ? "Excellent" : score >= 62 ? "Strong" :
+    score >= 52 ? "Good"  : score >= 40 ? "Average"   : score >= 25 ? "Speculative" : "Weak"
+  );
+  const color =
+    lbl === "Elite"       ? "text-[#a78bfa] bg-[#a78bfa]/10 border-[#a78bfa]/20" :
+    lbl === "Excellent"   ? "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20" :
+    lbl === "Strong"      ? "text-[#10b981] bg-[#10b981]/10 border-[#10b981]/20" :
+    lbl === "Good"        ? "text-[#3b82f6] bg-[#3b82f6]/10 border-[#3b82f6]/20" :
+    lbl === "Average"     ? "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20" :
+    lbl === "Speculative" ? "text-[#f97316] bg-[#f97316]/10 border-[#f97316]/20" :
+                            "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20";
+  return { lbl, color };
+}
+
+function IntelBadge({ score, label }: { score?: number; label?: string }) {
   if (score == null || score === 0) return <span className="text-[#30363d]">—</span>;
-  const tier =
-    score >= 70 ? { label: "HIGH",  color: "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20" } :
-    score >= 45 ? { label: "MED",   color: "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20" } :
-                  { label: "LOW",   color: "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20" };
+  const { lbl, color } = qualityTier(score, label);
   return (
     <div className="flex items-center gap-1.5">
-      <span className={cn("text-[9px] font-bold px-1.5 py-0.5 border tracking-widest", tier.color)}>
-        {tier.label}
+      <span className={cn("text-[9px] font-bold px-1.5 py-0.5 border tracking-widest", color)}>
+        {lbl.toUpperCase()}
       </span>
       <span className="tabular-nums font-bold text-[#c9d1d9]">{Math.round(score)}</span>
     </div>
@@ -494,7 +508,7 @@ export default function Dashboard() {
                   {/* Status */}
                   <td className="px-3 py-3"><StatusBadge status={token.status} /></td>
                   {/* Intelligence */}
-                  <td className="px-3 py-3"><IntelBadge score={token.intelligenceScore} /></td>
+                  <td className="px-3 py-3"><IntelBadge score={token.intelligenceScore} label={token.qualityLabel} /></td>
                   {/* Gain % */}
                   <td className="px-3 py-3">
                     <span className={cn("font-bold tabular-nums", gainColor(token.detectionGainPct))}>

@@ -97,8 +97,12 @@ export const tracked_tokens = pgTable(
     revivalPotential:       real("revival_potential").default(0).notNull(),
     lowLiquidityFlag:       boolean("low_liquidity_flag").default(false).notNull(),
     // ── Intelligence Layer ────────────────────────────────────────────────────
-    // Master intelligence score (0-100) blending 5 signal components
+    // Master intelligence score (0-100) blending 5 signal components with
+    // risk penalties (top10 concentration, micro-cap) and bonuses
     intelligenceScore:      real("intelligence_score").default(0).notNull(),
+    // Human-readable quality tier derived from intelligenceScore
+    // Elite ≥82 | Excellent ≥72 | Strong ≥62 | Good ≥52 | Average ≥40 | Speculative ≥25 | Weak <25
+    qualityLabel:           text("quality_label").default("Weak").notNull(),
     // Sub-scores (0-100 each)
     mcGrowthScore:          real("mc_growth_score").default(0).notNull(),
     volumeIntensityScore:   real("volume_intensity_score").default(0).notNull(),

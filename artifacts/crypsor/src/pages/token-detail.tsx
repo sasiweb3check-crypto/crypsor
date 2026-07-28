@@ -62,6 +62,7 @@ interface TokenDetail {
   holderSmartCount: number;
   lastHoldersUpdatedAt: string | null;
   intelligenceScore?: number;
+  qualityLabel?: string;
   mcGrowthScore?: number;
   volumeIntensityScore?: number;
   holderVelocityScore?: number;
@@ -522,39 +523,62 @@ export default function TokenDetailPage() {
               <div>
                 <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Master Intelligence Score</div>
                 <div className="flex items-center gap-3">
-                  <span className={cn(
-                    "text-4xl font-bold tabular-nums",
-                    (token.intelligenceScore ?? 0) >= 70 ? "text-[#22c55e]" :
-                    (token.intelligenceScore ?? 0) >= 45 ? "text-[#f59e0b]" :
-                    "text-[#ef4444]"
-                  )}>
-                    {Math.round(token.intelligenceScore ?? 0)}
-                  </span>
-                  <span className={cn(
-                    "text-[10px] font-bold px-2 py-1 border tracking-widest",
-                    (token.intelligenceScore ?? 0) >= 70 ? "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20" :
-                    (token.intelligenceScore ?? 0) >= 45 ? "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20" :
-                    "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20"
-                  )}>
-                    {(token.intelligenceScore ?? 0) >= 70 ? "HIGH CONVICTION" :
-                     (token.intelligenceScore ?? 0) >= 45 ? "MODERATE" : "WEAK SIGNAL"}
-                  </span>
+                  {(() => {
+                    const s = token.intelligenceScore ?? 0;
+                    const lbl = token.qualityLabel ?? (
+                      s >= 82 ? "Elite" : s >= 72 ? "Excellent" : s >= 62 ? "Strong" :
+                      s >= 52 ? "Good"  : s >= 40 ? "Average"   : s >= 25 ? "Speculative" : "Weak"
+                    );
+                    const scoreColor =
+                      lbl === "Elite"       ? "text-[#a78bfa]" :
+                      lbl === "Excellent"   ? "text-[#22c55e]" :
+                      lbl === "Strong"      ? "text-[#10b981]" :
+                      lbl === "Good"        ? "text-[#3b82f6]" :
+                      lbl === "Average"     ? "text-[#f59e0b]" :
+                      lbl === "Speculative" ? "text-[#f97316]" : "text-[#ef4444]";
+                    const badgeColor =
+                      lbl === "Elite"       ? "text-[#a78bfa] bg-[#a78bfa]/10 border-[#a78bfa]/20" :
+                      lbl === "Excellent"   ? "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20" :
+                      lbl === "Strong"      ? "text-[#10b981] bg-[#10b981]/10 border-[#10b981]/20" :
+                      lbl === "Good"        ? "text-[#3b82f6] bg-[#3b82f6]/10 border-[#3b82f6]/20" :
+                      lbl === "Average"     ? "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20" :
+                      lbl === "Speculative" ? "text-[#f97316] bg-[#f97316]/10 border-[#f97316]/20" :
+                                              "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20";
+                    const gaugeColor =
+                      lbl === "Elite" ? "#a78bfa" : lbl === "Excellent" ? "#22c55e" :
+                      lbl === "Strong" ? "#10b981" : lbl === "Good" ? "#3b82f6" :
+                      lbl === "Average" ? "#f59e0b" : lbl === "Speculative" ? "#f97316" : "#ef4444";
+                    return (
+                      <>
+                        <span className={cn("text-4xl font-bold tabular-nums", scoreColor)}>
+                          {Math.round(s)}
+                        </span>
+                        <span className={cn("text-[10px] font-bold px-2 py-1 border tracking-widest", badgeColor)}>
+                          {lbl.toUpperCase()}
+                        </span>
+                        {/* store gauge color for SVG below */}
+                        <span style={{ display: "none" }} data-gauge-color={gaugeColor} />
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
               <div className="relative w-16 h-16 shrink-0">
-                <svg viewBox="0 0 56 56" className="w-full h-full -rotate-90">
-                  <circle cx="28" cy="28" r="22" fill="none" stroke="#1c2128" strokeWidth="6" />
-                  <circle
-                    cx="28" cy="28" r="22" fill="none"
-                    stroke={(token.intelligenceScore ?? 0) >= 70 ? "#22c55e" : (token.intelligenceScore ?? 0) >= 45 ? "#f59e0b" : "#ef4444"}
-                    strokeWidth="6"
-                    strokeDasharray={`${((token.intelligenceScore ?? 0) / 100) * 138.2} 138.2`}
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#c9d1d9] tabular-nums rotate-0">
-                  {Math.round(token.intelligenceScore ?? 0)}
-                </div>
+                {(() => {
+                  const s = token.intelligenceScore ?? 0;
+                  const lbl = token.qualityLabel ?? (s >= 82 ? "Elite" : s >= 72 ? "Excellent" : s >= 62 ? "Strong" : s >= 52 ? "Good" : s >= 40 ? "Average" : s >= 25 ? "Speculative" : "Weak");
+                  const gc = lbl === "Elite" ? "#a78bfa" : lbl === "Excellent" ? "#22c55e" : lbl === "Strong" ? "#10b981" : lbl === "Good" ? "#3b82f6" : lbl === "Average" ? "#f59e0b" : lbl === "Speculative" ? "#f97316" : "#ef4444";
+                  return (<>
+                    <svg viewBox="0 0 56 56" className="w-full h-full -rotate-90">
+                      <circle cx="28" cy="28" r="22" fill="none" stroke="#1c2128" strokeWidth="6" />
+                      <circle cx="28" cy="28" r="22" fill="none" stroke={gc} strokeWidth="6"
+                        strokeDasharray={`${(s / 100) * 138.2} 138.2`} strokeLinecap="round" />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#c9d1d9] tabular-nums">
+                      {Math.round(s)}
+                    </div>
+                  </>);
+                })()}
               </div>
             </div>
 
