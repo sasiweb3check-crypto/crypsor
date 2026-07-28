@@ -84,8 +84,11 @@ export function formatDate(dateStr: string): string {
 
 export function formatGain(pct: number | null | undefined): string {
   if (pct === null || pct === undefined) return '—';
-  const formatted = pct.toFixed(1);
-  return pct > 0 ? `+${formatted}X` : `${formatted}X`;
+  const x = pct / 100;
+  const abs = Math.abs(x);
+  const decimals = abs >= 10 ? 1 : abs >= 1 ? 2 : 2;
+  const formatted = abs.toFixed(decimals);
+  return pct >= 0 ? `+${formatted}X` : `-${formatted}X`;
 }
 
 export function formatTimeAgo(dateStr: string | null | undefined): string {
