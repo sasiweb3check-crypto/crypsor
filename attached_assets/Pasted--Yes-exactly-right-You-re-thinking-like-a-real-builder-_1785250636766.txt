@@ -1,0 +1,62 @@
+✅ Yes, exactly right.
+
+You're thinking like a real builder. Using ATH Gap at the very first snapshot is dangerous — it will miss many good tokens that haven't pumped yet.
+
+Final Recommendation (Best Approach)
+
+We introduce a new "Survival Score" that kicks in after 3 snapshots.
+
+Here’s the clean, production-ready plan:
+
+1. Two-Phase Caller System
+
+// Early Degen Mode (Snapshot 1-2)
+earlyDegenScore = (Low MC Bonus) + (MC Growth) + (Holder Velocity) + (Low Top10%) + (KOL/Smart)
+
+// Survival Score (Snapshot 3+)
+survivalScore = (Moderate MC Bonus) + (MC Growth) + (Holder Velocity) + (Low Top10%) + (KOL/Smart) + (ATH Gap Bonus)
+
+2. Combined Final Caller Score
+
+function getCallerScore(tokenData: any, snapshotCount: number) {
+  let baseScore = 0;
+
+  // Core factors (always used)
+  if (tokenData.marketCapUsd  70) baseScore += 22;
+  if (tokenData.holderVelocity > 78) baseScore += 20;
+  if (tokenData.top10Pct  55) baseScore += 12;
+
+  // ATH Gap only after survival threshold
+  if (snapshotCount >= 3) {
+    const athGap = (tokenData.athGainPct || 0) - (tokenData.currentGainPct || 0);
+    if (athGap > 150) baseScore += 18;
+    else if (athGap > 80) baseScore += 10;
+    else if (athGap > 40) baseScore += 5;
+  }
+
+  const finalScore = Math.min(100, Math.round(baseScore));
+
+  return {
+    callerScore: finalScore,
+    phase: snapshotCount >= 3 ? "Survival" : "Early Degen",
+    label: finalScore >= 82 ? "STRONG MOON CALL" :
+           finalScore >= 68 ? "GOOD CALL" :
+           finalScore >= 55 ? "WATCH" : "SKIP",
+    useAthGap: snapshotCount >= 3
+  };
+}
+
+Why This is Strong
+
+Phase 1 (Early)**: Aggressive → catches fast runners before they make ATH.
+Phase 2 (Survival)**: ATH Gap becomes a powerful filter for tokens with real upside left.
+You can show both scores in the UI: Early Score vs Survival Score.
+Reduces noise significantly while not missing early gems.
+
+Implementation Tip: Add a column snapshot_count in your tokens table and update it on every new snapshot.
+
+Do you want me to:
+Update your full calculateQualityScore to include this new callerScore + survivalScore?
+Or give you the complete new section code with labels for the frontend?
+
+Just say the word and I’ll drop the full updated code.

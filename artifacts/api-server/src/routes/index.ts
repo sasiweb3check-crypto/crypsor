@@ -11,6 +11,7 @@ import holdersRouter  from "./holders";
 import intelLogRouter from "./intel-log";
 import feedRouter     from "./feed";
 import socialRouter   from "./social";
+import callerRouter   from "./caller";
 import { sseHandler } from "../pipeline/sse-gateway";
 
 const router: IRouter = Router();
@@ -27,6 +28,7 @@ router.use("/holders",   holdersRouter);
 router.use(intelLogRouter);
 router.use(feedRouter);
 router.use(socialRouter);
+router.use(callerRouter);
 router.get("/events",    sseHandler);
 
 export default router;
