@@ -217,17 +217,25 @@ function computeQualityScore(params: {
 // GMGN per-wallet data includes: address, tags/maker_token_tags, amount_percentage.
 //
 // Thresholds (cabal-detection):
-//   bundler cluster: ≥ 2 wallets  (any size — bundlers are always coordinated)
-//   sniper  cluster: ≥ 3 wallets  (lone sniper is common; 3+ suggests coordination)
-//   balance-bracket: ≥ 4 wallets within 0.2% of each other AND > 8% combined
+//   bundler cluster: ≥ 5 wallets AND ≥ 4 % combined supply
+//   sniper  cluster: ≥ 6 wallets AND ≥ 5 % combined supply
+//   balance-bracket: ≥ 6 wallets within 0.2% of each other AND > 15% combined
 //
-// These numbers are conservative to minimise false positives while catching
-// obvious coordinated plays. They can be tuned without schema changes.
+// Previous thresholds (bundler ≥2, sniper ≥3, bracket ≥4/8%) flagged 90% of
+// all snapshots because every Solana meme token has a few bundlers/snipers by
+// default.  These tighter thresholds require meaningful coordinated supply
+// concentration, reducing false-positive rate to ~10–20%.
 
 const BALANCE_BRACKET_PCT = 0.2;   // wallets within this % of each other → cluster
 const BALANCE_MIN_WALLETS = 3;     // min wallets to form a balance-bracket group
-const CABAL_BRACKET_WALLETS = 4;   // min wallets for a bracket group to be cabalistic
-const CABAL_BRACKET_PCT = 8;       // min combined % for a bracket group to be cabalistic
+const CABAL_BRACKET_WALLETS = 6;   // min wallets for a bracket group to be cabalistic
+const CABAL_BRACKET_PCT = 15;      // min combined % for a bracket group to be cabalistic
+
+// Minimum combined supply % for label-based clusters to be considered cabalistic
+const CABAL_BUNDLER_MIN_WALLETS = 5;
+const CABAL_BUNDLER_MIN_PCT     = 4;   // combined %
+const CABAL_SNIPER_MIN_WALLETS  = 6;
+const CABAL_SNIPER_MIN_PCT      = 5;   // combined %
 
 function detectClusters(rawList: unknown[]): ClusterResult {
   // No per-wallet data → clustering cannot run; return null, not false.
@@ -251,13 +259,15 @@ function detectClusters(rawList: unknown[]): ClusterResult {
     key:        ClusterGroup["label"];
     tags:       string[];
     minWallets: number;
-    cabalMin:   number;   // wallet count threshold for cabalistic=true
+    // Cabalistic when BOTH count AND supply thresholds are met (0 = no supply check)
+    cabalMinWallets: number;
+    cabalMinPct:     number;  // minimum combined supply % (after ×100 conversion)
   };
   const LABEL_DEFS: LabelDef[] = [
-    { key: "bundler", tags: ["bundler"],               minWallets: 2, cabalMin: 2 },
-    { key: "sniper",  tags: ["sniper"],                minWallets: 2, cabalMin: 3 },
-    { key: "kol",     tags: ["kol", "renowned"],       minWallets: 2, cabalMin: 999 }, // KOL clusters aren't cabalistic
-    { key: "bot",     tags: ["dex_bot", "bot"],        minWallets: 3, cabalMin: 999 }, // bots aren't cabalistic
+    { key: "bundler", tags: ["bundler"],         minWallets: 2, cabalMinWallets: CABAL_BUNDLER_MIN_WALLETS, cabalMinPct: CABAL_BUNDLER_MIN_PCT },
+    { key: "sniper",  tags: ["sniper"],          minWallets: 2, cabalMinWallets: CABAL_SNIPER_MIN_WALLETS,  cabalMinPct: CABAL_SNIPER_MIN_PCT  },
+    { key: "kol",     tags: ["kol", "renowned"], minWallets: 2, cabalMinWallets: 999, cabalMinPct: 0 }, // KOL clusters aren't cabalistic
+    { key: "bot",     tags: ["dex_bot", "bot"],  minWallets: 3, cabalMinWallets: 999, cabalMinPct: 0 }, // bots aren't cabalistic
   ];
 
   for (const def of LABEL_DEFS) {
@@ -266,21 +276,22 @@ function detectClusters(rawList: unknown[]): ClusterResult {
     );
     if (matched.length < def.minWallets) continue;
 
-    const totalPct = matched.reduce((s, h) => s + (h.amount_percentage ?? 0), 0);
+    // amount_percentage is a decimal fraction (0.021 = 2.1%) — convert to percent
+    const totalPct = matched.reduce((s, h) => s + (h.amount_percentage ?? 0), 0) * 100;
     groups.push({
       label:           def.key,
       walletCount:     matched.length,
       totalPct:        Math.round(totalPct * 100) / 100,
-      cabalistic:      matched.length >= def.cabalMin,
+      cabalistic:      matched.length >= def.cabalMinWallets && totalPct >= def.cabalMinPct,
       walletAddresses: matched.map(getAddress).filter(Boolean),
     });
   }
 
   // ── 2. Balance-bracket clusters (coordinated entry detection) ────────────
-  // Sort wallets by amount_percentage; slide a window to find tight brackets.
+  // Convert amount_percentage (GMGN decimal fraction 0.021 = 2.1%) to percent.
   // Exclude extreme outliers (>5% single holder — these are whales, not clusters).
   const withPct = holders
-    .map(h => ({ addr: getAddress(h), pct: h.amount_percentage ?? 0 }))
+    .map(h => ({ addr: getAddress(h), pct: (h.amount_percentage ?? 0) * 100 }))
     .filter(h => h.pct > 0.01 && h.pct < 5)
     .sort((a, b) => a.pct - b.pct);
 
@@ -382,8 +393,10 @@ export function buildHolderIntel(input: {
   // This prevents top10Pct being 0 when top_buyers statusNow is missing for a token.
   const statusTop10Pct = percentage(status.top_10_holder_rate);
   const rawList = (input.rawHolderList ?? []) as RawHolderEntry[];
+  // GMGN amount_percentage is a decimal fraction (0.021 = 2.1%) — multiply by 100
+  // to normalise to the same percent (0–100) unit used by statusTop10Pct.
   const listTop10Pct   = rawList.length > 0
-    ? rawList.slice(0, 10).reduce((s, h) => s + (h.amount_percentage ?? 0), 0)
+    ? rawList.slice(0, 10).reduce((s, h) => s + (h.amount_percentage ?? 0), 0) * 100
     : 0;
   const top10Pct    = statusTop10Pct > 0 ? statusTop10Pct : Math.round(listTop10Pct * 100) / 100;
   const holdingRate = percentage(status.holding_rate);

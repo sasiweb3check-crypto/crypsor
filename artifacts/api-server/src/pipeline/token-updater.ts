@@ -49,19 +49,25 @@ function computeSummary(holderList: unknown[]): {
   const sorted = [...holders].sort(
     (a, b) => (b.amount_percentage ?? 0) - (a.amount_percentage ?? 0),
   );
-  const top10Pct = sorted
-    .slice(0, 10)
-    .reduce((s, h) => s + (h.amount_percentage ?? 0), 0)
-    .toFixed(2);
+  // GMGN returns amount_percentage as a decimal fraction (0.021 = 2.1%).
+  // Multiply by 100 to store as a normalised percent (0–100), consistent with
+  // tracked_tokens.holder_top10_pct which uses the status.top_10_holder_rate path.
+  const top10Pct = (
+    sorted.slice(0, 10).reduce((s, h) => s + (h.amount_percentage ?? 0), 0) * 100
+  ).toFixed(2);
 
   const smartMoneyCount = holders.filter(h =>
     allLabels(h).some(l => ["smart_money", "smart_degen"].includes(l)),
   ).length;
 
-  const devHoldPct = holders
-    .filter(h => allLabels(h).includes("dev"))
-    .reduce((s, h) => s + (h.amount_percentage ?? 0), 0)
-    .toFixed(2);
+  // GMGN tags vary by endpoint — check all known creator/dev label variants.
+  // amount_percentage is a fraction (0.021 = 2.1%), multiply by 100 for percent.
+  const DEV_TAGS = ["dev", "creator", "coin_deployer", "project_dev"];
+  const devHoldPct = (
+    holders
+      .filter(h => allLabels(h).some(l => DEV_TAGS.includes(l)))
+      .reduce((s, h) => s + (h.amount_percentage ?? 0), 0) * 100
+  ).toFixed(2);
 
   const totalPnl = holders
     .reduce((s, h) => s + (h.realized_profit ?? 0), 0)
