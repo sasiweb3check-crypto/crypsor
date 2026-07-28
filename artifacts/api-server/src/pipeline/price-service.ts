@@ -156,7 +156,7 @@ export async function fetchPumpFun(address: string): Promise<FreshPrice | null> 
       fdvUsd:        String(mc),
       liquidityUsd:  null,
       volume24hUsd:  null,
-      tokenCreatedAt: coin.created_timestamp ? new Date(coin.created_timestamp * 1000) : null,
+      tokenCreatedAt: coin.created_timestamp ? clampTimestamp(coin.created_timestamp) : null,
     };
   } catch {
     return null;
