@@ -1,0 +1,3 @@
+- [Top10 holder rate source](top10-holder-rate-source.md) — GMGN stat.top10_holder_rate beats RugCheck topHolders for Solana; RugCheck inflates the figure with exchange/locked wallets.
+- [GMGN data fixes](gmgn-data-fixes.md) — Decisions and lessons from GMGN data-gap fix sessions (G1/G4/G3 + headers).
+- [Intelligence weights](intel-weights.md) — Current weights: MC 27% | Vol 25% | HolderVel 22% | KOL/Smart 18% | Liq 8%.

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tracked_tokens, token_buys, token_sells, walletdatasource, token_holders, token_traders, wallet_profiles } from "@workspace/db";
-import { eq, desc, asc, count, sql, and, or, ilike, isNotNull } from "drizzle-orm";
+import { tracked_tokens, token_buys, token_sells, walletdatasource, token_holders, token_traders, wallet_profiles, token_intel_log, token_price_snapshots as tps } from "@workspace/db";
+import { eq, desc, asc, count, sql, and, or, ilike, isNotNull, gte } from "drizzle-orm";
 import { fetchLivePrice } from "../pipeline/price-service";
 import {
   gmgnFetch, nextProxy, persistHolders, CHAIN_MAP, fetchAndPersistHolders,
@@ -808,6 +808,134 @@ router.get("/:id/traders", async (req, res) => {
       traders: dbTraders,
       fetchedAt: newestFetch ?? null,
       _gmgnStatus: tradersRes.status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /api/tokens/:id/history ──────────────────────────────────────────────
+// Returns intel score log + price snapshots for postmortem / timeline view.
+
+router.get("/:id/history", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const [token] = await db
+      .select({
+        id:             tracked_tokens.id,
+        marketCapUsd:   tracked_tokens.marketCapUsd,
+        peakMcUsd:      tracked_tokens.peakMcUsd,
+        athMarketCapUsd: tracked_tokens.athMarketCapUsd,
+        firstDetectedAt: tracked_tokens.firstDetectedAt,
+        status:          tracked_tokens.status,
+      })
+      .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
+    if (!token) return res.status(404).json({ error: "Token not found" });
+
+    const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+    // Fetch intel log (last 100 entries) and price snapshots (last 48h) in parallel
+    const [intelLog, snapshots] = await Promise.all([
+      db.select({
+        computedAt:           token_intel_log.computedAt,
+        intelligenceScore:    token_intel_log.intelligenceScore,
+        prevIntelligenceScore: token_intel_log.prevIntelligenceScore,
+        mcGrowthScore:         token_intel_log.mcGrowthScore,
+        volumeIntensityScore:  token_intel_log.volumeIntensityScore,
+        holderVelocityScore:   token_intel_log.holderVelocityScore,
+        kolSmartScore:         token_intel_log.kolSmartScore,
+        liquidityHealthScore:  token_intel_log.liquidityHealthScore,
+        marketCapUsd:          token_intel_log.marketCapUsd,
+        holderCount:           token_intel_log.holderCount,
+        statusBefore:          token_intel_log.statusBefore,
+        statusAfter:           token_intel_log.statusAfter,
+        statusChanged:         token_intel_log.statusChanged,
+        trigger:               token_intel_log.trigger,
+        ageMultiplier:         token_intel_log.ageMultiplier,
+        tokenAgeHours:         token_intel_log.tokenAgeHours,
+      })
+        .from(token_intel_log)
+        .where(eq(token_intel_log.tokenId, id))
+        .orderBy(desc(token_intel_log.computedAt))
+        .limit(100),
+
+      db.select({
+        snapshotAt:   tps.snapshotAt,
+        marketCapUsd: tps.marketCapUsd,
+        priceUsd:     tps.priceUsd,
+        liquidityUsd: tps.liquidityUsd,
+        volume24hUsd: tps.volume24hUsd,
+      })
+        .from(tps)
+        .where(and(eq(tps.tokenId, id), gte(tps.snapshotAt, since48h)))
+        .orderBy(asc(tps.snapshotAt)),
+    ]);
+
+    // Decimate snapshots to max 200 points for charting
+    const MAX_POINTS = 200;
+    const decimated = snapshots.length <= MAX_POINTS
+      ? snapshots
+      : snapshots.filter((_, i) => i % Math.ceil(snapshots.length / MAX_POINTS) === 0);
+
+    // Rug analysis: find peak from snapshots, measure drawdown and speed
+    const currentMc = token.marketCapUsd ? parseFloat(token.marketCapUsd) : 0;
+    const peakMcNum = token.peakMcUsd ?? (token.athMarketCapUsd ? parseFloat(token.athMarketCapUsd) : 0) ?? 0;
+
+    let rugAnalysis: {
+      peakMcUsd: number | null;
+      currentMcUsd: number | null;
+      drawdownPct: number | null;
+      peakToCurrentHours: number | null;
+      rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering";
+    } = {
+      peakMcUsd: peakMcNum || null,
+      currentMcUsd: currentMc || null,
+      drawdownPct: null,
+      peakToCurrentHours: null,
+      rugSeverity: "stable",
+    };
+
+    if (peakMcNum > 0 && currentMc > 0) {
+      const drawdown = (peakMcNum - currentMc) / peakMcNum;
+      const drawdownPct = Math.round(drawdown * 100 * 10) / 10;
+
+      // Estimate time from first detected to now
+      const totalHours = (Date.now() - token.firstDetectedAt.getTime()) / 3_600_000;
+
+      // Find time of peak in snapshots for better estimate
+      let peakSnap: (typeof decimated)[number] | null = null;
+      let peakVal = 0;
+      for (const s of snapshots) {
+        const mc = s.marketCapUsd ? parseFloat(s.marketCapUsd) : 0;
+        if (mc > peakVal) { peakVal = mc; peakSnap = s; }
+      }
+      const hoursFromPeakToNow = peakSnap
+        ? (Date.now() - new Date(peakSnap.snapshotAt).getTime()) / 3_600_000
+        : null;
+
+      const severity =
+        drawdown > 0.85 ? "rug" :
+        drawdown > 0.60 ? "dump" :
+        drawdown > 0.30 ? "decline" :
+        drawdown < -0.10 ? "recovering" :
+        "stable";
+
+      rugAnalysis = {
+        peakMcUsd: peakMcNum,
+        currentMcUsd: currentMc,
+        drawdownPct,
+        peakToCurrentHours: hoursFromPeakToNow ?? (drawdown > 0.1 ? totalHours : null),
+        rugSeverity: severity,
+      };
+    }
+
+    res.json({
+      snapshots: decimated,
+      intelLog: intelLog.reverse(), // chronological order for charts
+      rugAnalysis,
+      fetchedAt: new Date().toISOString(),
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });

@@ -4,8 +4,12 @@ import {
   ArrowLeft, ExternalLink, Copy, CheckCheck, RefreshCw,
   Clock, TrendingUp, DollarSign, Star, Shield, ChevronLeft, ChevronRight,
   Brain, BarChart3, Users, Zap, Droplets, Lock, Unlock, AlertTriangle,
-  CheckCircle, XCircle, HelpCircle, Flame, Bug, Activity,
+  CheckCircle, XCircle, HelpCircle, Flame, Bug, Activity, FileSearch,
 } from "lucide-react";
+import {
+  AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid, ReferenceLine,
+} from "recharts";
 import { useState, useCallback } from "react";
 import {
   formatTokenPrice, formatGain, formatMarketCap, formatTimeAgo,
@@ -110,6 +114,45 @@ interface SecurityResponse { source: string; security: SecurityData; secFetchedA
 
 interface GmgnResponse {
   holderIntel?: { kolCount?: number; smartCount?: number; holderCount?: number };
+}
+
+interface HistorySnapshot {
+  snapshotAt: string;
+  marketCapUsd: string | null;
+  priceUsd: string | null;
+  liquidityUsd: string | null;
+}
+
+interface IntelLogEntry {
+  computedAt: string;
+  intelligenceScore: number;
+  prevIntelligenceScore: number | null;
+  mcGrowthScore: number;
+  volumeIntensityScore: number;
+  holderVelocityScore: number;
+  kolSmartScore: number;
+  liquidityHealthScore: number;
+  marketCapUsd: string | null;
+  holderCount: number | null;
+  statusBefore: string;
+  statusAfter: string;
+  statusChanged: boolean;
+  trigger: string;
+}
+
+interface RugAnalysis {
+  peakMcUsd: number | null;
+  currentMcUsd: number | null;
+  drawdownPct: number | null;
+  peakToCurrentHours: number | null;
+  rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering";
+}
+
+interface HistoryResponse {
+  snapshots: HistorySnapshot[];
+  intelLog: IntelLogEntry[];
+  rugAnalysis: RugAnalysis;
+  fetchedAt: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -253,7 +296,7 @@ export default function TokenDetailPage() {
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [holderPage, setHolderPage] = useState(1);
-  const [activeTab, setActiveTab] = useState<"holders" | "traders" | "security">("holders");
+  const [activeTab, setActiveTab] = useState<"holders" | "traders" | "security" | "postmortem">("holders");
 
   const BASE = import.meta.env.BASE_URL;
 
@@ -312,6 +355,17 @@ export default function TokenDetailPage() {
     },
     enabled:  id != null && activeTab === "security",
     staleTime: 10 * 60_000,
+  });
+
+  const { data: historyData, isLoading: historyLoading } = useQuery<HistoryResponse>({
+    queryKey: ["token-history", id],
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/tokens/${id}/history`);
+      if (!r.ok) throw new Error(`History API error ${r.status}`);
+      return r.json();
+    },
+    enabled:  id != null && activeTab === "postmortem",
+    staleTime: 2 * 60_000,
   });
 
   const handleRefresh = useCallback(async () => {
@@ -621,11 +675,11 @@ export default function TokenDetailPage() {
               Signal Breakdown
             </div>
             {[
-              { label: "MC Growth",        score: token.mcGrowthScore,         weight: "35%", icon: TrendingUp,  color: "#22c55e" },
+              { label: "MC Growth",        score: token.mcGrowthScore,         weight: "27%", icon: TrendingUp,  color: "#22c55e" },
               { label: "Volume Intensity", score: token.volumeIntensityScore,   weight: "25%", icon: BarChart3,   color: "#60a5fa" },
-              { label: "Holder Velocity",  score: token.holderVelocityScore,    weight: "20%", icon: Users,       color: "#a78bfa" },
-              { label: "KOL / Smart",      score: token.kolSmartScore,          weight: "15%", icon: Zap,         color: "#f59e0b" },
-              { label: "Liquidity Health", score: token.liquidityHealthScore,   weight: "5%",  icon: Droplets,    color: "#34d399" },
+              { label: "Holder Velocity",  score: token.holderVelocityScore,    weight: "22%", icon: Users,       color: "#a78bfa" },
+              { label: "KOL / Smart",      score: token.kolSmartScore,          weight: "18%", icon: Zap,         color: "#f59e0b" },
+              { label: "Liquidity Health", score: token.liquidityHealthScore,   weight: "8%",  icon: Droplets,    color: "#34d399" },
             ].map(({ label, score, weight, icon: Icon, color }) => {
               const s = score ?? 0;
               const barColor = s >= 60 ? "#22c55e" : s >= 40 ? "#f59e0b" : "#ef4444";
@@ -658,30 +712,40 @@ export default function TokenDetailPage() {
 
       {/* Tabs: Holders | Traders | Security */}
       <div>
-        <div className="flex border-b border-[#30363d] mb-4">
-          {(["holders", "traders", "security"] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                "px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px",
-                activeTab === tab
-                  ? "border-[#f59e0b] text-[#f59e0b]"
-                  : "border-transparent text-[#484f58] hover:text-[#8b949e]",
-              )}
-            >
-              {tab === "holders" && <span className="flex items-center gap-1.5"><Users className="w-3 h-3" />{tab}</span>}
-              {tab === "traders" && <span className="flex items-center gap-1.5"><Activity className="w-3 h-3" />{tab}</span>}
-              {tab === "security" && (
-                <span className="flex items-center gap-1.5">
-                  <Shield className="w-3 h-3" />
-                  {tab}
-                  {sec?.isHoneypot === true && <span className="ml-1 text-[#ef4444]">●</span>}
-                  {sec?.isHoneypot === false && sec && (secRisk ?? 0) === 0 && <span className="ml-1 text-[#22c55e]">●</span>}
-                </span>
-              )}
-            </button>
-          ))}
+        <div className="flex border-b border-[#30363d] mb-4 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab("holders")}
+            className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
+              activeTab === "holders" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
+          >
+            <span className="flex items-center gap-1.5"><Users className="w-3 h-3" />Holders</span>
+          </button>
+          <button
+            onClick={() => setActiveTab("traders")}
+            className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
+              activeTab === "traders" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
+          >
+            <span className="flex items-center gap-1.5"><Activity className="w-3 h-3" />Traders</span>
+          </button>
+          <button
+            onClick={() => setActiveTab("security")}
+            className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
+              activeTab === "security" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
+          >
+            <span className="flex items-center gap-1.5">
+              <Shield className="w-3 h-3" />
+              Security
+              {sec?.isHoneypot === true && <span className="ml-1 text-[#ef4444]">●</span>}
+              {sec?.isHoneypot === false && sec && (secRisk ?? 0) === 0 && <span className="ml-1 text-[#22c55e]">●</span>}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab("postmortem")}
+            className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
+              activeTab === "postmortem" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
+          >
+            <span className="flex items-center gap-1.5"><FileSearch className="w-3 h-3" />Postmortem</span>
+          </button>
         </div>
 
         {/* ── Holders Tab ── */}
@@ -882,6 +946,236 @@ export default function TokenDetailPage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Postmortem Tab ── */}
+        {activeTab === "postmortem" && (
+          <div className="space-y-4">
+            <div className="text-[9px] text-[#484f58] uppercase tracking-widest flex items-center gap-2">
+              <FileSearch className="w-3 h-3" />
+              <span>Token Postmortem · Price &amp; Intelligence History</span>
+            </div>
+
+            {historyLoading && (
+              <div className="animate-pulse space-y-2">
+                {Array(4).fill(0).map((_, i) => <div key={i} className="h-24 bg-[#161b22] border border-[#30363d]" />)}
+              </div>
+            )}
+
+            {!historyLoading && historyData && (() => {
+              const { snapshots, intelLog, rugAnalysis } = historyData;
+
+              // Rug severity config
+              const rugCfg: Record<string, { color: string; label: string; bg: string }> = {
+                rug:       { color: "#ef4444", label: "🚨 RUG DETECTED",  bg: "#ef4444/10" },
+                dump:      { color: "#f97316", label: "⚠ MAJOR DUMP",     bg: "#f97316/10" },
+                decline:   { color: "#f59e0b", label: "📉 DECLINING",      bg: "#f59e0b/10" },
+                stable:    { color: "#22c55e", label: "✓ STABLE",          bg: "#22c55e/10" },
+                recovering:{ color: "#a78bfa", label: "↑ RECOVERING",      bg: "#a78bfa/10" },
+              };
+              const sev = rugCfg[rugAnalysis.rugSeverity] ?? rugCfg.stable;
+
+              // Prepare chart data for MC chart
+              const mcChartData = snapshots
+                .filter(s => s.marketCapUsd)
+                .map(s => ({
+                  t: new Date(s.snapshotAt).getTime(),
+                  ts: new Date(s.snapshotAt).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" }),
+                  mc: parseFloat(s.marketCapUsd!),
+                }));
+
+              // Prepare chart data for intel score
+              const scoreChartData = intelLog.map(e => ({
+                t: new Date(e.computedAt).getTime(),
+                ts: new Date(e.computedAt).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" }),
+                score: Math.round(e.intelligenceScore),
+                mc: e.marketCapUsd ? Math.round(parseFloat(e.marketCapUsd)) : null,
+                trigger: e.trigger,
+                status: e.statusAfter,
+              }));
+
+              const fmtMc = (v: number) =>
+                v >= 1_000_000 ? `$${(v/1_000_000).toFixed(1)}M`
+                : v >= 1_000 ? `$${(v/1_000).toFixed(1)}K`
+                : `$${v.toFixed(0)}`;
+
+              return (
+                <>
+                  {/* Rug analysis summary */}
+                  <div className={`border p-4 grid grid-cols-2 md:grid-cols-4 gap-4`}
+                    style={{ borderColor: sev.color + "40", backgroundColor: sev.color + "08" }}>
+                    <div className="col-span-2 md:col-span-4 flex items-center gap-2 mb-1">
+                      <span className="text-[11px] font-bold tracking-widest" style={{ color: sev.color }}>
+                        {sev.label}
+                      </span>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Peak MC</div>
+                      <div className="text-lg font-bold text-[#c9d1d9]">
+                        {rugAnalysis.peakMcUsd ? fmtMc(rugAnalysis.peakMcUsd) : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Current MC</div>
+                      <div className="text-lg font-bold text-[#c9d1d9]">
+                        {rugAnalysis.currentMcUsd ? fmtMc(rugAnalysis.currentMcUsd) : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Drawdown from Peak</div>
+                      <div className="text-lg font-bold" style={{ color: (rugAnalysis.drawdownPct ?? 0) > 50 ? "#ef4444" : (rugAnalysis.drawdownPct ?? 0) > 20 ? "#f59e0b" : "#22c55e" }}>
+                        {rugAnalysis.drawdownPct != null ? `-${rugAnalysis.drawdownPct.toFixed(1)}%` : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Hours since Peak</div>
+                      <div className="text-lg font-bold text-[#c9d1d9]">
+                        {rugAnalysis.peakToCurrentHours != null ? `${rugAnalysis.peakToCurrentHours.toFixed(1)}h` : "—"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* MC chart */}
+                  {mcChartData.length > 2 && (
+                    <div className="border border-[#30363d] bg-[#0d1117]">
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest px-4 py-2 border-b border-[#30363d] bg-[#161b22] flex items-center gap-2">
+                        <TrendingUp className="w-3 h-3" />
+                        Market Cap Timeline (48h)
+                        <span className="text-[#30363d]">· {mcChartData.length} snapshots</span>
+                      </div>
+                      <div className="p-3">
+                        <ResponsiveContainer width="100%" height={160}>
+                          <AreaChart data={mcChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="mcGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%"  stopColor="#f59e0b" stopOpacity={0.25} />
+                                <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1c2128" />
+                            <XAxis dataKey="ts" tick={{ fontSize: 8, fill: "#484f58" }} interval="preserveStartEnd" />
+                            <YAxis tickFormatter={fmtMc} tick={{ fontSize: 8, fill: "#484f58" }} width={52} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: "#161b22", border: "1px solid #30363d", borderRadius: 0, fontSize: 11 }}
+                              formatter={(v: number) => [fmtMc(v), "Market Cap"]}
+                              labelStyle={{ color: "#8b949e" }}
+                            />
+                            <Area type="monotone" dataKey="mc" stroke="#f59e0b" strokeWidth={1.5}
+                              fill="url(#mcGrad)" dot={false} />
+                            {rugAnalysis.peakMcUsd && (
+                              <ReferenceLine y={rugAnalysis.peakMcUsd} stroke="#ef4444" strokeDasharray="4 2"
+                                label={{ value: "Peak", position: "insideTopRight", fontSize: 8, fill: "#ef4444" }} />
+                            )}
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Intel score chart */}
+                  {scoreChartData.length > 1 && (
+                    <div className="border border-[#30363d] bg-[#0d1117]">
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest px-4 py-2 border-b border-[#30363d] bg-[#161b22] flex items-center gap-2">
+                        <Brain className="w-3 h-3" />
+                        Intelligence Score History
+                        <span className="text-[#30363d]">· {scoreChartData.length} entries</span>
+                      </div>
+                      <div className="p-3">
+                        <ResponsiveContainer width="100%" height={130}>
+                          <LineChart data={scoreChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1c2128" />
+                            <XAxis dataKey="ts" tick={{ fontSize: 8, fill: "#484f58" }} interval="preserveStartEnd" />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 8, fill: "#484f58" }} width={28} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: "#161b22", border: "1px solid #30363d", borderRadius: 0, fontSize: 11 }}
+                              formatter={(v: number, _: string, props: { payload?: { status?: string; trigger?: string } }) => [
+                                `${v} (${props.payload?.status ?? ""})`,
+                                "Intel Score",
+                              ]}
+                              labelStyle={{ color: "#8b949e" }}
+                            />
+                            <ReferenceLine y={55} stroke="#484f58" strokeDasharray="3 3" label={{ value: "55", fontSize: 8, fill: "#484f58" }} />
+                            <Line type="monotone" dataKey="score" stroke="#a78bfa" strokeWidth={2} dot={{ r: 2, fill: "#a78bfa" }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Intel log table */}
+                  {intelLog.length > 0 && (
+                    <div className="border border-[#30363d] bg-[#0d1117]">
+                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest px-4 py-2 border-b border-[#30363d] bg-[#161b22]">
+                        Score Log — {intelLog.length} entries (most recent first)
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-[10px] whitespace-nowrap">
+                          <thead>
+                            <tr className="border-b border-[#30363d] bg-[#161b22]">
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-left">Time</th>
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-right">Score</th>
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-right">Δ</th>
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-right">MC</th>
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-left">Status</th>
+                              <th className="px-3 py-2 text-[9px] text-[#484f58] uppercase tracking-widest text-left">Trigger</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[...intelLog].reverse().map((e, i) => {
+                              const delta = e.prevIntelligenceScore != null
+                                ? Math.round((e.intelligenceScore - e.prevIntelligenceScore) * 10) / 10
+                                : null;
+                              const deltaColor = delta == null ? "#484f58" : delta > 0 ? "#22c55e" : delta < 0 ? "#ef4444" : "#484f58";
+                              const scoreColor =
+                                e.intelligenceScore >= 62 ? "#22c55e" :
+                                e.intelligenceScore >= 40 ? "#f59e0b" : "#ef4444";
+                              return (
+                                <tr key={i} className={cn(
+                                  "border-b border-[#30363d]/50 hover:bg-[#1c2128] transition-colors",
+                                  e.statusChanged ? "bg-[#f59e0b]/5" : i % 2 === 0 ? "bg-[#0d1117]" : "bg-[#161b22]/20",
+                                )}>
+                                  <td className="px-3 py-2 text-[#484f58] font-mono">
+                                    {new Date(e.computedAt).toLocaleString("en", {
+                                      month: "short", day: "numeric",
+                                      hour: "2-digit", minute: "2-digit",
+                                    })}
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-bold tabular-nums" style={{ color: scoreColor }}>
+                                    {Math.round(e.intelligenceScore)}
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-bold tabular-nums" style={{ color: deltaColor }}>
+                                    {delta == null ? "—" : delta > 0 ? `+${delta}` : String(delta)}
+                                  </td>
+                                  <td className="px-3 py-2 text-right text-[#8b949e] tabular-nums">
+                                    {e.marketCapUsd ? fmtMc(parseFloat(e.marketCapUsd)) : "—"}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {e.statusChanged
+                                      ? <span className="text-[#f59e0b] font-bold text-[9px] tracking-widest">{e.statusBefore} → {e.statusAfter}</span>
+                                      : <span className="text-[#484f58]">{e.statusAfter}</span>
+                                    }
+                                  </td>
+                                  <td className="px-3 py-2 text-[#484f58] capitalize">{e.trigger.replace("_", " ")}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {mcChartData.length === 0 && intelLog.length === 0 && (
+                    <div className="text-center py-12 text-[#484f58] text-[11px] border border-[#30363d] bg-[#0d1117]">
+                      <FileSearch className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                      <p>No history data yet.</p>
+                      <p className="mt-1 text-[10px]">Price snapshots build up over time. Check back after the next scan cycle.</p>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 

@@ -421,9 +421,19 @@ export async function fetchTokenSecurity(
   const stat = (statRes.data as any)?.data ?? {};
 
   // ── Build security object ─────────────────────────────────────────────────
-  const top10Rate = rugReport?.topHolders?.length
-    ? rugReport.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct ?? 0), 0) / 100
-    : null;
+  // Prefer GMGN token_holder_stat top10_holder_rate — it matches on-chain data
+  // more accurately than RugCheck's topHolders list (which can include locked /
+  // exchange wallets and inflates the figure). Fall back to RugCheck only when
+  // GMGN doesn't provide the field.
+  let top10Rate: number | null = null;
+  const gmgnTop10Raw = stat?.top10_holder_rate;
+  if (gmgnTop10Raw != null && typeof gmgnTop10Raw === "number" && isFinite(gmgnTop10Raw)) {
+    // GMGN returns this as a fraction (0–1)
+    top10Rate = gmgnTop10Raw > 1 ? gmgnTop10Raw / 100 : gmgnTop10Raw;
+  } else if (rugReport?.topHolders?.length) {
+    // RugCheck topHolders[].pct is a percentage (0–100); convert to fraction
+    top10Rate = rugReport.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct ?? 0), 0) / 100;
+  }
 
   const rugScore  = rugReport?.score_normalised ?? null;
   // risks is an array; presence of a "Honeypot" risk indicates honeypot

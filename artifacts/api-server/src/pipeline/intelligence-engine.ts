@@ -34,11 +34,11 @@ const log = logger.child({ module: "intelligence-engine" });
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const WEIGHTS = {
-  mcGrowth:     0.30,  // reduced from 0.35 — noisy for very early tokens
+  mcGrowth:     0.27,  // reduced from 0.30 — sheds 3 pts to fund KOL/Smart bump
   volume:       0.25,
-  holderVel:    0.22,  // increased from 0.20 — strong leading indicator
-  kolSmart:     0.15,  // increased from 0.12 — benefits from G4 flow fix
-  liquidity:    0.08,  // unchanged — now more useful after G1 virtual-liq fix
+  holderVel:    0.22,  // strong leading indicator
+  kolSmart:     0.18,  // increased from 0.15 — KOL/smart signal is high conviction
+  liquidity:    0.08,
 } as const;
 
 const GRADUATION_SCORE_THRESHOLD = 55;
