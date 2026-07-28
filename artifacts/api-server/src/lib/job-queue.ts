@@ -151,9 +151,16 @@ export class PipelineQueue {
       backoff:  { type: "exponential", delay: 2_000 },
     };
 
-    // BullMQ rejects job IDs containing ":" (reserved for its repeat key format).
-    // Sanitize by replacing colons with hyphens to preserve uniqueness.
-    if (opts.dedupKey)                   jobOpts.jobId    = opts.dedupKey.replace(/:/g, "-");
+    if (opts.dedupKey) {
+      // BullMQ rejects job IDs containing ":" (reserved for its repeat key format).
+      // Sanitize by replacing colons with hyphens to preserve uniqueness.
+      jobOpts.jobId = opts.dedupKey.replace(/:/g, "-");
+      // Remove completed jobs immediately so the same jobId can be re-enqueued
+      // after completion (otherwise BullMQ returns the stale completed record and
+      // skips creating new work for the same token).
+      jobOpts.removeOnComplete = true;
+      jobOpts.removeOnFail     = true;
+    }
     if (opts.priority !== undefined)     jobOpts.priority = Math.max(1, 100 - opts.priority);
     if (opts.delayMs  && opts.delayMs > 0) jobOpts.delay  = opts.delayMs;
 
