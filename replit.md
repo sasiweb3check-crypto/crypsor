@@ -39,6 +39,7 @@ Two workflows run in parallel:
 |---|---|
 | `AIVEN_REDIS_URL` | Redis connection string (`redis://` or `rediss://`) for BullMQ job queues and pub/sub |
 | `HELIUS_API_KEY` | Helius API key for Solana RPC / wallet transaction data |
+| `AIVEN_DATABASE_URL` | Aiven PostgreSQL connection string |
 
 PostgreSQL is provided automatically by Replit (`DATABASE_URL`).
 
