@@ -140,8 +140,15 @@ type RawHolderEntry = {
   address?:          string;
   account_address?:  string;
   amount_percentage?: number | null;
+  balance?:          number | null;
   tags?:             string[];
   maker_token_tags?: string[];
+  // Buy/sell tx counts present in GMGN /vas/api/v1/token_holders responses —
+  // used by the G4 flow-synthesis fallback when top_buyers data is unavailable.
+  buy_tx_count_cur?:  number | null;
+  sell_tx_count_cur?: number | null;
+  buy_count?:         number | null;
+  sell_count?:        number | null;
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -357,10 +364,29 @@ export function buildHolderIntel(input: {
   const status    = top?.statusNow ?? {};
 
   // ── Flow counts (GMGN top-buyers activity) ────────────────────────────────
-  const hold       = Math.round(numberValue(status.hold));
-  const boughtMore = Math.round(numberValue(status.bought_more));
-  const soldPart   = Math.round(numberValue(status.sold_part));
-  const sold       = Math.round(numberValue(status.sold));
+  // Primary source: statusNow from the top-buyers endpoint.
+  // G4 fix: that endpoint was retired by GMGN, so statusNow is always empty.
+  // When primary data is absent we fall back to synthesising flow from the
+  // per-wallet buy/sell tx counts already present in the holder list itself.
+  let hold       = Math.round(numberValue(status.hold));
+  let boughtMore = Math.round(numberValue(status.bought_more));
+  let soldPart   = Math.round(numberValue(status.sold_part));
+  let sold       = Math.round(numberValue(status.sold));
+
+  // G4 fallback: derive hold/bought/soldPart/sold from per-wallet tx counts.
+  // Runs only when the primary source returns all zeros (retired endpoint).
+  if (hold + boughtMore + soldPart + sold === 0 && rawList.length > 0) {
+    for (const h of rawList) {
+      const buys  = Math.round(numberValue(h.buy_tx_count_cur ?? h.buy_count));
+      const sells = Math.round(numberValue(h.sell_tx_count_cur ?? h.sell_count));
+      const hasBal = (h.amount_percentage ?? 0) > 0 || (h.balance ?? 0) > 0;
+      if      (buys === 0 && sells === 0) { hold++; }        // no tx data → count as hold
+      else if (sells === 0)               { hold++; }        // only bought, still in
+      else if (buys > sells && hasBal)    { boughtMore++; }  // net accumulator, still in
+      else if (hasBal)                    { soldPart++; }    // partial exit, still holding
+      else                                { sold++; }        // fully exited
+    }
+  }
 
   const rawFlowSum = hold + boughtMore + soldPart + sold;
   const noActivity = rawFlowSum === 0;

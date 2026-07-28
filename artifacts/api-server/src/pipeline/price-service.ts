@@ -155,12 +155,31 @@ export async function fetchPumpFun(address: string): Promise<FreshPrice | null> 
     const mc    = coin.usd_market_cap;
     const price = (mc / 1_000_000_000).toFixed(12);
 
+    // G1 fix: derive virtual liquidity from bonding curve reserves for pre-graduation tokens.
+    // Formula: virtual_liq_usd = 2 × (vsr_lamports/1e9) × sol_price_usd
+    //   where sol_price_usd = mc_usd / (vtr_raw/1e6) / 1e9
+    //   simplifies to: 2 × mc × virtual_token_reserves / 1e15
+    // Only computed for tokens still on the bonding curve (not yet on Raydium).
+    let liquidityUsd: string | null = null;
+    if (
+      !coin.complete &&
+      !coin.raydium_pool &&
+      coin.virtual_sol_reserves != null &&
+      coin.virtual_token_reserves != null &&
+      coin.virtual_token_reserves > 0
+    ) {
+      const virtualLiq = 2 * mc * coin.virtual_token_reserves / 1e15;
+      if (isFinite(virtualLiq) && virtualLiq > 0) {
+        liquidityUsd = String(Math.round(virtualLiq));
+      }
+    }
+
     return {
       price,
       logo:          coin.image_uri ?? null,
       marketCapUsd:  String(mc),
       fdvUsd:        String(mc),
-      liquidityUsd:  null,
+      liquidityUsd,
       volume24hUsd:  null,
       tokenCreatedAt: coin.created_timestamp ? clampTimestamp(coin.created_timestamp) : null,
     };

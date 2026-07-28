@@ -45,6 +45,12 @@ const GMGN_HEADERS: Record<string, string> = {
   "Pragma":           "no-cache",
 };
 
+// Inject API key when present — primarily for rate-limit elevation, not endpoint auth.
+const _gmgnApiKey = process.env.GMGN_API_KEY;
+if (_gmgnApiKey) {
+  GMGN_HEADERS["X-API-KEY"] = _gmgnApiKey;
+}
+
 // ── Proxy pool ────────────────────────────────────────────────────────────────
 // Set GMGN_PROXIES to a comma-separated list of proxy URLs, e.g.:
 //   GMGN_PROXIES="http://user:pass@host1:port,socks5://host2:port"
