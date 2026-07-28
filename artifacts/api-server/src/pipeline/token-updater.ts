@@ -62,7 +62,8 @@ function computeSummary(holderList: unknown[]): {
 
   // GMGN tags vary by endpoint — check all known creator/dev label variants.
   // amount_percentage is a fraction (0.021 = 2.1%), multiply by 100 for percent.
-  const DEV_TAGS = ["dev", "creator", "coin_deployer", "project_dev"];
+  // B3 fix: expanded tag list to cover all known GMGN creator/deployer tag variants.
+  const DEV_TAGS = ["dev", "creator", "coin_deployer", "project_dev", "deployer", "token_deployer", "team"];
   const devHoldPct = (
     holders
       .filter(h => allLabels(h).some(l => DEV_TAGS.includes(l)))

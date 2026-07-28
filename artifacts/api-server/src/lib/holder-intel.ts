@@ -185,12 +185,16 @@ function computeQualityScore(params: {
 }): number {
   const base = Math.max(params.holderCount, 1);
 
-  const smartRatio   = params.smartCount   / base;
-  const kolRatio     = params.kolCount     / base;
-  const sniperRatio  = params.sniperCount  / base;
-  const freshRatio   = params.freshCount   / base;
-  const botRatio     = params.botCount     / base;
-  const bundlerRatio = params.bundlerCount / base;
+  // B2 fix: clamp ratios to [0, 1] — label counts come from the full GMGN stat
+  // endpoint (all wallets ever) while holderCount is capped at the top-200 fetch,
+  // so sub-counts can legitimately exceed holderCount.  Without clamping the ratios
+  // exceed 1 and the score becomes nonsensical.
+  const smartRatio   = Math.min(params.smartCount   / base, 1);
+  const kolRatio     = Math.min(params.kolCount     / base, 1);
+  const sniperRatio  = Math.min(params.sniperCount  / base, 1);
+  const freshRatio   = Math.min(params.freshCount   / base, 1);
+  const botRatio     = Math.min(params.botCount     / base, 1);
+  const bundlerRatio = Math.min(params.bundlerCount / base, 1);
 
   // Concentration bonus: decentralised top10 is healthier
   const lowTop10Bonus = params.top10Pct < 25 ? 10 : params.top10Pct < 40 ? 5 : 0;
@@ -424,8 +428,14 @@ export function buildHolderIntel(input: {
     ? 0
     : netAccumulationRatio * 60 + qualityMultiplier * 40;
 
-  const momentumScore   = Math.max(-100, Math.min(100, Math.round(momentumScoreRaw)));
-  const momentumScoreV2 = momentumScore; // same formula; dedicated v2 column
+  // v1 (legacy): pure net-flow signal — kept for backward compat / historical comparison.
+  // Scores every token purely on buy/sell ratio; ignores holder quality entirely.
+  const momentumScore = noActivity
+    ? 0
+    : Math.max(-100, Math.min(100, Math.round(netAccumulationRatio * 100)));
+
+  // v2 (canonical): 60% flow + 40% quality blend — the signal to use for all decisions.
+  const momentumScoreV2 = Math.max(-100, Math.min(100, Math.round(momentumScoreRaw)));
 
   // ── Cluster / cabal detection ─────────────────────────────────────────────
   const clusters = detectClusters(input.rawHolderList ?? []);
@@ -460,7 +470,7 @@ export function buildHolderIntel(input: {
     qualityScore,
     momentumScore,
     momentumScoreV2,
-    momentumLabel: momentumLabel(momentumScore),
+    momentumLabel: momentumLabel(momentumScoreV2), // label driven by the canonical v2 score
     noActivity,
     bundlerSupplyPct,
     holdersAnalyzedCount,

@@ -34,6 +34,9 @@ const INITIAL_FETCH_COOLDOWN = 5 * 60_000;  // max one initial fetch per 5 min p
 
 // In-memory cooldown: prevents duplicate initial fetches per token
 const lastInitialFetch = new Map<number, number>();
+// Tracks which tokens have already had a discovery snapshot so subsequent
+// token:bought events use "post_buy" instead of "discovery" (G5 fix).
+const discoveredTokens = new Set<number>();
 
 // ── Job data shape ────────────────────────────────────────────────────────────
 
@@ -225,6 +228,12 @@ async function scheduleInitialFetch(e: TokenBoughtEvent): Promise<void> {
     if (!rows.length) return;
     const token = rows[0];
 
+    // G5 fix: first ever token:bought → "discovery"; subsequent buys → "post_buy".
+    // discoveredTokens persists in-process so restarts reset to "discovery" for
+    // any token not yet seen this session, which is acceptable.
+    const snapshotType = discoveredTokens.has(e.tokenId) ? "post_buy" : "discovery";
+    discoveredTokens.add(e.tokenId);
+
     pipelineQueue.enqueue<HoldersJobData>(
       "holders",
       {
@@ -234,11 +243,11 @@ async function scheduleInitialFetch(e: TokenBoughtEvent): Promise<void> {
         name:         token.name,
         symbol:       token.symbol,
         marketCapUsd: token.marketCapUsd,
-        snapshotType: "discovery",
+        snapshotType,
       },
       {
-        priority: 10,          // high-priority — new discovery
-        dedupKey: `holders:${e.tokenId}`,
+        priority: snapshotType === "post_buy" ? 8 : 10, // discovery > post_buy priority
+        dedupKey: `holders:${e.tokenId}:${snapshotType}`,
         delayMs:  INITIAL_FETCH_DELAY,
       },
     );

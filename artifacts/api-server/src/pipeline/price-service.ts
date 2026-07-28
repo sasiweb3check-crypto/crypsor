@@ -13,11 +13,17 @@ const PG_TS_MIN_MS = new Date("4713-01-01T00:00:00Z").getTime() * -1; // ~approx
  * Convert a Unix-second timestamp from DexScreener to a Date, clamping to
  * PostgreSQL's supported timestamp range.  DexScreener sometimes returns
  * millisecond timestamps or wildly out-of-range values that crash the DB.
+ *
+ * B6 fix: also reject timestamps more than 1 hour in the future — DexScreener
+ * pairCreatedAt can reflect the Raydium pool creation time, which for some
+ * migrated tokens is set to a future date and produces negative detection delays.
  */
 function clampTimestamp(raw: number): Date | null {
   // DexScreener pairCreatedAt is in seconds; detect ms values (> year 3000 in seconds)
   const ms = raw > 32_503_680_000 ? raw : raw * 1_000;
   if (!isFinite(ms) || ms < PG_TS_MIN_MS || ms > PG_TS_MAX_MS) return null;
+  // Reject timestamps more than 1 hour in the future (bad DexScreener data)
+  if (ms > Date.now() + 60 * 60 * 1_000) return null;
   return new Date(ms);
 }
 

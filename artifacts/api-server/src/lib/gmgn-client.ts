@@ -58,9 +58,36 @@ const PROXY_POOL: string[] = (process.env.GMGN_PROXIES ?? "")
 
 let proxyCursor = 0;
 
-/** Round-robin pick from pool; returns undefined when no pool is configured. */
+// ── Per-proxy 429 cooldown (G2 fix) ──────────────────────────────────────────
+// When a proxy (or direct) gets a 429 we mark it as rate-limited for
+// PROXY_COOLDOWN_MS.  nextProxy() skips proxies that are still cooling down.
+// "direct" key is used when no proxy pool is configured.
+const PROXY_COOLDOWN_MS = 90_000;  // 90 s cooldown per proxy after 429
+const proxyRateLimitedUntil = new Map<string, number>();
+
+export function markProxyRateLimited(proxy: string | undefined): void {
+  const key = proxy ?? "direct";
+  proxyRateLimitedUntil.set(key, Date.now() + PROXY_COOLDOWN_MS);
+  log.warn({ proxy: key, cooldownSec: PROXY_COOLDOWN_MS / 1000 },
+    "GMGN: proxy rate-limited, entering cooldown");
+}
+
+function isProxyCoolingDown(proxy: string | undefined): boolean {
+  const until = proxyRateLimitedUntil.get(proxy ?? "direct") ?? 0;
+  return Date.now() < until;
+}
+
+/** Round-robin pick from pool, skipping proxies that are still cooling down.
+ *  Returns undefined when no pool is configured or all proxies are cooling down. */
 export function nextProxy(): string | undefined {
   if (PROXY_POOL.length === 0) return undefined;
+  // Try each proxy in round-robin order; skip ones in cooldown
+  for (let i = 0; i < PROXY_POOL.length; i++) {
+    const proxy = PROXY_POOL[proxyCursor % PROXY_POOL.length];
+    proxyCursor++;
+    if (!isProxyCoolingDown(proxy)) return proxy;
+  }
+  // All proxies are cooling down — advance cursor anyway and return the least-stale one
   const proxy = PROXY_POOL[proxyCursor % PROXY_POOL.length];
   proxyCursor++;
   return proxy;
@@ -104,24 +131,30 @@ export async function gmgnFetchOnce(url: string, proxy?: string): Promise<GmgnRe
  * Fetch with proxy rotation.  Pass `stickyProxy` to pin all calls in a
  * single request to the same exit IP (avoids Cloudflare multi-IP signals).
  * Retries up to maxAttempts times rotating through the pool on block/error.
- * With no pool configured, retries up to 3 times on 429 with exponential
- * backoff (2 s → 4 s → 8 s) before giving up.
+ *
+ * G2 fix: per-proxy 429 cooldowns + longer backoff.
+ * - Each proxy that returns 429 is marked cooling-down for 90 s.
+ * - Backoff between retries: 5 s → 15 s → 30 s (was 2 s → 4 s → 8 s).
+ * - With no proxy pool and sustained 429s, all 3 attempts back off before failing.
  */
 export async function gmgnFetch(
   url: string,
   stickyProxy?: string,
 ): Promise<GmgnResult> {
-  // With a proxy pool rotate proxies; without one, allow up to 3 attempts
-  // only when we're being rate-limited (429), with exponential back-off.
   const maxAttempts = PROXY_POOL.length > 0 ? Math.min(3, PROXY_POOL.length) : 3;
+  // Backoff schedule: 5 s, 15 s, 30 s
+  const BACKOFFS = [5_000, 15_000, 30_000];
   let last: GmgnResult | undefined;
   for (let i = 0; i < maxAttempts; i++) {
     const proxy = i === 0 ? stickyProxy : nextProxy();
     last = await gmgnFetchOnce(url, proxy);
     if (last.ok) return last;
     if (last.status === 429) {
-      // Exponential back-off: 2 s, 4 s, 8 s
-      const delay = Math.min(2_000 * Math.pow(2, i), 8_000);
+      // Mark this proxy as rate-limited so nextProxy() skips it next time
+      markProxyRateLimited(proxy);
+      const delay = BACKOFFS[Math.min(i, BACKOFFS.length - 1)];
+      log.warn({ url, attempt: i + 1, delaySec: delay / 1000, proxy: proxy ?? "direct" },
+        "GMGN: 429 rate-limited, backing off");
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
