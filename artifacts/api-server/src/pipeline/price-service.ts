@@ -301,10 +301,15 @@ export async function refreshAllPrices(): Promise<void> {
 
 /**
  * Start the price service.
- * Periodic refresh runs every 20 s with an 8 s initial delay.
+ * Periodic refresh runs every 20 s after the previous run completes (no overlap).
+ * Initial delay is 8 s to allow other services to settle.
  */
 export function startPriceService() {
-  const run = () => { refreshAllPrices().catch(err => logger.warn({ err }, "Price refresh failed")); };
-  setTimeout(() => { run(); setInterval(run, 20_000); }, 8_000);
+  const loop = () => {
+    refreshAllPrices()
+      .catch(err => logger.warn({ err }, "Price refresh failed"))
+      .finally(() => setTimeout(loop, 20_000));
+  };
+  setTimeout(loop, 8_000);
   logger.info("Price service ready (20 s cycle; DexScreener + PumpFun + CoinGecko)");
 }

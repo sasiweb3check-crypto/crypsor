@@ -10,7 +10,7 @@
  *                     `complete` boolean at byte offset 48 in the account data
  *   3. DexScreener  — presence of a Raydium pair for the mint
  *
- * Periodic refresh is driven by a BullMQ repeatable job (`migration:check`).
+ * Periodic refresh runs every 90 s after the previous pass completes.
  */
 
 import { createHash } from "crypto";
@@ -177,7 +177,7 @@ async function getHeliusKey(): Promise<string | null> {
 
 /**
  * Check migration status for all un-migrated Solana tokens.
- * Called by BullMQ pipeline-scheduler every 90 s.
+ * Called by the periodic loop in startMigrationChecker every 90 s.
  */
 export async function refreshMigrationStatuses(): Promise<void> {
   const tokens = await db
@@ -209,10 +209,15 @@ export async function refreshMigrationStatuses(): Promise<void> {
 
 /**
  * Start the migration checker.
- * Periodic refresh runs every 90 s with a 15 s initial delay.
+ * Periodic refresh runs every 90 s after the previous pass completes.
+ * Initial delay is 15 s to allow wallet scanner to settle.
  */
 export function startMigrationChecker() {
-  const run = () => { refreshMigrationStatuses().catch(err => logger.warn({ err }, "Migration check failed")); };
-  setTimeout(() => { run(); setInterval(run, 90_000); }, 15_000);
+  const loop = () => {
+    refreshMigrationStatuses()
+      .catch(err => logger.warn({ err }, "Migration check failed"))
+      .finally(() => setTimeout(loop, 90_000));
+  };
+  setTimeout(loop, 15_000);
   logger.info("Migration checker ready (90 s cycle; PumpFun + Helius RPC + DexScreener)");
 }

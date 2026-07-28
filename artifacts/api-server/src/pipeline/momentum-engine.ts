@@ -157,7 +157,7 @@ async function updateMomentumOnBuy(e: TokenBoughtEvent): Promise<void> {
 }
 
 // ── Full batch refresh (all tokens) ──────────────────────────────────────────
-// Called by the BullMQ pipeline-scheduler every 5 minutes.
+// Scheduled every 5 minutes by the periodic loop in startMomentumEngine.
 
 export async function refreshAllMomentum(): Promise<void> {
   try {
@@ -234,11 +234,16 @@ export async function refreshAllMomentum(): Promise<void> {
 
 /**
  * Start the momentum engine.
- * Periodic batch refresh runs every 5 minutes; event-driven updates fire immediately.
+ * Periodic batch refresh runs every 5 minutes after the previous run completes.
+ * Event-driven per-buy updates fire immediately via the event bus.
  */
 export function startMomentumEngine() {
   eventBus.on("token:bought", (e) => { updateMomentumOnBuy(e).catch(() => {}); });
-  const run = () => { refreshAllMomentum().catch(err => logger.warn({ err }, "Momentum batch refresh failed")); };
-  setInterval(run, 300_000);
+  const loop = () => {
+    refreshAllMomentum()
+      .catch(err => logger.warn({ err }, "Momentum batch refresh failed"))
+      .finally(() => setTimeout(loop, 300_000));
+  };
+  setTimeout(loop, 300_000);
   logger.info("Momentum engine started (event-driven buy updates + 5 min batch refresh)");
 }

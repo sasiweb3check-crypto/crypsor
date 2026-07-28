@@ -139,8 +139,11 @@ export class PipelineQueue {
 
   /**
    * Add a job to the named queue.
-   * Always returns true — BullMQ silently deduplicates by jobId so we cannot
-   * determine synchronously whether the job was enqueued or skipped.
+   * Returns true always — BullMQ deduplication is async so we cannot determine
+   * synchronously whether the job was enqueued or skipped. Callers that tracked
+   * enqueued vs skipped counts should treat every call as enqueued; actual dedup
+   * is enforced by BullMQ ignoring a second add() with the same jobId while a
+   * job with that ID is still waiting or active.
    */
   enqueue<T>(name: QueueName, data: T, opts: EnqueueOptions = {}): boolean {
     const queue = this.queues.get(name)!;

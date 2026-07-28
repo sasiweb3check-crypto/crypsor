@@ -12,8 +12,7 @@
  *   15% KOL / Smart      — quality-weighted smart-money signal
  *    5% Liquidity Health  — LP stability / adequate depth
  *
- * Periodic refresh is driven by a BullMQ repeatable job (`intelligence:run`)
- * rather than an in-process setInterval.
+ * Periodic refresh runs every 5 minutes after the previous pass completes.
  */
 
 import { db } from "@workspace/db";
@@ -377,7 +376,7 @@ export async function refreshAllIntelligence(): Promise<void> {
         log.info({ tokenId: t.id, intelligenceScore }, "Token graduated to active via intelligence score");
         eventBus.emit("price:updated", {
           tokenId: t.id, tokenAddress: "", chain: "",
-          priceUsd: null, marketCapUsd: t.marketCapUsd ?? null, athPriceUsd: null,
+          priceUsd: "", marketCapUsd: t.marketCapUsd ?? null, athPriceUsd: "",
         });
       } else if (t.status === "new") {
         if (newConsecutive > 0) graduationPending.set(t.id, newConsecutive);
@@ -433,11 +432,15 @@ export async function refreshAllIntelligence(): Promise<void> {
 
 /**
  * Start the intelligence engine.
- * Periodic refresh runs every 5 minutes.
+ * Periodic refresh runs every 5 minutes after the previous pass completes (no overlap).
  */
 export function startIntelligenceEngine() {
-  const run = () => { refreshAllIntelligence().catch(err => logger.warn({ err }, "Intelligence refresh failed")); };
-  setInterval(run, 300_000);
+  const loop = () => {
+    refreshAllIntelligence()
+      .catch(err => logger.warn({ err }, "Intelligence refresh failed"))
+      .finally(() => setTimeout(loop, 300_000));
+  };
+  setTimeout(loop, 300_000);
   logger.info(
     `Intelligence engine ready (5 min cycle) — weights: MC ${WEIGHTS.mcGrowth * 100}% | Vol ${WEIGHTS.volume * 100}% | HolderVel ${WEIGHTS.holderVel * 100}% | KOL/Smart ${WEIGHTS.kolSmart * 100}% | Liq ${WEIGHTS.liquidity * 100}%`,
   );

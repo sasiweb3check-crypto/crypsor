@@ -1,0 +1,167 @@
+Architecture Decision
+After reading everything, here's my final architecture:
+
+The key insight: The eventBus (in-process EventEmitter) is used for:
+
+Cross-service communication within the pipeline (token:bought → metadata, momentum, projection, holders, image)
+SSE-facing events (projection:updated, token:sold, token:deleted, holders:updated, feed:item → SSEGateway)
+Lifecycle triggers (price:updated → lifecycle, projection, intelligence)
+For multi-process to work, events that cross the process boundary need Redis pub/sub. Specifically:
+
+Worker process emits events → Redis pub/sub → API process SSE Gateway → browsers
+For the same-process pipeline, the EventEmitter is perfectly fine.
+
+My phased approach:
+
+Create Redis connection module
+Replace PipelineQueue with BullMQ (drop-in replacement)
+Convert setInterval periodic jobs to BullMQ repeatable jobs in a "scheduler" queue
+Create Redis pub/sub bridge (worker publishes SSE events to Redis, API subscribes)
+Create worker.ts as separate entry point
+Update index.ts to not start the pipeline
+Build both entry points
+Add worker workflow
+Now I'm laying out the specific files I need to create. I'll build a Redis connection factory that handles Aiven's TLS requirements, then create a pub/sub bridge module where the worker can publish events and the API server can subscribe to them across processes.
+
+For the worker entry point, I'm setting up all the pipeline services and wiring the Redis pub/sub to broadcast SSE events, but keeping it separate from the Express server.
+
+On the modification side, I'm refactoring the job queue to use BullMQ internally while preserving the existing public API, replacing the price service's interval-based approach with a repeatable BullMQ job, and doing the same for the momentum engine.
+
+Applying the same pattern across the remaining services...
+
+The SSE gateway needs an overload to subscribe to Redis pub/sub when running in API-only mode, and the main entry point no longer calls the monitor directly.
+
+For the build and package configuration, I need to handle both the main process and worker process as separate entry points, with corresponding npm scripts for development and production.
+
+The BullMQ queue implementation replaces the in-memory version with a distributed queue backed by Redis—each queue name gets its own BullMQ Queue and Worker instance, where workers are only instantiated in the worker process. The enqueue() method adds jobs to the queue, register() creates the worker, and totalWaiting() becomes async since BullMQ requires a Promise.
+
+The monitor code calls totalWaiting() synchronously, which won't work with BullMQ's async API. I'll maintain a local counter that tracks pending jobs as they're enqueued and dequeued, keeping the synchronous interface while staying in sync with the actual queue state.
+
+For the repeating jobs, I'm replacing each service's setInterval with a BullMQ queue and worker that uses the repeat option to schedule recurring tasks, with settings to clean up old completed jobs and prevent duplicates.
+
+Setting up BullMQ repeating jobs... Adding repeatable jobs to the scheduler queue with different intervals for each service. For the SSE layer, I'm using Redis pub/sub where workers publish events to a channel and the API gateway subscribes to broadcast them to connected clients.
+
+Now I need to decide how to handle the SSE gateway initialization—either it listens to the in-process event bus when running in combined mode, or it subscribes to Redis pub/sub when running API-only mode. I could create separate initialization functions for each mode, or simplify by having a single gateway that adapts based on what's available. In API-only mode, the SSE gateway subscribes to Redis pub/sub instead of the eventBus, while the worker publishes events to both channels. I'll create a new Redis connection module, replace the job queue with BullMQ, add a Redis pub/sub bridge to forward eventBus events, and update the SSE gateway to support both modes.
+
+For the periodic services, I'm converting them to BullMQ repeatable jobs that run in the worker rather than modifying each service file individually—each service exposes its core function, and the worker sets up the scheduled jobs during startup.
+
+The key advantage of BullMQ repeatable jobs over setInterval is persistence: if the process crashes, Redis maintains the job schedule and resumes execution when the worker restarts, whereas setInterval loses track of timing and requires the process to come back up before the next cycle fires.
+
+Now I'm setting up the Redis configuration to work with Aiven's TLS connection and BullMQ's specific requirements—parsing the connection URL and configuring the ioredis client with the necessary options like maxRetriesPerRequest: null and enableReadyCheck: false, plus handling pub/sub with a separate instance.
+
+For the job queue layer, I'm keeping the same API surface—the singleton queue, register and enqueue methods, and status tracking—but backing it with BullMQ. The key insight is that BullMQ's jobId maps directly to our dedup pattern, and I can maintain local counters to keep getStatus() synchronous while BullMQ's methods are async. Priority support is built in. BullMQ's dedup via jobId prevents duplicates while jobs are waiting or delayed, but once processing starts the ID becomes available again—which matches our current behavior perfectly. For periodic jobs, I'll register BullMQ repeatable jobs in each service's start* function to replace the setInterval calls.
+
+Registering repeatable jobs... Adding repeatable jobs...
+
+Now I'm checking which service functions are already exported versus which ones I need to expose—some like the price and momentum refreshers are ready to go, but others like the projection and migration functions are still private and need to be made available.
+
+I'll need to export those missing functions and then refactor the existing start* functions to remove their interval logic, keeping only the one-time setup like event listener registration. The key distinction is that periodic polling tasks will move to BullMQ repeatable jobs, while event-driven listeners stay with the eventBus since they don't need polling. Completing the monitor scan cycle conversion, then the image service retry pass. The event-driven listeners should stay as-is since they're already using the eventBus pattern—those in lifecycle, projection, and momentum engines respond to price and token events, while metadata service, holders refresh, and image service use eventBus listeners that enqueue BullMQ jobs. Writing the implementation... The return value from enqueue() is actually used by the callers to track statistics, so I need to handle the dedup detection properly. Since BullMQ returns the existing job when a duplicate is added, I could compare job IDs to detect whether it was a new addition or a dedup hit, but that's complex. For now, I'll return true unconditionally to indicate acceptance, since the callers only use this for logging metrics rather than correctness.
+
+For the worker process, I'm setting up npm scripts to build and launch the worker with source maps enabled, and updating the dev script to focus on just the API since the worker runs in a separate workflow. I'll also create a new workflow that handles starting the worker process with the appropriate build and run commands.
+
+I'm considering whether to use the workflows skill to create this properly or simplify by running both processes together, but separate workflows would be cleaner for managing these long-running processes independently.
+
+Let me outline the full implementation: I'll install the queue libraries, set up Redis connections, refactor the job queue with BullMQ, create a Redis event bus for SSE updates, extract the core service functions to remove their internal intervals, build a dedicated worker process, and update the API server to run in API-only mode while configuring the build system to handle both.
+
+For each service, I'm keeping the event listeners intact but extracting the periodic refresh logic into separate functions that the worker can call on a schedule. This minimizes changes to the existing code while cleanly separating concerns between the API and worker processes. - Remove the scan loop timer from startMonitor() while keeping the runScan() export that's already there
+
+For holders-refresh.ts, export the refresh cycle function and strip out the interval, keeping just the event listener in the start function
+In scheduler.ts, I need to export enqueueDue() since it's currently internal, then remove the timer from startScheduler()
+For image-service.ts, the retryPass() function needs to be exported and converted to a BullMQ repeatable job that runs every 5 minutes, while keeping the initial validation call and event listener on startup
+I should also consider that repeatable jobs don't execute immediately on startup like the current setTimeout calls do, so some services might need an initial manual invocation to match the current behavior Adding queue configuration... I'll use the same job name for both the initial delayed run and the repeating job, letting BullMQ handle them as separate entities—one as a regular delayed job and one as a repeatable job definition stored in Redis. The worker processes both the same way, so I don't need to complicate things with different job names.
+Now I'm mapping out the job handlers for the scheduler queue: price:refresh calls refreshAllPrices(), momentum:refresh calls refreshAllMomentum(), and so on through the other refresh tasks. For the pipeline queue, I'll create separate BullMQ queues for metadata, holders, discovery, migration, and price data, with workers registered in worker.ts.
+
+Writing the implementation... Writing the job handler... Writing package installation and Redis config... Finishing the Redis client setup with pub/sub options, then realizing I should use standard TypeScript imports instead of dynamic requires since esbuild handles both CommonJS and ESM modules properly. Now I'm ready to write out the complete redis.ts connection factory.
+
+Writing Redis connection code... Creating a Redis client with error handling and lazy connection disabled, then moving into the BullMQ setup with queue and worker imports.
+
+Now I'm setting up the job queue module with a logger, defining the queue names and their concurrency/retry configurations for different job types like discovery, metadata, and price tracking.
+
+I'm creating the PipelineQueue class that manages multiple Bull MQ queues with Redis, initializing each queue with connection settings and cleanup policies, plus tracking statistics for waiting, processed, and failed jobs across all queues.
+
+Setting up periodic updates...
+
+Completing the job handler with error tracking and worker registration, then implementing the enqueue method with retry logic... Writing queue management methods...
+
+I'm realizing there's a potential issue with how the pipelineQueue singleton gets instantiated at module load time—if AIVEN_REDIS_URL isn't set, the entire module fails immediately since getBullMQRedisOpts() throws. That's acceptable given we require the URL, but I need to ensure the error messaging is clear. BullMQ queues connect lazily by default, so the actual connection won't happen until a job is queued, though the URL validation still needs to pass upfront. This creates a problem for the API server process since it imports the monitor which imports the job queue, and in API-only mode we might not need the queue at all. The issue is that monitor.ts imports the pipelineQueue to get its size, but in API-only mode, startMonitor() never runs so that queue size would just stay at zero anyway. If the API process doesn't actually call startMonitor(), then pipelineQueue.totalWaiting() won't be invoked from the API side, so I don't need to worry about the API trying to connect to Redis just to check the queue. So the PipelineQueue constructor runs a polling interval that makes async BullMQ queries, which would execute even in API-only mode. I should guard this by deferring the polling start until register() is called, which only happens in worker mode.
+
+Restructuring the code...
+
+Now I'm planning out the complete file structure: three new files for Redis setup, the worker entry point, and the queue system, plus modifications to the existing job queue and price service files.
+
+I also need to update the pipeline modules—removing their internal polling loops and exporting the core functions so the worker can orchestrate them through the queue system instead. This includes the momentum engine, projection engine, intelligence engine, migration checker, holders refresh, scheduler, image service, and SSE gateway.
+
+I'll need to modify the monitor to remove its scan loop, update the main API server to work in API-only mode with Redis pub/sub subscriptions, adjust the build configuration to compile the worker file, and add worker-related scripts to package.json.
+
+Since many of these files are independent, I can parallelize the writes—starting with the new Redis utilities and job queue rewrite, then moving through the pipeline modules in batches. Now I need to set up the worker entry point, update the main index file to remove the monitor and add Redis subscriptions, add the SSE gateway for Redis messages, update the build config, and install the required dependencies. I'm also thinking through how the monitor function should be refactored—it currently starts all the pipeline services and sets up the scan loop, but I need to understand what parts stay versus what gets moved to the worker. I'm realizing the core issue: SSE clients connect to the API process, but events originate in the worker process. So I need to route events through Redis pub/sub as the bridge—the worker publishes events to Redis, and the API process subscribes to Redis pub/sub to broadcast to connected clients. This means startSseGateway() in the API process should listen to Redis instead of the local eventBus.
+
+Writing Redis subscription logic... I'm setting up event listeners in the worker to bridge domain events from the eventBus to Redis pub/sub, so the SSE gateway can pick them up and broadcast to connected clients. Now I need to check whether index.ts is actually calling the SSE gateway setup, and if so, swap it out for the Redis-based version instead. The sseHandler and connectedClientCount are already exported from the SSE gateway and used in the routes, so that doesn't change in API-only mode—only the event source switches from the eventBus to Redis pub/sub. For the new architecture, the worker will call startMonitor() to initialize all pipeline services including the SSE gateway in eventBus mode, while the API will skip that and instead call startSseFromRedis() directly to listen for events from Redis.
+
+I need to remove the setTimeout(loop, 5_000) scan loop from startMonitor() since BullMQ will handle all periodic work in the worker. This means startMonitor() just starts the pipeline services and registers event listeners without setting up any timers. The tricky part is handling development mode where someone might run just the API server—they'd get the pipeline services running but no periodic jobs executing.
+
+Actually, that's fine for now since we're moving to a multi-process setup anyway. Let me focus on the code. The monitor.ts file imports pipelineQueue to get queue status, which still works through BullMQ. The runScan() function updates monitorStatus.pipeline with the queue size and service health, but in API-only mode runScan() never gets called, so the status endpoint would show stale data.
+
+I could have the worker publish monitor status to Redis and have the API read from there, but that's extra complexity. For now I'll keep it simple and note that in API-only mode the monitor status shows limited information, which is acceptable since the frontend dashboard is still available.
+
+Now I'm ready to write all the code. I'll start by setting up the necessary packages, then write out all the files in an optimal order. For the worker file, I'm importing the logger, monitor functions, event bus, and BullMQ queue setup along with Redis configuration and the price refresh pipeline.
+
+Writing worker setup... Setting up event listeners... Setting up the worker to handle different job types like price refreshes, momentum calculations, projections, intelligence runs, and various maintenance tasks...
+
+Now I'm configuring error handling for failed jobs and setting up the repeatable job schedule, clearing out any old jobs and adding fresh ones with staggered startup delays.
+
+Adding scheduler jobs...
+
+I'm looping through each job configuration to schedule them twice—once as a one-time task with an initial delay, and again as a repeating job that runs at regular intervals. Then I'm logging that the pipeline scheduler has started. But I'm noticing a potential issue: using the same job name for both the one-shot and repeating versions might cause a conflict since they're being added as separate queue entries. I realize delay and repeat don't work together for delaying the first execution, so I'll use separate job names instead—one for the initial delayed run and another for the repeating schedule, with the worker handling both the same way.
+
+Actually, simpler approach: add both a one-shot delayed job and a repeating job under the same name. The one-shot fires after the delay, then the repeating job takes over on its own schedule, and since the worker only checks job.name, it processes them identically.
+
+Now I'm ready to implement this. I should think through the development setup though—running both the API server and worker means potentially having two build processes running simultaneously, which could cause a race condition if they're both trying to clean and rebuild the dist folder at the same time.
+
+The cleanest solution is to have the worker skip the build step entirely and just trust that the API server has already compiled everything. I could add a small delay to ensure the build completes before the worker starts, or create a separate build script for the worker that doesn't clean the dist folder first.
+
+Actually, the simplest approach is to use concurrently to run both the API server and worker in parallel after the initial build. I need to add that package to the dependencies first, or I could use shell backgrounding with & instead.
+
+But for Replit, separate workflows make more sense: one workflow builds and starts the API server, and a second workflow just starts the worker assuming the build is already done. The timing naturally works out since the first workflow's build takes several seconds before the second one tries to run.
+
+Actually, the safest approach is to have both scripts run the build themselves—it's idempotent and esbuild is fast enough that running them simultaneously won't cause issues. So I'll set up both dev and dev:worker to build first, then start their respective processes.
+
+Now I'm ready to write out all the implementation files in order: the Redis and job queue infrastructure, the SSE gateway updates, the pipeline service refactoring, the worker script, and the build configuration.
+
+But I need to handle a couple of details first. The image service exports need to include retryPass, and right now startImageService() handles both event listening for token purchases and a periodic retry timer. I'll keep the event listener but move the retry logic to BullMQ, while leaving the one-time validateCachedImages() call as-is since it only runs on startup.
+
+Also, the monitor currently calls startSseGateway(), but in worker mode that doesn't make sense since there are no HTTP clients connected to the worker process. The SSE gateway should only be initialized in the API process, not in the worker. Actually, I should remove startSseGateway() from startMonitor() entirely and let the caller handle it based on the deployment mode—in combined mode it gets called separately, in API mode we use the Redis bridge, and in worker mode we skip it altogether. Looking at the current startMonitor() function...
+
+Removing SSE gateway call...
+
+And for the scan loop in monitor.ts, I'm replacing the setTimeout-based polling with a BullMQ repeating job instead.
+
+I now have the full picture. Let me execute the entire migration in one shot.
+
+
+2 actions
+Packages installed. Now writing all files in parallel batches.
+
+
+Show less
+
+Created redis.ts
+Parallel file writing
+
+Parallel file writing
+Let me continue writing all the files in parallel batches.
+
+
+Created redis-bus.ts
+Parallel batch writing
+
+Parallel batch writing
+Now writing the BullMQ job queue rewrite and all pipeline service modifications in parallel.
+
+
+Show less
+
+Created job-queue.ts
+Batching file writing
+
+Batching file writing
+Let me continue writing a
