@@ -1,0 +1,63 @@
+he 403s are Cloudflare blocking plain curl — that's expected. The existing code already bypasses CF with --http2 --tlsv1.3 + browser headers. Let me test the API key with those same headers, and try different auth patterns.
+
+
+Show less
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) BROWSER_ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai" -H "Cache-Control: no-cache" -w "\nHTTP:%{http_code}") TOKEN=DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263 echo "=== 1: existing curl trick (no key) - baseline ===" curl "${BROWSER_ARGS[@]}" \ "https://gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | tail -c 200 echo "" echo "=== 2: + X-API-KEY header ===" curl "${BROWSER_ARGS[@]}" \ -H "X-API-KEY: $KEY" \ "https://gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | tail -c 200 echo "" echo "=== 3: as query param ?key= ===" curl "${BROWSER_ARGS[@]}" \ "https://gmgn.ai/api/v1/token_info/sol/$TOKEN?key=$KEY" 2>/dev/null | tail -c 200 echo "" echo "=== 4: Authorization: Bearer ===" curl "${BROWSER_ARGS[@]}" \ -H "Authorization: Bearer $KEY" \ "https://gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | tail -c 200
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) BROWSER_ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai" -w "\nHTTP:%{http_code}") TOKEN=DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263 echo "=== 5: api.gmgn.ai subdomain with key ===" curl "${BROWSER_ARGS[@]}" \ -H "X-API-KEY: $KEY" \ "https://api.gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | tail -c 200 echo "" echo "=== 6: holder stat endpoint with key ===" curl "${BROWSER_ARGS[@]}" \ -H "X-API-KEY: $KEY" \ "https://gmgn.ai/vas/api/v1/token_holder_stat/sol/$TOKEN" 2>/dev/null | tail -c 300 echo "" echo "=== 7: holders with key ===" curl "${BROWSER_ARGS[@]}" \ -H "X-API-KEY: $KEY" \ "https://gmgn.ai/vas/api/v1/token_holders/sol/$TOKEN?limit=3" 2>/dev/null | tail -c 300
+Analyzing API authentication
+
+Analyzing API authentication
+The key itself doesn't unlock different endpoints (it seems to be mainly for rate-limit elevation), but I spotted something important — token_info already returns a liquidity field we're not using (fixes G1), and the stat counts are returning 1000-capped values. Let me get the full response shapes and then do all the updates.
+
+
+Show less
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") # Use a smaller meme token with actual data TOKEN=8Ki8DpuWNxu9VsS3kQbarsCWMcFGWkzzA8pUPtos9ZBv # a real meme token echo "=== token_info full ===" curl "${ARGS[@]}" "https://gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -60 echo "" echo "=== token_holder_stat full ===" curl "${ARGS[@]}" "https://gmgn.ai/vas/api/v1/token_holder_stat/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null echo "" echo "=== holders top 3 - check field names ===" curl "${ARGS[@]}" "https://gmgn.ai/vas/api/v1/token_holders/sol/$TOKEN?limit=3" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -80
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") TOKEN=8Ki8DpuWNxu9VsS3kQbarsCWMcFGWkzzA8pUPtos9ZBv echo "=== top_traders - check flow fields ===" curl "${ARGS[@]}" "https://gmgn.ai/defi/quotation/v1/tokens/top_traders/sol/$TOKEN?orderby=profit&direction=desc&limit=5" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -80 echo "" echo "=== defi/quotation token detail (price + liquidity) ===" curl "${ARGS[@]}" "https://gmgn.ai/defi/quotation/v1/tokens/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -60
+Testing with live tokens
+
+Testing with live tokens
+That token is dead. Let me use one of the actual tokens from the DB and get the full response shapes.
+
+
+5 actions
+Let me use the BONK token that I know works to map all the response fields, then write all the changes.
+
+
+Show less
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") # Use a real active meme token from Solana TOKEN=GJAFwWjJ3vnTsrZaHgsyhHtu1Y29er5fbfX9oJEmuwcV # ACT I: The AI Prophecy echo "=== token_info full ===" curl "${ARGS[@]}" "https://gmgn.ai/api/v1/token_info/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null echo "" echo "=== holder_stat full ===" curl "${ARGS[@]}" "https://gmgn.ai/vas/api/v1/token_holder_stat/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") TOKEN=GJAFwWjJ3vnTsrZaHgsyhHtu1Y29er5fbfX9oJEmuwcV echo "=== holders (1 entry, all fields) ===" curl "${ARGS[@]}" "https://gmgn.ai/vas/api/v1/token_holders/sol/$TOKEN?limit=1" 2>/dev/null | python3 -m json.tool 2>/dev/null echo "" echo "=== top_traders (flow data) ===" curl "${ARGS[@]}" "https://gmgn.ai/defi/quotation/v1/tokens/top_traders/sol/$TOKEN?orderby=profit&direction=desc&limit=3" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -60 echo "" echo "=== pool/pair data ===" curl "${ARGS[@]}" "https://gmgn.ai/api/v1/token_pool/sol/$TOKEN" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -40
+Retrieving token data
+
+Retrieving token data
+Let me get the full response structure from BONK (known working) and check if the existing tokens in the app work too.
+
+
+Show less
+
+Fetched a URL
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") # BONK — known working echo "=== BONK token_info full structure ===" curl "${ARGS[@]}" "https://gmgn.ai/api/v1/token_info/sol/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" 2>/dev/null | python3 -m json.tool 2>/dev/null echo "" echo "=== BONK holder_stat ===" curl "${ARGS[@]}" "https://gmgn.ai/vas/api/v1/token_holder_stat/sol/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" 2>/dev/null | python3 -m json.tool 2>/dev/null
+
+Searched for ""tokenLabel":"[^"]*""
+$ KEY=$(node -e "console.log(process.env.GMGN_API_KEY)" 2>/dev/null) ARGS=(-s --http2 --compressed --tlsv1.3 --max-time 15 -H "X-API-KEY: $KEY" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" -H "Accept: application/json, text/plain, */*" -H "Accept-Language: en-US,en;q=0.9" -H "Accept-Encoding: gzip, deflate, br" -H "Referer: https://gmgn.ai/" -H "Origin: https://gmgn.ai") # Get a few tracked token addresses from the app's server logs echo "=== Get addresses from recent snapshot logs ===" grep -o '"tokenLabel":"[^"]*"' /tmp/logs/artifactsapi-server_API_Server_20260728_154217_086_adcb1323.log 2>/dev/null | head -5 # Also try the token from the earlier snapshot logs - Frank Ocean FRANK # and get its address from app logs grep "FRANK\|Frank" /tmp/logs/artifactsapi-server_API_Server_20260728_154217_086_adcb1323.log 2>/dev/null | head -3
+Analyzing API response structure
+
+Analyzing API response structure
+Now I have everything I need. The plan:
+
+Add X-API-KEY to all GMGN curl calls — reduces 429s immediately
+Pull liquidity from token_info — fixes G1 (78% null)
+Pull creation_timestamp from token_info — better B6 fix (actual SPL mint time, not Raydium pair time)
+Parse holder flow fields from token_info to fix G4 (flow signal was coming from the retired top_buyers endpoint)
+Let me check the full token_info data shape and holders-refresh fetch flow in parallel:
