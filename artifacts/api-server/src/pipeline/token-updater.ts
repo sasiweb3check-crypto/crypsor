@@ -20,7 +20,6 @@ import { logger } from "../lib/logger";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
 import { buildHolderIntel, type HolderIntel } from "../lib/holder-intel";
-import { computeCallerScore } from "../lib/caller-score";
 
 // ── Snapshot computation ──────────────────────────────────────────────────────
 
@@ -141,49 +140,6 @@ export async function createHolderSnapshot(input: SnapshotInput): Promise<number
 
     if (!snapshot) return null;
 
-    // ── Caller Score (Two-Phase — isolated from existing scores) ──────────────
-    // Fetch current token row to get projection scores + snapshot count.
-    const [currentToken] = await db
-      .select({
-        marketCapUsd:        tracked_tokens.marketCapUsd,
-        mcGrowthScore:       tracked_tokens.mcGrowthScore,
-        holderVelocityScore: tracked_tokens.holderVelocityScore,
-        holderTop10Pct:      tracked_tokens.holderTop10Pct,
-        kolSmartScore:       tracked_tokens.kolSmartScore,
-        athGainPct:          tracked_tokens.athGainPct,
-        gainPct:             tracked_tokens.gainPct,
-        holderSnapshotCount: tracked_tokens.holderSnapshotCount,
-      })
-      .from(tracked_tokens)
-      .where(eq(tracked_tokens.id, input.tokenId));
-
-    const nextSnapshotCount = (currentToken?.holderSnapshotCount ?? 0) + 1;
-    const callerResult = computeCallerScore(
-      {
-        marketCapUsd:        currentToken?.marketCapUsd,
-        mcGrowthScore:       currentToken?.mcGrowthScore       ?? 0,
-        holderVelocityScore: currentToken?.holderVelocityScore ?? 0,
-        holderTop10Pct:      intel.top10Pct,
-        kolSmartScore:       currentToken?.kolSmartScore        ?? 0,
-        athGainPct:          currentToken?.athGainPct,
-        gainPct:             currentToken?.gainPct,
-      },
-      nextSnapshotCount,
-    );
-
-    logger.info(
-      {
-        tokenId:       input.tokenId,
-        snapshotCount: nextSnapshotCount,
-        callerScore:   callerResult.callerScore,
-        callerPhase:   callerResult.callerPhase,
-        callerLabel:   callerResult.callerLabel,
-        athGap:        callerResult.athGap,
-        useAthGap:     callerResult.useAthGap,
-      },
-      "CallerScore computed",
-    );
-
     // Update the token's snapshot pointer
     await db
       .update(tracked_tokens)
@@ -206,11 +162,6 @@ export async function createHolderSnapshot(input: SnapshotInput): Promise<number
         holderClusterCount:      intel.clusters.clusterCount,
         holderCabalDetected:     intel.clusters.cabalDetected,
         holderLargestClusterPct: intel.clusters.largestClusterPct,
-        // Caller Score — isolated columns, not mixed with existing scores
-        holderSnapshotCount:     nextSnapshotCount,
-        callerScore:             callerResult.callerScore,
-        callerPhase:             callerResult.callerPhase,
-        callerLabel:             callerResult.callerLabel,
       })
       .where(eq(tracked_tokens.id, input.tokenId));
 
