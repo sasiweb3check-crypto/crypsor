@@ -9,8 +9,8 @@
  *   35% MC Growth        — sustained market-cap growth from first snapshot
  *   25% Volume Intensity — real 24h volume vs age-cohort average
  *   20% Holder Velocity  — new holders per hour from snapshot diffs
- *   15% KOL / Smart      — quality-weighted smart-money signal
- *    5% Liquidity Health  — LP stability / adequate depth
+ *   12% KOL / Smart      — quality-weighted smart-money signal
+ *    8% Liquidity Health  — LP stability / adequate depth
  *
  * Periodic refresh runs every 5 minutes after the previous pass completes.
  */

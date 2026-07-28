@@ -247,7 +247,7 @@ function TokenCard({ token }: { token: SocialToken }) {
       {/* News articles — expandable */}
       {hasNews && expanded && (
         <div className="mx-4 mb-4 border border-[#30363d] bg-[#0d1117]">
-          {token.news.map((a, i) => <ArticleRow key={i} article={a} />)}
+          {token.news.map((a) => <ArticleRow key={a.link} article={a} />)}
         </div>
       )}
     </div>
@@ -272,7 +272,11 @@ export default function Feed() {
 
   const { data, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery<SocialResponse>({
     queryKey:        ["social", statusFilter],
-    queryFn:         () => fetch(`${BASE}api/social?status=${statusFilter}`).then(r => r.json()),
+    queryFn:         async () => {
+      const r = await fetch(`${BASE}api/social?status=${statusFilter}`);
+      if (!r.ok) throw new Error(`Social API error ${r.status}`);
+      return r.json();
+    },
     refetchInterval: 5 * 60_000,   // re-ask server every 5 min (server caches 30 min)
     staleTime:       2 * 60_000,
   });

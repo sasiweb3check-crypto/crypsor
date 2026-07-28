@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Brain, ArrowUpRight, ArrowDownRight, Minus, Filter, RefreshCw, ChevronRight } from "lucide-react";
+import { Brain, ArrowUpRight, ArrowDownRight, Minus, Filter, RefreshCw, ChevronRight, Download } from "lucide-react";
 import { cn, formatTimeAgo } from "@/lib/utils";
 
 const BASE = import.meta.env.BASE_URL;
@@ -64,6 +64,60 @@ interface TokenIntelResponse {
 interface RecentResponse {
   total: number;
   entries: LogEntry[];
+}
+
+// ── CSV download ──────────────────────────────────────────────────────────────
+
+function toCSV(rows: Record<string, unknown>[]): string {
+  if (!rows.length) return "";
+  const keys = Object.keys(rows[0]);
+  const escape = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [keys.join(","), ...rows.map(r => keys.map(k => escape(r[k])).join(","))].join("\n");
+}
+
+function triggerDownload(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function entriesToRows(entries: LogEntry[], includeToken = false) {
+  return entries.map(e => ({
+    id:                    e.id,
+    ...(includeToken ? { token_id: e.tokenId ?? "", token_address: e.tokenAddress ?? "" } : {}),
+    computed_at:           e.computedAt,
+    trigger:               e.trigger,
+    intel_score:           e.intelligenceScore,
+    prev_intel_score:      e.prevIntelligenceScore ?? "",
+    score_delta:           e.scoreDelta            ?? "",
+    mc_growth:             subScore(e, "mcGrowth"),
+    vol_intensity:         subScore(e, "volumeIntensity"),
+    holder_velocity:       subScore(e, "holderVelocity"),
+    kol_smart:             subScore(e, "kolSmart"),
+    liquidity_health:      subScore(e, "liquidityHealth"),
+    age_hours:             e.ageHours,
+    age_multiplier:        e.ageMultiplier,
+    market_cap_usd:        e.marketCapUsd        ?? "",
+    volume_24h_usd:        e.volume24hUsd        ?? "",
+    liquidity_usd:         e.liquidityUsd        ?? "",
+    holder_count:          e.holderCount         ?? "",
+    holder_kol_count:      e.holderKolCount      ?? "",
+    holder_smart_count:    e.holderSmartCount    ?? "",
+    total_buys:            e.totalBuys           ?? "",
+    smart_buys:            e.smartBuys           ?? "",
+    labeled_fraction:      e.labeledFraction     ?? "",
+    status_before:         e.statusBefore,
+    status_after:          e.statusAfter,
+    status_changed:        e.statusChanged,
+  }));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -358,14 +412,34 @@ function EntryRow({ entry, showToken }: { entry: LogEntry; showToken?: boolean }
 
 function TokenLog({ tokenId }: { tokenId: number }) {
   const [trigger, setTrigger] = useState<string>("");
+  const [downloading, setDownloading] = useState(false);
 
   const url = `${BASE}api/intel-log/${tokenId}${trigger ? `?trigger=${trigger}` : ""}`;
   const { data, isLoading, refetch, isFetching } = useQuery<TokenIntelResponse>({
     queryKey: ["intel-log-token", tokenId, trigger],
-    queryFn: () => fetch(url).then(r => r.json()),
+    queryFn: async () => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Intel log API error ${r.status}`);
+      return r.json();
+    },
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      // Fetch full history (no trigger filter) for this token
+      const r = await fetch(`${BASE}api/intel-log/${tokenId}?limit=500`);
+      const json: TokenIntelResponse = await r.json();
+      const sym = json.token?.symbol ?? `token-${tokenId}`;
+      triggerDownload(
+        toCSV(entriesToRows(json.entries)),
+        `crypsor-score-log-${sym}-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+    } catch (e) { console.error(e); }
+    finally { setDownloading(false); }
+  };
 
   return (
     <div>
@@ -386,9 +460,21 @@ function TokenLog({ tokenId }: { tokenId: number }) {
             </button>
           ))}
         </div>
-        <button onClick={() => refetch()} className="text-[#484f58] hover:text-[#8b949e] transition-colors">
-          <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
-        </button>
+        <div className="flex items-center gap-2">
+          {data?.entries.length ? (
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-1 border border-[#30363d] text-[#484f58] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 disabled:opacity-40 transition-colors"
+            >
+              <Download className="w-3 h-3" />
+              {downloading ? "…" : "CSV"}
+            </button>
+          ) : null}
+          <button onClick={() => refetch()} className="text-[#484f58] hover:text-[#8b949e] transition-colors">
+            <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -419,20 +505,51 @@ function TokenLog({ tokenId }: { tokenId: number }) {
 // ── Global (recent across all tokens) log view ────────────────────────────────
 
 function GlobalLog() {
+  const [downloading, setDownloading] = useState(false);
   const { data, isLoading, refetch, isFetching } = useQuery<RecentResponse>({
     queryKey: ["intel-log-recent"],
-    queryFn:  () => fetch(`${BASE}api/intel-log?limit=100`).then(r => r.json()),
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/intel-log?limit=200`);
+      if (!r.ok) throw new Error(`Intel log API error ${r.status}`);
+      return r.json();
+    },
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
 
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      // Fetch the full dataset (up to server max of 200) fresh
+      const r = await fetch(`${BASE}api/intel-log?limit=200`);
+      const json: RecentResponse = await r.json();
+      triggerDownload(
+        toCSV(entriesToRows(json.entries, true)),
+        `crypsor-score-log-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+    } catch (e) { console.error(e); }
+    finally { setDownloading(false); }
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <span className="text-[10px] text-[#484f58]">Most recent 100 changes across all tokens</span>
-        <button onClick={() => refetch()} className="text-[#484f58] hover:text-[#8b949e] transition-colors">
-          <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
-        </button>
+        <span className="text-[10px] text-[#484f58]">Most recent 200 changes across all tokens</span>
+        <div className="flex items-center gap-2">
+          {data?.entries.length ? (
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-1 border border-[#30363d] text-[#484f58] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 disabled:opacity-40 transition-colors"
+            >
+              <Download className="w-3 h-3" />
+              {downloading ? "…" : `CSV (${data.entries.length})`}
+            </button>
+          ) : null}
+          <button onClick={() => refetch()} className="text-[#484f58] hover:text-[#8b949e] transition-colors">
+            <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
+          </button>
+        </div>
       </div>
       {isLoading ? (
         <div className="py-12 text-center text-[#484f58] text-xs">Loading…</div>

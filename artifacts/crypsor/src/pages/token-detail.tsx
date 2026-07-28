@@ -259,24 +259,34 @@ export default function TokenDetailPage() {
 
   const { data: token, isLoading } = useQuery<TokenDetail>({
     queryKey: ["token", id],
-    queryFn:  () => fetch(`${BASE}api/tokens/${id}`).then(r => r.json()),
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/tokens/${id}`);
+      if (!r.ok) throw new Error(`Token API error ${r.status}`);
+      return r.json();
+    },
     enabled:  id != null,
     refetchInterval: 15_000,
   });
 
   const { data: gmgn } = useQuery<GmgnResponse>({
     queryKey: ["token-gmgn-intelligence", id],
-    queryFn:  () => fetch(`${BASE}api/tokens/${id}/gmgn`).then(r => r.json()),
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/tokens/${id}/gmgn`);
+      if (!r.ok) throw new Error(`GMGN API error ${r.status}`);
+      return r.json();
+    },
     enabled:  id != null,
     refetchInterval: 30_000,
     staleTime: 10_000,
   });
 
   const { data: holdersData } = useQuery<HoldersPage>({
-    queryKey: ["token-holders-kol-smart", id, holderPage],
+    queryKey: ["token-holders", id, holderPage],
     queryFn: async () => {
       const params = new URLSearchParams({ tokenId: String(id), limit: "20", page: String(holderPage) });
-      return fetch(`${BASE}api/holders/list?${params}`).then(r => r.json());
+      const r = await fetch(`${BASE}api/holders/list?${params}`);
+      if (!r.ok) throw new Error(`Holders API error ${r.status}`);
+      return r.json();
     },
     enabled: id != null,
     staleTime: 60_000,
@@ -284,14 +294,22 @@ export default function TokenDetailPage() {
 
   const { data: tradersData, isLoading: tradersLoading } = useQuery<TradersResponse>({
     queryKey: ["token-traders", id],
-    queryFn:  () => fetch(`${BASE}api/tokens/${id}/traders`).then(r => r.json()),
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/tokens/${id}/traders`);
+      if (!r.ok) throw new Error(`Traders API error ${r.status}`);
+      return r.json();
+    },
     enabled:  id != null && activeTab === "traders",
     staleTime: 5 * 60_000,
   });
 
   const { data: securityData, isLoading: secLoading, refetch: refetchSec } = useQuery<SecurityResponse>({
     queryKey: ["token-security", id],
-    queryFn:  () => fetch(`${BASE}api/tokens/${id}/security`).then(r => r.json()),
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/tokens/${id}/security`);
+      if (!r.ok) throw new Error(`Security API error ${r.status}`);
+      return r.json();
+    },
     enabled:  id != null && activeTab === "security",
     staleTime: 10 * 60_000,
   });
@@ -345,10 +363,9 @@ export default function TokenDetailPage() {
   const kol     = gmgn?.holderIntel?.kolCount   ?? token.holderKolCount   ?? 0;
   const smart   = gmgn?.holderIntel?.smartCount  ?? token.holderSmartCount ?? 0;
 
-  const holders     = (holdersData?.data ?? []).filter(h => {
-    const labels = (h.labels ?? []).map(l => l.toLowerCase());
-    return labels.some(l => ["kol","renowned","smart","smart_money","smart_degen"].includes(l));
-  });
+  // Show all holders for this token — filtering client-side on a single page
+  // would hide KOL/Smart holders that happen to fall outside the current 20-row window.
+  const holders     = holdersData?.data ?? [];
   const holderTotal = holdersData?.total ?? 0;
   const holderPages = holdersData?.pages ?? 1;
 

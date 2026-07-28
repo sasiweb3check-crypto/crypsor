@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
-import { Search, ExternalLink, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, ExternalLink, X, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   formatTokenPrice, formatGain, formatMarketCap,
@@ -106,6 +106,72 @@ function StatusBadge({ status }: { status?: string }) {
   );
 }
 
+// ── CSV download ──────────────────────────────────────────────────────────────
+
+function toCSV(rows: Record<string, unknown>[]): string {
+  if (!rows.length) return "";
+  const keys = Object.keys(rows[0]);
+  const escape = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [keys.join(","), ...rows.map(r => keys.map(k => escape(r[k])).join(","))].join("\n");
+}
+
+function triggerDownload(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadAllTokens(base: string, statusFilter: string, chainFilter: string, search: string, sort: string, order: string) {
+  const PAGE = 200;
+  let page = 1, collected: RichToken[] = [], total = Infinity;
+  while (collected.length < total) {
+    const p = new URLSearchParams({ page: String(page), limit: String(PAGE), sort, order });
+    if (statusFilter !== "all") p.set("status", statusFilter);
+    if (chainFilter  !== "all") p.set("chain",  chainFilter);
+    if (search)                 p.set("q",       search);
+    const r = await fetch(`${base}api/tokens?${p}`);
+    if (!r.ok) throw new Error(await r.text());
+    const json: { data: RichToken[]; total: number } = await r.json();
+    total = json.total;
+    collected = collected.concat(json.data);
+    if (json.data.length < PAGE) break;
+    page++;
+  }
+  const rows = collected.map(t => ({
+    id:               t.id,
+    symbol:           t.symbol ?? "",
+    name:             t.name   ?? "",
+    address:          t.address,
+    chain:            t.chain,
+    status:           t.status ?? "",
+    intel_score:      t.intelligenceScore ?? "",
+    quality_label:    t.qualityLabel      ?? "",
+    mc_growth:        t.mcGrowthScore       ?? "",
+    vol_intensity:    t.volumeIntensityScore ?? "",
+    holder_velocity:  t.holderVelocityScore  ?? "",
+    kol_smart:        t.kolSmartScore        ?? "",
+    liquidity_health: t.liquidityHealthScore ?? "",
+    market_cap_usd:   t.marketCapUsd       ?? "",
+    detected_price:   t.detectedPriceUsd   ?? "",
+    current_price:    t.currentPriceUsd    ?? "",
+    gain_pct:         t.detectionGainPct   ?? "",
+    ath_gain_pct:     t.athGainPct         ?? "",
+    kol_holders:      t.holderKolCount     ?? "",
+    smart_holders:    t.holderSmartCount   ?? "",
+    first_detected_at: t.firstDetectedAt,
+  }));
+  const label = statusFilter !== "all" ? `-${statusFilter}` : "";
+  triggerDownload(toCSV(rows), `crypsor-tokens${label}-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -147,6 +213,7 @@ export default function Tokens() {
   const [sortField,    setSortField]    = useState<SortField>("systemAge");
   const [sortOrder,    setSortOrder]    = useState<SortOrder>("desc");
   const [page,         setPage]         = useState(1);
+  const [downloading,  setDownloading]  = useState(false);
 
   const debouncedSearch = useDebounce(search, 300);
 
@@ -182,9 +249,25 @@ export default function Tokens() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div>
-        <h1 className="text-lg font-bold text-[#f59e0b] tracking-widest uppercase">Token Stream</h1>
-        <p className="text-[#484f58] text-[10px] mt-0.5 tracking-widest uppercase">Live view of token growth and holder conviction</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-bold text-[#f59e0b] tracking-widest uppercase">Token Stream</h1>
+          <p className="text-[#484f58] text-[10px] mt-0.5 tracking-widest uppercase">Live view of token growth and holder conviction</p>
+        </div>
+        <button
+          onClick={async () => {
+            setDownloading(true);
+            try { await downloadAllTokens(import.meta.env.BASE_URL, statusFilter, chainFilter, debouncedSearch, sortField, sortOrder); }
+            catch (e) { console.error(e); }
+            finally { setDownloading(false); }
+          }}
+          disabled={downloading}
+          className="shrink-0 flex items-center gap-1.5 h-8 px-3 text-[9px] font-bold uppercase tracking-widest border border-[#30363d] text-[#484f58] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 disabled:opacity-40 transition-colors"
+          title="Download all matching tokens as CSV"
+        >
+          <Download className="w-3 h-3" />
+          {downloading ? "Downloading…" : `CSV (${total})`}
+        </button>
       </div>
 
       {/* Filters */}

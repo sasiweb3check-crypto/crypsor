@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -90,23 +90,26 @@ export default function HoldersPage() {
   const [debouncedQ, setDebouncedQ]   = useState("");
   const [page, setPage]               = useState(1);
 
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSearch = useCallback((v: string) => {
     setSearch(v);
     setPage(1);
-    const t = setTimeout(() => setDebouncedQ(v), 350);
-    return () => clearTimeout(t);
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => setDebouncedQ(v), 350);
   }, []);
 
   const handleLabelChange = (v: string) => { setLabelFilter(v); setPage(1); };
 
   const { data, isLoading, isFetching } = useQuery<HoldersPage>({
     queryKey: ["holders-list", page, labelFilter, debouncedQ],
-    queryFn: () => {
+    queryFn: async () => {
       const base = import.meta.env.BASE_URL ?? "/";
       const params = new URLSearchParams({ page: String(page), limit: String(PAGE_LIMIT) });
       if (labelFilter) params.set("label", labelFilter);
       if (debouncedQ)  params.set("q", debouncedQ);
-      return fetch(`${base}api/holders/list?${params}`).then(r => r.json());
+      const r = await fetch(`${base}api/holders/list?${params}`);
+      if (!r.ok) throw new Error(`Holders API error ${r.status}`);
+      return r.json();
     },
     placeholderData: prev => prev,
     staleTime: 30_000,

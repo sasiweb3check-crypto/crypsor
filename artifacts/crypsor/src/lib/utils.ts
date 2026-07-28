@@ -68,8 +68,8 @@ export function formatTokenPrice(val: number | string | null | undefined): strin
   if (n >= 0.01)          return `${n.toFixed(4)}`;
   if (n >= 0.0001)        return `${n.toFixed(6)}`;
   if (n >= 0.000001)      return `${n.toFixed(8)}`;
-  // Very tiny — strip trailing zeros for readability
-  return `${n.toFixed(10).replace(/0+$/, '')}`;
+  // Very tiny — strip trailing zeros (and any trailing decimal point) for readability
+  return `${n.toFixed(10).replace(/\.?0+$/, '')}`;
 }
 
 export function formatDate(dateStr: string): string {

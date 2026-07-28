@@ -58,7 +58,7 @@ export function useLiveTokens(): { connected: boolean } {
     // Patch the token in every cached paginated page
     es.addEventListener("token:updated", (e: MessageEvent) => {
       try {
-        const payload: TokenUpdatedPayload = JSON.parse(e.data);
+        const payload: TokenUpdatedPayload = JSON.parse(e.data as string);
 
         // Update across all paginated token list queries
         qc.setQueriesData<PaginatedTokenPage>(
@@ -91,13 +91,13 @@ export function useLiveTokens(): { connected: boolean } {
             status:           payload.status,
           };
         });
-      } catch {}
+      } catch (err) { console.warn("[SSE] token:updated parse error", err); }
     });
 
     // Remove deleted token from all cached pages; invalidate dashboard counts
     es.addEventListener("token:deleted", (e: MessageEvent) => {
       try {
-        const payload: TokenDeletedPayload = JSON.parse(e.data);
+        const payload: TokenDeletedPayload = JSON.parse(e.data as string);
 
         qc.setQueriesData<PaginatedTokenPage>(
           { queryKey: ["tokens"], exact: false },
