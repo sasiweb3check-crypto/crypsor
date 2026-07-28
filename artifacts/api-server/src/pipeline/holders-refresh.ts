@@ -89,6 +89,23 @@ async function fetchAndPersistToken(
       token.tokenId, list, token.marketCapUsd, tokenLabel,
     );
 
+    // 1b. Extract liquidity from token_info and persist to tracked_tokens.
+    // GMGN token_info.data.liquidity is the most reliable liquidity source for
+    // Solana tokens — it covers both pre-graduation (bonding curve) and post-
+    // graduation (Raydium pool) tokens. Price-service fills this from DexScreener
+    // but misses many tokens; this fills the gap from the same fetch we already do.
+    const tokenInfoData = (tokenInfoRes.data as { data?: { liquidity?: string | number | null } } | null)?.data;
+    const infoLiquidity = tokenInfoData?.liquidity;
+    if (infoLiquidity != null) {
+      const liqNum = typeof infoLiquidity === "number" ? infoLiquidity : parseFloat(String(infoLiquidity));
+      if (isFinite(liqNum) && liqNum > 0) {
+        db.update(tracked_tokens)
+          .set({ liquidityUsd: String(liqNum) })
+          .where(eq(tracked_tokens.id, token.tokenId))
+          .catch(err => logger.warn({ err, tokenId: token.tokenId }, "Holders refresh: liquidity update failed (non-fatal)"));
+      }
+    }
+
     // 2. Create a rich JSONB snapshot via TokenUpdater (new behaviour)
     createHolderSnapshot({
       tokenId:              token.tokenId,

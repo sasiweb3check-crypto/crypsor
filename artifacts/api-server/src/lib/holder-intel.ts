@@ -363,6 +363,10 @@ export function buildHolderIntel(input: {
   const top       = (input.topBuyers  as { data?: TopBuyerPayload } | undefined)?.data?.holders;
   const status    = top?.statusNow ?? {};
 
+  // Declare rawList early — needed by both the G4 flow-synthesis fallback below
+  // and the top10Pct calculation further down.
+  const rawList = (input.rawHolderList ?? []) as RawHolderEntry[];
+
   // ── Flow counts (GMGN top-buyers activity) ────────────────────────────────
   // Primary source: statusNow from the top-buyers endpoint.
   // G4 fix: that endpoint was retired by GMGN, so statusNow is always empty.
@@ -422,7 +426,7 @@ export function buildHolderIntel(input: {
   // from the holder list (which GMGN returns sorted descending by amount_percentage).
   // This prevents top10Pct being 0 when top_buyers statusNow is missing for a token.
   const statusTop10Pct = percentage(status.top_10_holder_rate);
-  const rawList = (input.rawHolderList ?? []) as RawHolderEntry[];
+  // rawList is declared earlier (above the flow section) so the G4 fallback can use it.
   // GMGN amount_percentage is a decimal fraction (0.021 = 2.1%) — multiply by 100
   // to normalise to the same percent (0–100) unit used by statusTop10Pct.
   const listTop10Pct   = rawList.length > 0

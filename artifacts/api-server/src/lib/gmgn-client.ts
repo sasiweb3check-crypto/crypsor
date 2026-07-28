@@ -29,18 +29,15 @@ export const CHAIN_MAP: Record<string, string> = {
 // ── Browser-like headers ──────────────────────────────────────────────────────
 
 const GMGN_HEADERS: Record<string, string> = {
-  "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
   "Accept":           "application/json, text/plain, */*",
   "Accept-Language":  "en-US,en;q=0.9",
-  "Accept-Encoding":  "gzip, deflate, br",
   "Referer":          "https://gmgn.ai/",
   "Origin":           "https://gmgn.ai",
-  "sec-ch-ua":        '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="8"',
-  "sec-ch-ua-mobile": "?0",
-  "sec-ch-ua-platform": '"Windows"',
-  "sec-fetch-dest":   "empty",
-  "sec-fetch-mode":   "cors",
-  "sec-fetch-site":   "same-origin",
+  "Sec-Fetch-Site":   "same-site",
+  "Sec-Fetch-Mode":   "cors",
+  "Sec-Fetch-Dest":   "empty",
+  "Connection":       "keep-alive",
   "Cache-Control":    "no-cache",
   "Pragma":           "no-cache",
 };
