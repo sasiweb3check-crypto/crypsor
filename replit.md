@@ -1,53 +1,41 @@
 # Crypsor
 
-Solana token intelligence dashboard. Scans tracked wallets for new token buys via Helius, enriches each token with price/metadata/holder data, and surfaces it in a real-time React UI.
+Solana token intelligence dashboard. Monitors wallets via Helius, scores tokens through an in-process pipeline, and surfaces results in a real-time React UI.
 
 ## Stack
 
-| Layer | Tech |
-|-------|------|
-| Frontend | React 19 · Vite 7 · TailwindCSS 4 · TanStack Query · Wouter |
-| API Server | Node.js · Express v5 · TypeScript · ESBuild |
-| Database | PostgreSQL (Replit built-in) · Drizzle ORM |
-| Job queues | BullMQ · ioredis |
-| External | Helius RPC (Solana), Aiven Redis, GMGN proxies (optional) |
+- **Frontend** — React 19 + Vite + Tailwind + TanStack Query + SSE (`artifacts/crypsor`)
+- **API server** — Express v5 + TypeScript + Drizzle ORM + BullMQ (`artifacts/api-server`)
+- **Database** — PostgreSQL via Aiven (Drizzle schema in `lib/db`)
+- **Queue** — Redis via Aiven (BullMQ job queues)
+- **Shared libs** — `lib/api-zod` (Zod schemas), `lib/api-client-react` (typed hooks), `lib/db` (Drizzle schema)
 
-## How to run
+## Running locally on Replit
 
-Both services start automatically via Replit workflows:
+Both services start automatically via the configured workflows:
 
-- **Frontend** (`artifacts/crypsor: web`) — Vite dev server, preview at `/`
-- **API Server** (`artifacts/api-server: API Server`) — Express server, mounted at `/api`
+| Workflow | Command |
+|---|---|
+| `artifacts/crypsor: web` | `pnpm --filter @workspace/crypsor run dev` |
+| `artifacts/api-server: API Server` | `pnpm --filter @workspace/api-server run dev` |
 
-### Required secrets
+## Required secrets
 
 | Secret | Purpose |
-|--------|---------|
-| `HELIUS_API_KEY` | Solana RPC / wallet scanning |
-| `AIVEN_REDIS_URL` | BullMQ job queues |
+|---|---|
+| `AIVEN_DATABASE_URL` | Aiven PostgreSQL connection string |
+| `AIVEN_REDIS_URL` | Aiven Redis connection string (BullMQ) |
+| `HELIUS_API_KEY` | Helius API key for Solana RPC / wallet scanning |
+| `SESSION_SECRET` | Express session signing |
 
-The Replit built-in PostgreSQL is used automatically via `DATABASE_URL` (runtime-managed — do not set manually).
+`DATABASE_URL` is also provided automatically by Replit's built-in PostgreSQL (unused when `AIVEN_DATABASE_URL` is set).
 
-### Schema
+## DB schema
 
-Push the Drizzle schema to the database:
+Push schema changes to the Aiven database:
 
 ```bash
 pnpm --filter @workspace/db run push
 ```
 
-## Monorepo layout
-
-```
-artifacts/
-  crypsor/        # React/Vite frontend
-  api-server/     # Express API + token intelligence pipeline
-lib/
-  db/             # Drizzle schema + client (@workspace/db)
-  api-zod/        # Shared Zod schemas (@workspace/api-zod)
-  api-client-react/ # TanStack Query hooks (@workspace/api-client-react)
-```
-
 ## User preferences
-
-- Keep existing project structure and stack — do not restructure or migrate.
