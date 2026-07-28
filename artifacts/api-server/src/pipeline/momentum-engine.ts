@@ -234,10 +234,11 @@ export async function refreshAllMomentum(): Promise<void> {
 
 /**
  * Start the momentum engine.
- * Periodic batch refresh is driven by a BullMQ repeatable job (`momentum:refresh`).
- * Event-driven per-buy updates still fire immediately via the eventBus.
+ * Periodic batch refresh runs every 5 minutes; event-driven updates fire immediately.
  */
 export function startMomentumEngine() {
   eventBus.on("token:bought", (e) => { updateMomentumOnBuy(e).catch(() => {}); });
-  logger.info("Momentum engine started (event-driven buy updates + BullMQ 5 min batch refresh)");
+  const run = () => { refreshAllMomentum().catch(err => logger.warn({ err }, "Momentum batch refresh failed")); };
+  setInterval(run, 300_000);
+  logger.info("Momentum engine started (event-driven buy updates + 5 min batch refresh)");
 }

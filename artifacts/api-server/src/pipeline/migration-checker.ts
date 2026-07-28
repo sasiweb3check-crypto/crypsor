@@ -209,8 +209,10 @@ export async function refreshMigrationStatuses(): Promise<void> {
 
 /**
  * Start the migration checker.
- * Periodic cycle is driven by a BullMQ repeatable job (`migration:check`).
+ * Periodic refresh runs every 90 s with a 15 s initial delay.
  */
 export function startMigrationChecker() {
-  logger.info("Migration checker ready (BullMQ 90 s cycle; PumpFun + Helius RPC + DexScreener)");
+  const run = () => { refreshMigrationStatuses().catch(err => logger.warn({ err }, "Migration check failed")); };
+  setTimeout(() => { run(); setInterval(run, 90_000); }, 15_000);
+  logger.info("Migration checker ready (90 s cycle; PumpFun + Helius RPC + DexScreener)");
 }

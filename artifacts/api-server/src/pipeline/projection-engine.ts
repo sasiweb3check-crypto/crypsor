@@ -85,8 +85,8 @@ export async function projectAll(): Promise<void> {
 
 /**
  * Start the projection engine.
- * Periodic full-pass is driven by a BullMQ repeatable job (`projection:full-pass`).
- * Event-driven per-token projections still fire immediately via eventBus.
+ * Periodic full-pass runs every 60 s with a 3 s initial delay.
+ * Event-driven per-token projections fire immediately via eventBus.
  */
 export function startProjectionEngine(): void {
   healthMonitor.register("projection-engine");
@@ -101,5 +101,9 @@ export function startProjectionEngine(): void {
     await projectToken(evt.tokenId);
   });
 
-  logger.info("Projection engine started (event-driven per-token + BullMQ 60 s full-pass)");
+  // Periodic full-pass
+  const runFull = () => { projectAll().catch(err => logger.warn({ err }, "Projection full-pass failed")); };
+  setTimeout(() => { runFull(); setInterval(runFull, 60_000); }, 3_000);
+
+  logger.info("Projection engine started (event-driven per-token + 60 s full-pass)");
 }

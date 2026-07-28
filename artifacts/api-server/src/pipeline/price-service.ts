@@ -301,10 +301,10 @@ export async function refreshAllPrices(): Promise<void> {
 
 /**
  * Start the price service.
- * In the new architecture the periodic refresh is driven by a BullMQ
- * repeatable job (`price:refresh` in the pipeline-scheduler queue) so
- * this function only registers the service with the health monitor.
+ * Periodic refresh runs every 20 s with an 8 s initial delay.
  */
 export function startPriceService() {
-  logger.info("Price service ready (BullMQ-driven 20 s cycle; DexScreener + PumpFun + CoinGecko)");
+  const run = () => { refreshAllPrices().catch(err => logger.warn({ err }, "Price refresh failed")); };
+  setTimeout(() => { run(); setInterval(run, 20_000); }, 8_000);
+  logger.info("Price service ready (20 s cycle; DexScreener + PumpFun + CoinGecko)");
 }

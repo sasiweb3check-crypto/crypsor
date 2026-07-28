@@ -433,10 +433,12 @@ export async function refreshAllIntelligence(): Promise<void> {
 
 /**
  * Start the intelligence engine.
- * Periodic refresh is driven by a BullMQ repeatable job (`intelligence:run`).
+ * Periodic refresh runs every 5 minutes.
  */
 export function startIntelligenceEngine() {
+  const run = () => { refreshAllIntelligence().catch(err => logger.warn({ err }, "Intelligence refresh failed")); };
+  setInterval(run, 300_000);
   logger.info(
-    `Intelligence engine ready (BullMQ 5 min cycle) — weights: MC ${WEIGHTS.mcGrowth * 100}% | Vol ${WEIGHTS.volume * 100}% | HolderVel ${WEIGHTS.holderVel * 100}% | KOL/Smart ${WEIGHTS.kolSmart * 100}% | Liq ${WEIGHTS.liquidity * 100}%`,
+    `Intelligence engine ready (5 min cycle) — weights: MC ${WEIGHTS.mcGrowth * 100}% | Vol ${WEIGHTS.volume * 100}% | HolderVel ${WEIGHTS.holderVel * 100}% | KOL/Smart ${WEIGHTS.kolSmart * 100}% | Liq ${WEIGHTS.liquidity * 100}%`,
   );
 }

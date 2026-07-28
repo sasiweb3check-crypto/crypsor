@@ -151,7 +151,9 @@ export class PipelineQueue {
       backoff:  { type: "exponential", delay: 2_000 },
     };
 
-    if (opts.dedupKey)                   jobOpts.jobId    = opts.dedupKey;
+    // BullMQ rejects job IDs containing ":" (reserved for its repeat key format).
+    // Sanitize by replacing colons with hyphens to preserve uniqueness.
+    if (opts.dedupKey)                   jobOpts.jobId    = opts.dedupKey.replace(/:/g, "-");
     if (opts.priority !== undefined)     jobOpts.priority = Math.max(1, 100 - opts.priority);
     if (opts.delayMs  && opts.delayMs > 0) jobOpts.delay  = opts.delayMs;
 
