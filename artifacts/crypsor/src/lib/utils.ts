@@ -85,7 +85,7 @@ export function formatDate(dateStr: string): string {
 export function formatGain(pct: number | null | undefined): string {
   if (pct === null || pct === undefined) return '—';
   const formatted = pct.toFixed(1);
-  return pct > 0 ? `+${formatted}%` : `${formatted}%`;
+  return pct > 0 ? `+${formatted}X` : `${formatted}X`;
 }
 
 export function formatTimeAgo(dateStr: string | null | undefined): string {

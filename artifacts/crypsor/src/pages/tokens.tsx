@@ -340,8 +340,8 @@ export default function Tokens() {
                 <th className="px-4 py-2.5 text-[9px] font-bold uppercase tracking-widest text-[#484f58] border-b border-[#30363d] bg-[#161b22] w-[200px]">Token</th>
                 <th className="px-3 py-2.5 text-[9px] font-bold uppercase tracking-widest text-[#484f58] border-b border-[#30363d] bg-[#161b22]">Status</th>
                 <SortHead field="intelligenceScore" current={sortField} order={sortOrder} onSort={handleSort}>Intel</SortHead>
-                <SortHead field="detectionGainPct" current={sortField} order={sortOrder} onSort={handleSort}>Gain %</SortHead>
-                <SortHead field="athGainPct"       current={sortField} order={sortOrder} onSort={handleSort}>ATH %</SortHead>
+                <SortHead field="detectionGainPct" current={sortField} order={sortOrder} onSort={handleSort}>Gain</SortHead>
+                <SortHead field="athGainPct"       current={sortField} order={sortOrder} onSort={handleSort}>ATH</SortHead>
                 <SortHead field="marketCapUsd"     current={sortField} order={sortOrder} onSort={handleSort}>MCap</SortHead>
                 <th className="px-3 py-2.5 text-[9px] font-bold uppercase tracking-widest text-[#484f58] border-b border-[#30363d] bg-[#161b22]">Entry → Live</th>
                 <th className="px-3 py-2.5 text-[9px] font-bold uppercase tracking-widest text-[#484f58] border-b border-[#30363d] bg-[#161b22]">KOL / Smart</th>

@@ -66,7 +66,7 @@ function fmtMcap(v: string | null | undefined): string {
 
 function fmtGain(v: number | null): { text: string; pos: boolean } | null {
   if (v == null) return null;
-  return { text: v >= 0 ? `+${v.toFixed(0)}%` : `${v.toFixed(0)}%`, pos: v >= 0 };
+  return { text: v >= 0 ? `+${v.toFixed(0)}X` : `${v.toFixed(0)}X`, pos: v >= 0 };
 }
 
 function statusStyle(s: string): string {
