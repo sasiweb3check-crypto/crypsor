@@ -145,6 +145,13 @@ export const tracked_tokens = pgTable(
     compositeScore:         real("composite_score"),
     compositeFactors:       jsonb("composite_factors").$type<string[]>(),
     compositeUpdatedAt:     timestamp("composite_updated_at"),
+    // ── Caller alert state (persisted so restarts can't cause duplicate/missed alerts) ──
+    // Postmortem label (GOOD_SETUP | SURPRISE_SIGNAL | DUMP_WARNING) last actually alerted —
+    // a new alert only fires when the live label differs from this.
+    lastAlertedLabel:       text("last_alerted_label"),
+    lastAlertedAt:          timestamp("last_alerted_at"),
+    // Highest ATH-multiple achievement tier (2/3/5/10) already alerted for this token.
+    athAlertMultiple:       real("ath_alert_multiple").default(0).notNull(),
   },
   (t) => [unique("token_chain_unique").on(t.address, t.chain)],
 );

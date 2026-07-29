@@ -1,23 +1,41 @@
 /**
  * Caller Alerts
  *
- * Rule: intelligenceScore >= 90 AND (holderKolCount >= 1 OR holderSmartCount >= 1)
- * Message: name · symbol · CA (copy) · MC at snapshot · GMGN link · socials
- * Cooldown: 6h per token · Cycle: 5 min
+ * Scope: the same "called" pool used by the Caller UI — intelligenceScore >= 90
+ * AND (holderKolCount >= 1 OR holderSmartCount >= 1) AND market cap at call >= $5,000.
+ *
+ * Two independent, DB-persisted (restart-safe) alert types — neither fires on
+ * raw score thresholds:
+ *
+ *   1. Signal-change alert — fires only when the token's postmortem label
+ *      (GOOD_SETUP / SURPRISE_SIGNAL / DUMP_WARNING, derived from
+ *      compositeFactors — see lib/postmortem.ts) differs from the label the
+ *      token was LAST alerted for. Persisted in `lastAlertedLabel`, so once a
+ *      label has been alerted it is never resent until it actually changes to
+ *      a different one — including across server restarts. NONE never alerts
+ *      and never overwrites the last-alerted label (so a brief dip to NONE
+ *      and back doesn't cause a re-send of the same label).
+ *
+ *   2. Achievement alert — fires when the token's call→ATH multiple crosses a
+ *      new milestone tier (2X/3X/5X/10X). Persisted in `athAlertMultiple`
+ *      (the highest tier already alerted), so each tier fires exactly once.
+ *
+ * Cycle: every 5 minutes, right after the intelligence engine's own 5-minute
+ * pass — so a label/tier that just changed is picked up on this loop's next
+ * tick rather than firing mid-computation.
  */
 
 import { db } from "@workspace/db";
 import { tracked_tokens, settings } from "@workspace/db";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { extractSocials, type Socials } from "../lib/socials";
+import { derivePostmortemLabel, POSTMORTEM_META, ACHIEVEMENT_TIERS, type PostmortemLabel } from "../lib/postmortem";
 
 const log = logger.child({ module: "caller-alerts" });
 
-const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1_000; // 6 hours per token
-const CHECK_INTERVAL_MS = 5 * 60 * 1_000;       // every 5 minutes
+const CHECK_INTERVAL_MS = 5 * 60 * 1_000; // every 5 minutes
 const MIN_INTEL_SCORE   = 90;
-
-const lastAlerted = new Map<number, number>(); // tokenId → last sent ms
 
 // ── Telegram credentials ──────────────────────────────────────────────────────
 
@@ -51,96 +69,91 @@ function esc(s: string): string {
   return s.replace(/[_*[\]()~`>#+=|{}.!\-\\]/g, "\\$&");
 }
 
-interface Socials {
-  twitter?: string;
-  telegram?: string;
-  website?: string;
+function gmgnLink(chain: string, address: string): string {
+  return chain === "solana"
+    ? `https://gmgn\\.ai/sol/token/${address}`
+    : `https://dexscreener\\.com/${esc(chain)}/${address}`;
 }
 
-function extractSocials(rawMetadata: unknown): Socials {
-  if (!rawMetadata || typeof rawMetadata !== "object") return {};
-  const meta = rawMetadata as Record<string, unknown>;
-  const pairs = Array.isArray(meta.pairs) ? meta.pairs : [];
-  const info  = (pairs[0] as Record<string, unknown> | undefined)?.info;
-  if (!info || typeof info !== "object") return {};
-  const infoObj = info as Record<string, unknown>;
-  const socials: Socials = {};
-
-  for (const s of Array.isArray(infoObj.socials) ? infoObj.socials : []) {
-    if (!s || typeof s !== "object") continue;
-    const entry = s as Record<string, string>;
-    if (entry.type === "twitter"  && entry.url) socials.twitter  = entry.url;
-    if (entry.type === "telegram" && entry.url) socials.telegram = entry.url;
-  }
-  for (const w of Array.isArray(infoObj.websites) ? infoObj.websites : []) {
-    if (w && typeof w === "object") {
-      const url = (w as Record<string, string>).url;
-      if (url) { socials.website = url; break; }
-    }
-  }
-  return socials;
+function socialLines(socials: Socials): string[] {
+  const lines: string[] = [];
+  if (socials.twitter)  lines.push(`🐦 [Twitter](${socials.twitter})`);
+  if (socials.telegram) lines.push(`✈️ [Telegram](${socials.telegram})`);
+  if (socials.website)  lines.push(`🌐 [Website](${socials.website})`);
+  return lines;
 }
 
-// ── Build & send ──────────────────────────────────────────────────────────────
+interface CallerToken {
+  id: number;
+  address: string;
+  chain: string;
+  name: string | null;
+  symbol: string | null;
+  intelligenceScore: number | null;
+  holderKolCount: number;
+  holderSmartCount: number;
+  athGainPct: number | null;
+  compositeFactors: string[] | null;
+  lastAlertedLabel: string | null;
+  athAlertMultiple: number;
+  rawMetadata: unknown;
+}
 
-async function sendRunnerAlert(
-  creds: { botToken: string; chatId: string },
-  token: {
-    name: string | null;
-    symbol: string | null;
-    address: string;
-    chain: string;
-    snapshotMc: string | null;
-    holderKolCount: number;
-    holderSmartCount: number;
-    intelligenceScore: number;
-    socials: Socials;
-  },
-): Promise<void> {
-  const name   = esc(token.name   ?? "Unknown");
-  const symbol = esc(token.symbol ?? "?");
-  const mc     = esc(fmtMc(token.snapshotMc));
-  const intel  = token.intelligenceScore;
-
-  const gmgnLink = token.chain === "solana"
-    ? `https://gmgn\\.ai/sol/token/${token.address}`
-    : `https://dexscreener\\.com/${esc(token.chain)}/${token.address}`;
-
-  const socialLines: string[] = [];
-  if (token.socials.twitter)  socialLines.push(`🐦 [Twitter](${token.socials.twitter})`);
-  if (token.socials.telegram) socialLines.push(`✈️ [Telegram](${token.socials.telegram})`);
-  if (token.socials.website)  socialLines.push(`🌐 [Website](${token.socials.website})`);
-
-  const lines = [
-    `🚀 *${name}* \\(${symbol}\\)`,
-    ``,
-    `Intel: *${intel}* · KOL: ${token.holderKolCount} · Smart: ${token.holderSmartCount}`,
-    `MC at call: *${mc}*`,
-    ``,
-    `\`${token.address}\``,
-    ``,
-    `🔗 [View on GMGN](${gmgnLink})`,
-    ...(socialLines.length ? [``, ...socialLines] : []),
-  ];
-
-  const resp = await fetch(
-    `https://api.telegram.org/bot${creds.botToken}/sendMessage`,
-    {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id:    creds.chatId,
-        text:       lines.join("\n"),
-        parse_mode: "MarkdownV2",
-        disable_web_page_preview: false,
-      }),
-    },
-  );
-
+async function sendTelegram(creds: { botToken: string; chatId: string }, text: string): Promise<void> {
+  const resp = await fetch(`https://api.telegram.org/bot${creds.botToken}/sendMessage`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id:    creds.chatId,
+      text,
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: false,
+    }),
+  });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`Telegram ${resp.status}: ${body.slice(0, 300)}`);
   }
+}
+
+function buildSignalMessage(t: CallerToken, calledMc: string | null, label: PostmortemLabel): string {
+  const icon = { GOOD_SETUP: "🟢", SURPRISE_SIGNAL: "🟡", DUMP_WARNING: "🔴", NONE: "⚪" }[label];
+  const meta = POSTMORTEM_META[label];
+  const name   = esc(t.name   ?? "Unknown");
+  const symbol = esc(t.symbol ?? "?");
+
+  const lines = [
+    `${icon} *${name}* \\(${symbol}\\) → *${esc(meta.label)}*`,
+    esc(meta.description),
+    ``,
+    `Intel: *${Math.round(t.intelligenceScore ?? 0)}* · KOL: ${t.holderKolCount} · Smart: ${t.holderSmartCount}`,
+    `MC at call: *${esc(fmtMc(calledMc))}*`,
+    ``,
+    `\`${t.address}\``,
+    ``,
+    `🔗 [View on GMGN](${gmgnLink(t.chain, t.address)})`,
+    ...(() => { const s = socialLines(extractSocials(t.rawMetadata)); return s.length ? [``, ...s] : []; })(),
+  ];
+  return lines.join("\n");
+}
+
+function buildAchievementMessage(t: CallerToken, calledMc: string | null, tier: number): string {
+  const name   = esc(t.name   ?? "Unknown");
+  const symbol = esc(t.symbol ?? "?");
+  const athMc = calledMc ? parseFloat(calledMc) * tier : null;
+
+  const lines = [
+    `🏆 *${name}* \\(${symbol}\\) hit *${tier}X* from call\\!`,
+    ``,
+    `Called at: *${esc(fmtMc(calledMc))}* → ATH: *${esc(fmtMc(athMc))}*`,
+    `Intel: *${Math.round(t.intelligenceScore ?? 0)}* · KOL: ${t.holderKolCount} · Smart: ${t.holderSmartCount}`,
+    ``,
+    `\`${t.address}\``,
+    ``,
+    `🔗 [View on GMGN](${gmgnLink(t.chain, t.address)})`,
+    ...(() => { const s = socialLines(extractSocials(t.rawMetadata)); return s.length ? [``, ...s] : []; })(),
+  ];
+  return lines.join("\n");
 }
 
 // ── Main check ────────────────────────────────────────────────────────────────
@@ -152,31 +165,38 @@ async function checkAndAlert(): Promise<void> {
     return;
   }
 
-  // Get the MC from the most recent intel log snapshot per token
-  const mcRows = await db.execute(sql`
+  // "Called at" MC = MC from the FIRST qualifying intel-log snapshot (matches
+  // the Caller UI's "called MC", not the latest/live snapshot).
+  const calledMcRows = await db.execute(sql`
     SELECT DISTINCT ON (token_id)
       token_id,
-      market_cap_usd AS snap_mc
+      market_cap_usd AS called_mc
     FROM token_intel_log
-    ORDER BY token_id, computed_at DESC
+    WHERE intelligence_score >= ${MIN_INTEL_SCORE}
+      AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
+      AND market_cap_usd::numeric >= 5000
+    ORDER BY token_id, computed_at ASC
   `);
-  const snapMcMap = new Map<number, string | null>();
-  for (const r of mcRows.rows as { token_id: number; snap_mc: string | null }[]) {
-    snapMcMap.set(r.token_id, r.snap_mc);
+  const calledMcMap = new Map<number, string | null>();
+  for (const r of calledMcRows.rows as { token_id: number; called_mc: string | null }[]) {
+    calledMcMap.set(r.token_id, r.called_mc);
   }
 
-  // Qualifying tokens: intel >= 90 AND at least 1 KOL or Smart holder
   const tokens = await db
     .select({
-      id:               tracked_tokens.id,
-      address:          tracked_tokens.address,
-      chain:            tracked_tokens.chain,
-      name:             tracked_tokens.name,
-      symbol:           tracked_tokens.symbol,
+      id:                tracked_tokens.id,
+      address:           tracked_tokens.address,
+      chain:             tracked_tokens.chain,
+      name:              tracked_tokens.name,
+      symbol:            tracked_tokens.symbol,
       intelligenceScore: tracked_tokens.intelligenceScore,
-      holderKolCount:   tracked_tokens.holderKolCount,
-      holderSmartCount: tracked_tokens.holderSmartCount,
-      rawMetadata:      tracked_tokens.rawMetadata,
+      holderKolCount:    tracked_tokens.holderKolCount,
+      holderSmartCount:  tracked_tokens.holderSmartCount,
+      athGainPct:        tracked_tokens.athGainPct,
+      compositeFactors:  tracked_tokens.compositeFactors,
+      lastAlertedLabel:  tracked_tokens.lastAlertedLabel,
+      athAlertMultiple:  tracked_tokens.athAlertMultiple,
+      rawMetadata:       tracked_tokens.rawMetadata,
     })
     .from(tracked_tokens)
     .where(
@@ -185,36 +205,51 @@ async function checkAndAlert(): Promise<void> {
           AND market_cap_usd::numeric >= 5000`,
     );
 
-  const now = Date.now();
-  let sent  = 0;
+  let signalSent = 0;
+  let achievementSent = 0;
 
   for (const t of tokens) {
-    const lastSent = lastAlerted.get(t.id);
-    if (lastSent && now - lastSent < ALERT_COOLDOWN_MS) continue;
+    const calledMc = calledMcMap.get(t.id) ?? null;
 
-    try {
-      await sendRunnerAlert(creds, {
-        name:             t.name,
-        symbol:           t.symbol,
-        address:          t.address,
-        chain:            t.chain,
-        snapshotMc:       snapMcMap.get(t.id) ?? null,
-        holderKolCount:   t.holderKolCount,
-        holderSmartCount: t.holderSmartCount,
-        intelligenceScore: Math.round(t.intelligenceScore ?? 0),
-        socials:          extractSocials(t.rawMetadata),
-      });
-      lastAlerted.set(t.id, now);
-      sent++;
-      log.info({ tokenId: t.id, symbol: t.symbol, intel: t.intelligenceScore }, "Runner alert sent");
-      // Stay within Telegram rate limits
-      await new Promise(r => setTimeout(r, 300));
-    } catch (err) {
-      log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send runner alert");
+    // ── 1. Signal (postmortem label) transition ──────────────────────────────
+    const currentLabel = derivePostmortemLabel(t.compositeFactors);
+    if (currentLabel !== "NONE" && currentLabel !== t.lastAlertedLabel) {
+      try {
+        await sendTelegram(creds, buildSignalMessage(t, calledMc, currentLabel));
+        await db.update(tracked_tokens)
+          .set({ lastAlertedLabel: currentLabel, lastAlertedAt: new Date() })
+          .where(eq(tracked_tokens.id, t.id));
+        signalSent++;
+        log.info({ tokenId: t.id, symbol: t.symbol, from: t.lastAlertedLabel, to: currentLabel }, "Signal alert sent");
+        await new Promise(r => setTimeout(r, 300)); // stay within Telegram rate limits
+      } catch (err) {
+        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send signal alert");
+      }
+    }
+
+    // ── 2. Achievement (ATH multiple) milestone ──────────────────────────────
+    const athX = (t.athGainPct ?? 0) / 100 + 1;
+    const nextTier = [...ACHIEVEMENT_TIERS]
+      .filter(tier => tier > (t.athAlertMultiple ?? 0) && athX >= tier)
+      .sort((a, b) => b - a)[0]; // highest newly-crossed tier
+    if (nextTier) {
+      try {
+        await sendTelegram(creds, buildAchievementMessage(t, calledMc, nextTier));
+        await db.update(tracked_tokens)
+          .set({ athAlertMultiple: nextTier })
+          .where(eq(tracked_tokens.id, t.id));
+        achievementSent++;
+        log.info({ tokenId: t.id, symbol: t.symbol, tier: nextTier }, "Achievement alert sent");
+        await new Promise(r => setTimeout(r, 300));
+      } catch (err) {
+        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send achievement alert");
+      }
     }
   }
 
-  if (sent > 0) log.info({ sent }, "Caller alerts cycle complete");
+  if (signalSent > 0 || achievementSent > 0) {
+    log.info({ signalSent, achievementSent }, "Caller alerts cycle complete");
+  }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -228,6 +263,6 @@ export function startCallerAlerts(): void {
   // Wait 35s after startup so the intelligence engine completes its first pass
   setTimeout(loop, 35_000);
   log.info(
-    `Caller alerts ready (5 min cycle, ${ALERT_COOLDOWN_MS / 3_600_000}h cooldown per token, min intel ${MIN_INTEL_SCORE})`,
+    `Caller alerts ready (5 min cycle, label-transition + achievement alerts, min intel ${MIN_INTEL_SCORE})`,
   );
 }
