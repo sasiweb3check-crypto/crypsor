@@ -232,7 +232,10 @@ router.get("/caller/history", async (req, res) => {
       };
     });
 
-    results.sort((a, b) => {
+    // Drop tokens currently flagged as dump risk
+    const filtered = results.filter(t => t.postmortemLabel !== "DUMP_WARNING");
+
+    filtered.sort((a, b) => {
       let diff = 0;
       if (sort === "quality")       diff = b._qualityOrder - a._qualityOrder;
       else if (sort === "gain")     diff = (b.gainSinceCall ?? -Infinity) - (a.gainSinceCall ?? -Infinity);
@@ -242,7 +245,7 @@ router.get("/caller/history", async (req, res) => {
       return order === "asc" ? -diff : diff;
     });
 
-    res.json({ total: results.length, tokens: results });
+    res.json({ total: filtered.length, tokens: filtered });
   } catch (err) {
     console.error("caller history error", err);
     res.status(500).json({ error: "Internal server error" });
