@@ -181,7 +181,8 @@ async function checkAndAlert(): Promise<void> {
     .from(tracked_tokens)
     .where(
       sql`intelligence_score >= ${MIN_INTEL_SCORE}
-          AND (holder_kol_count >= 1 OR holder_smart_count >= 1)`,
+          AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
+          AND market_cap_usd::numeric >= 5000`,
     );
 
   const now = Date.now();

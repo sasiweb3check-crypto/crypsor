@@ -62,7 +62,8 @@ router.get("/caller/tokens", async (req, res) => {
       .from(tracked_tokens)
       .where(
         sql`intelligence_score >= ${MIN_INTEL}
-            AND (holder_kol_count >= 1 OR holder_smart_count >= 1)`,
+            AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
+            AND market_cap_usd::numeric >= 5000`,
       )
       .orderBy(sql`intelligence_score DESC`);
 
@@ -123,6 +124,7 @@ router.get("/caller/history", async (req, res) => {
       FROM token_intel_log
       WHERE intelligence_score >= ${MIN_INTEL}
         AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
+        AND market_cap_usd::numeric >= 5000
       ORDER BY token_id, computed_at ASC
     `);
 
