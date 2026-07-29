@@ -202,7 +202,9 @@ router.get("/caller/history", async (req, res) => {
       Elite: 7, Excellent: 6, Strong: 5, Good: 4, Average: 3, Speculative: 2, Weak: 1,
     };
 
-    const results = tokens.map(t => {
+    const results = tokens
+      .filter(t => (parseFloat(t.marketCapUsd ?? "0") || 0) >= MIN_CALLED_MC)
+      .map(t => {
       const hist = histMap.get(t.id)!;
       const calledMc  = hist.called_mc ? parseFloat(hist.called_mc) : null;
       const currentMc = parseFloat(t.marketCapUsd ?? "0") || null;
