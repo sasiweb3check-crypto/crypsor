@@ -337,7 +337,7 @@ export default function Caller() {
           </span>
         </div>
         <span className="text-[#f59e0b] font-black text-sm tabular-nums">
-          {stats?.total ?? data?.total ?? "—"}
+          {isLoading ? "—" : (data?.total ?? "—")}
           <span className="text-[8px] font-normal text-[#484f58] ml-1 uppercase tracking-widest">called</span>
         </span>
       </div>
