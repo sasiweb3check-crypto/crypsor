@@ -12,6 +12,7 @@ import Settings from '@/pages/settings';
 import Wallets from '@/pages/wallets';
 import Holders from '@/pages/holders';
 import IntelLog from '@/pages/intel-log';
+import Caller from '@/pages/caller';
 import { useLiveTokens } from '@/hooks/use-live-tokens';
 
 const queryClient = new QueryClient({
@@ -41,6 +42,7 @@ function Router() {
         <Route path="/holders" component={Holders} />
         <Route path="/settings" component={Settings} />
         <Route path="/intel-log" component={IntelLog} />
+        <Route path="/caller" component={Caller} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

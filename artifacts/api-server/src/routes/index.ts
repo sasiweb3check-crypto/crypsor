@@ -9,6 +9,7 @@ import pipelineRouter from "./pipeline";
 import assetsRouter   from "./assets";
 import holdersRouter  from "./holders";
 import intelLogRouter from "./intel-log";
+import callerRouter   from "./caller";
 import { sseHandler } from "../pipeline/sse-gateway";
 
 const router: IRouter = Router();
@@ -23,6 +24,7 @@ router.use("/pipeline",  pipelineRouter);
 router.use("/assets",    assetsRouter);
 router.use("/holders",   holdersRouter);
 router.use(intelLogRouter);
+router.use(callerRouter);
 router.get("/events",    sseHandler);
 
 export default router;
