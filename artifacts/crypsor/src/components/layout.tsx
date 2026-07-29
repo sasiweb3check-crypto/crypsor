@@ -8,7 +8,7 @@ const NAV = [
   { href: "/wallets",   label: "Wallets",   icon: Wallet,          desc: "Monitored wallets" },
   { href: "/holders",   label: "Intel",     icon: Users,           desc: "Holder activity" },
   { href: "/intel-log", label: "Score Log", icon: ScrollText,      desc: "Intel score history" },
-  { href: "/caller",    label: "Caller",    icon: Radio,           desc: "Composite scoring" },
+  { href: "/caller",    label: "Caller",    icon: Radio,           desc: "Intel ≥ 90 signals" },
   { href: "/settings",  label: "Settings",  icon: Settings,        desc: "API keys" },
 ];
 
