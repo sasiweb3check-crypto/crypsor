@@ -1,24 +1,23 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Copy, ExternalLink, Zap, TrendingUp, Users, Star,
-  Radio, AlertTriangle, CheckCircle2, Sparkles, ChevronUp, ChevronDown,
+  Copy, ExternalLink, Radio, Zap, Star, Users,
+  ToggleLeft, ToggleRight, TrendingUp, Clock,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
-  cn, truncateAddress, formatCompactUsd, formatGain, formatTimeAgo,
+  cn, truncateAddress, formatCompactUsd, formatTimeAgo,
   getGmgnUrl, safeSymbol, safeName,
 } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type FactorTag =
-  | "GOOD_MOMENTUM" | "GOOD_LIQUIDITY" | "GOOD_SMART_MONEY"
-  | "SURPRISE_ACCUMULATION" | "SURPRISE_HOLDER_SURGE"
-  | "DUMP_LIQUIDITY_DRAIN" | "DUMP_HOLDER_EXODUS" | "DUMP_STALE_PUMP";
+type SignalKey =
+  | "intel_score" | "kol_smart" | "holder_velocity"
+  | "low_mc" | "ath_gap" | "distributed";
 
-interface CallerToken {
+interface RunnerToken {
   id: number;
   address: string;
   chain: string;
@@ -30,501 +29,391 @@ interface CallerToken {
   detectedPriceUsd: string | null;
   currentPriceUsd: string | null;
   marketCapUsd: number | null;
-  athMarketCapUsd: number | null;
   calledAtMcUsd: number | null;
   gainPct: number | null;
   athGainPct: number | null;
   holderCount: number | null;
   holderKolCount: number | null;
   holderSmartCount: number | null;
+  top10Pct: number | null;
   intelligenceScore: number | null;
   qualityLabel: string | null;
-  compositeScore: number;
-  factors: FactorTag[];
-  subScores: {
-    mcGrowth: number; volIntensity: number; holderVelocity: number;
-    kolSmart: number; liquidityHealth: number;
-  };
-  ageHours: number;
+  kolSmartScore: number | null;
+  holderVelocityScore: number | null;
+  snapshotCount: number;
+  runnerScore: number;
+  signals: SignalKey[];
 }
 
 interface CallerResponse {
   total: number;
-  tokens: CallerToken[];
+  useAgeBased: boolean;
+  tokens: RunnerToken[];
+}
+
+// ── Signal config ─────────────────────────────────────────────────────────────
+
+const SIGNAL_META: Record<SignalKey, { label: string; pts: number; color: string }> = {
+  intel_score:      { label: "Intel >75",       pts: 38, color: "#f59e0b" },
+  kol_smart:        { label: "KOL/Smart >45",   pts: 32, color: "#a78bfa" },
+  holder_velocity:  { label: "Velocity >75",    pts: 22, color: "#3b82f6" },
+  low_mc:           { label: "MC <$15K",         pts: 18, color: "#10b981" },
+  ath_gap:          { label: "ATH Gap >120%",   pts: 15, color: "#f97316" },
+  distributed:      { label: "Top10 <68%",       pts: 12, color: "#22c55e" },
+};
+
+const CORE_SIGNALS: SignalKey[]    = ["intel_score", "kol_smart", "holder_velocity", "low_mc"];
+const AGE_SIGNALS:  SignalKey[]    = ["ath_gap", "distributed"];
+const MAX_CORE = 38 + 32 + 22 + 18;          // 110
+const MAX_AGE  = 15 + 12;                     // 27
+
+// ── Score tier ────────────────────────────────────────────────────────────────
+
+function tier(score: number) {
+  if (score >= 90) return { label: "STRONG RUNNER", color: "#22c55e",  bg: "bg-[#22c55e]/8",  border: "border-[#22c55e]/25" };
+  if (score >= 70) return { label: "RUNNER",         color: "#f59e0b",  bg: "bg-[#f59e0b]/8",  border: "border-[#f59e0b]/25" };
+  if (score >= 50) return { label: "WATCH",          color: "#3b82f6",  bg: "bg-[#3b82f6]/8",  border: "border-[#3b82f6]/25" };
+  return                   { label: "WEAK",          color: "#8b949e",  bg: "bg-transparent",   border: "border-[#30363d]" };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function gainColor(pct: number | null | undefined) {
-  if (pct == null) return "text-[#8b949e]";
+  if (pct == null) return "text-[#484f58]";
   if (pct > 0) return "text-[#22c55e]";
   if (pct < 0) return "text-[#ef4444]";
   return "text-[#8b949e]";
 }
 
-function fmtGain(pct: number | null | undefined) {
+function fmtX(pct: number | null | undefined) {
   if (pct == null) return "—";
-  const x = (pct / 100) + 1;
+  const x = pct / 100 + 1;
   if (x >= 2) return `+${x.toFixed(1)}X`;
   if (pct >= 0) return `+${pct.toFixed(1)}%`;
   return `${pct.toFixed(1)}%`;
 }
 
-const FACTOR_META: Record<FactorTag, { label: string; color: string; kind: "good" | "surprise" | "dump" }> = {
-  GOOD_MOMENTUM:         { label: "Momentum",     color: "text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/25", kind: "good" },
-  GOOD_LIQUIDITY:        { label: "Liquidity",    color: "text-[#10b981] bg-[#10b981]/10 border-[#10b981]/25", kind: "good" },
-  GOOD_SMART_MONEY:      { label: "Smart Money",  color: "text-[#3b82f6] bg-[#3b82f6]/10 border-[#3b82f6]/25", kind: "good" },
-  SURPRISE_ACCUMULATION: { label: "Accumulating", color: "text-[#a78bfa] bg-[#a78bfa]/10 border-[#a78bfa]/25", kind: "surprise" },
-  SURPRISE_HOLDER_SURGE: { label: "Holder Surge", color: "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/25", kind: "surprise" },
-  DUMP_LIQUIDITY_DRAIN:  { label: "Liq Drain",    color: "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/25", kind: "dump" },
-  DUMP_HOLDER_EXODUS:    { label: "Exodus",        color: "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/25", kind: "dump" },
-  DUMP_STALE_PUMP:       { label: "Stale Pump",   color: "text-[#f97316] bg-[#f97316]/10 border-[#f97316]/25", kind: "dump" },
-};
-
-function alertKind(factors: FactorTag[]): "good" | "surprise" | "dump" | "none" {
-  if (factors.some(f => FACTOR_META[f]?.kind === "dump")) return "dump";
-  if (factors.some(f => FACTOR_META[f]?.kind === "surprise")) return "surprise";
-  if (factors.some(f => FACTOR_META[f]?.kind === "good")) return "good";
-  return "none";
-}
-
-const ALERT_STYLES = {
-  good:     { border: "border-[#22c55e]/20", glow: "shadow-[0_0_12px_rgba(34,197,94,0.07)]",     icon: CheckCircle2,  iconColor: "text-[#22c55e]",  label: "GOOD SETUP",   labelColor: "text-[#22c55e]" },
-  surprise: { border: "border-[#a78bfa]/20", glow: "shadow-[0_0_12px_rgba(167,139,250,0.07)]",   icon: Sparkles,      iconColor: "text-[#a78bfa]",  label: "SURPRISE",     labelColor: "text-[#a78bfa]" },
-  dump:     { border: "border-[#ef4444]/20", glow: "shadow-[0_0_12px_rgba(239,68,68,0.07)]",     icon: AlertTriangle, iconColor: "text-[#ef4444]",  label: "DUMP WARNING", labelColor: "text-[#ef4444]" },
-  none:     { border: "border-[#30363d]",     glow: "",                                             icon: Radio,         iconColor: "text-[#8b949e]",  label: "SIGNAL",       labelColor: "text-[#8b949e]" },
-};
-
-function ScoreRing({ score }: { score: number }) {
-  const r = 14;
-  const circ = 2 * Math.PI * r;
-  const filled = (score / 100) * circ;
-  const color = score >= 70 ? "#22c55e" : score >= 50 ? "#f59e0b" : score >= 30 ? "#f97316" : "#ef4444";
+function TokenLogo({ logoUri, address, symbol }: {
+  logoUri?: string | null; address: string; symbol?: string | null;
+}) {
+  const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(
+    (symbol?.slice(0, 2) || "?").replace(/[^\x00-\x7F]/g, "") || "?"
+  )}&background=161b22&color=f59e0b&size=40&bold=true`;
+  const [src, setSrc] = useState(logoUri || fallback);
   return (
-    <svg width={36} height={36} viewBox="0 0 36 36" className="shrink-0">
-      <circle cx={18} cy={18} r={r} fill="none" stroke="#1f2937" strokeWidth={3} />
-      <circle cx={18} cy={18} r={r} fill="none" stroke={color} strokeWidth={3}
-        strokeDasharray={`${filled} ${circ}`}
-        strokeLinecap="round"
-        transform="rotate(-90 18 18)"
-        style={{ transition: "stroke-dasharray 0.4s ease" }}
-      />
-      <text x={18} y={22} textAnchor="middle" fontSize={9} fontWeight="700" fill={color} fontFamily="monospace">
-        {Math.round(score)}
-      </text>
-    </svg>
+    <img
+      src={src}
+      alt=""
+      onError={() => setSrc(fallback)}
+      className="w-9 h-9 shrink-0 border border-[#21262d] object-cover"
+    />
   );
 }
 
-function TokenLogoSmall({ logoUri, address, symbol }: { logoUri?: string | null; address: string; symbol?: string | null }) {
-  const [src, setSrc] = useState(logoUri || `https://ui-avatars.com/api/?name=${encodeURIComponent((symbol?.slice(0, 2) || "?"))}&background=1a2030&color=f59e0b&size=40`);
+// ── Score bar ─────────────────────────────────────────────────────────────────
+
+function ScoreBar({ score, color }: { score: number; color: string }) {
   return (
-    <img src={src} alt="" onError={() => setSrc(`https://ui-avatars.com/api/?name=${encodeURIComponent((symbol?.slice(0, 2) || "?"))}&background=1a2030&color=f59e0b&size=40`)}
-      className="w-8 h-8 shrink-0 border border-[#30363d] object-cover" />
+    <div className="flex items-center gap-2 w-full">
+      <div className="flex-1 h-1 bg-[#21262d] overflow-hidden">
+        <div
+          className="h-full transition-all duration-500"
+          style={{ width: `${score}%`, backgroundColor: color }}
+        />
+      </div>
+      <span
+        className="text-sm font-black tabular-nums leading-none shrink-0 w-8 text-right"
+        style={{ color }}
+      >
+        {score}
+      </span>
+    </div>
   );
 }
 
-// ── Performer card (top section) ──────────────────────────────────────────────
+// ── Runner card ───────────────────────────────────────────────────────────────
 
-function PerformerCard({ token, onClick }: { token: CallerToken; onClick: () => void }) {
+function RunnerCard({ token, useAgeBased, onClick }: {
+  token: RunnerToken;
+  useAgeBased: boolean;
+  onClick: () => void;
+}) {
   const { toast } = useToast();
-  const kind = alertKind(token.factors);
-  const style = ALERT_STYLES[kind];
-  const AlertIcon = style.icon;
+  const t = tier(token.runnerScore);
 
-  const copyAddress = (e: React.MouseEvent) => {
+  const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
     navigator.clipboard.writeText(token.address);
     toast({ title: "Copied", description: truncateAddress(token.address) });
   };
-
-  const openGmgn = (e: React.MouseEvent) => {
+  const gmgn = (e: React.MouseEvent) => {
     e.stopPropagation();
     window.open(getGmgnUrl(token.chain, token.address), "_blank", "noopener");
   };
+
+  const coreHit  = token.signals.filter(s => CORE_SIGNALS.includes(s));
+  const ageHit   = token.signals.filter(s => AGE_SIGNALS.includes(s));
+  const allHit   = [...coreHit, ...ageHit];
 
   return (
     <div
       onClick={onClick}
       className={cn(
-        "relative overflow-hidden bg-[#0d1117] border cursor-pointer transition-all duration-150 hover:bg-[#161b22] hover:-translate-y-0.5 active:translate-y-0 p-4 flex flex-col gap-3 min-w-[200px]",
-        style.border, style.glow
+        "group relative flex flex-col gap-3 p-4 border cursor-pointer",
+        "bg-[#0d1117] hover:bg-[#0f1419] transition-colors duration-100",
+        t.border,
       )}
     >
-      {/* Kind badge */}
-      <div className={cn("absolute top-0 right-0 px-2 py-1 text-[8px] font-bold tracking-widest border-b border-l flex items-center gap-1", style.border)}>
-        <AlertIcon className={cn("w-2.5 h-2.5", style.iconColor)} />
-        <span className={style.labelColor}>{style.label}</span>
+      {/* Tier badge */}
+      <div className="absolute top-3 right-3 text-[8px] font-black tracking-widest"
+        style={{ color: t.color }}>
+        {t.label}
       </div>
 
-      {/* Header row */}
-      <div className="flex items-start gap-2.5 pr-20">
-        <TokenLogoSmall logoUri={token.logoUri} address={token.address} symbol={token.symbol} />
+      {/* Token header */}
+      <div className="flex items-center gap-2.5 pr-20">
+        <TokenLogo logoUri={token.logoUri} address={token.address} symbol={token.symbol} />
         <div className="flex-1 min-w-0">
-          <div className="text-[#c9d1d9] font-bold text-sm leading-none truncate">
+          <div className="text-[#e6edf3] font-bold text-sm truncate leading-tight">
             {safeSymbol(token.symbol, token.address)}
           </div>
-          <div className="text-[#8b949e] text-[10px] mt-0.5 truncate">{safeName(token.name, token.symbol, token.address)}</div>
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <span className="text-[#484f58] text-[10px] font-mono">{truncateAddress(token.address)}</span>
-            <button onClick={copyAddress} className="text-[#484f58] hover:text-[#f59e0b] transition-colors">
-              <Copy className="w-2.5 h-2.5" />
-            </button>
-            <button onClick={openGmgn} className="text-[#484f58] hover:text-[#f59e0b] transition-colors">
-              <ExternalLink className="w-2.5 h-2.5" />
-            </button>
+          <div className="text-[#484f58] text-[10px] truncate mt-0.5">
+            {safeName(token.name, token.symbol, token.address)}
           </div>
         </div>
-        <ScoreRing score={token.compositeScore} />
       </div>
 
-      {/* Stats grid */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+      {/* Score bar */}
+      <ScoreBar score={token.runnerScore} color={t.color} />
+
+      {/* Signal chips */}
+      <div className="flex flex-wrap gap-1">
+        {allHit.map(s => (
+          <span
+            key={s}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-bold tracking-wider border"
+            style={{
+              color:            SIGNAL_META[s].color,
+              borderColor:      SIGNAL_META[s].color + "40",
+              backgroundColor:  SIGNAL_META[s].color + "12",
+            }}
+          >
+            +{SIGNAL_META[s].pts} {SIGNAL_META[s].label}
+          </span>
+        ))}
+        {useAgeBased && token.snapshotCount < 3 && ageHit.length === 0 && (
+          <span className="text-[8px] text-[#30363d] italic">
+            age signals need {3 - token.snapshotCount} more snaps
+          </span>
+        )}
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 border-t border-[#1c2128]">
         <div>
-          <div className="text-[9px] text-[#484f58] uppercase tracking-widest">Called at MC</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">Called MC</div>
           <div className="text-[#c9d1d9] text-[11px] font-bold tabular-nums">
             {token.calledAtMcUsd ? formatCompactUsd(token.calledAtMcUsd) : "—"}
           </div>
         </div>
         <div>
-          <div className="text-[9px] text-[#484f58] uppercase tracking-widest">Current MC</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">Current MC</div>
           <div className="text-[#c9d1d9] text-[11px] font-bold tabular-nums">
             {token.marketCapUsd ? formatCompactUsd(token.marketCapUsd) : "—"}
           </div>
         </div>
         <div>
-          <div className="text-[9px] text-[#484f58] uppercase tracking-widest">Gain</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">Gain</div>
           <div className={cn("text-[11px] font-bold tabular-nums", gainColor(token.gainPct))}>
-            {fmtGain(token.gainPct)}
+            {fmtX(token.gainPct)}
           </div>
         </div>
         <div>
-          <div className="text-[9px] text-[#484f58] uppercase tracking-widest">ATH</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">ATH</div>
           <div className={cn("text-[11px] font-bold tabular-nums", gainColor(token.athGainPct))}>
-            {fmtGain(token.athGainPct)}
+            {fmtX(token.athGainPct)}
           </div>
         </div>
       </div>
 
-      {/* KOL / Smart / Intel row */}
-      <div className="flex items-center gap-3 pt-1 border-t border-[#21262d]">
-        <div className="flex items-center gap-1">
-          <Star className="w-3 h-3 text-[#f59e0b]" />
-          <span className="text-[10px] text-[#8b949e]">KOL <span className="text-[#c9d1d9] font-bold">{token.holderKolCount ?? 0}</span></span>
-        </div>
-        <div className="flex items-center gap-1">
-          <Users className="w-3 h-3 text-[#3b82f6]" />
-          <span className="text-[10px] text-[#8b949e]">Smart <span className="text-[#c9d1d9] font-bold">{token.holderSmartCount ?? 0}</span></span>
-        </div>
-        {token.intelligenceScore != null && (
-          <div className="ml-auto flex items-center gap-1">
-            <Zap className="w-3 h-3 text-[#f59e0b]" />
-            <span className="text-[10px] text-[#f59e0b] font-bold">{Math.round(token.intelligenceScore)}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Factor tags */}
-      {token.factors.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {token.factors.map(f => (
-            <span key={f} className={cn("text-[8px] font-bold px-1.5 py-0.5 border tracking-widest", FACTOR_META[f].color)}>
-              {FACTOR_META[f].label.toUpperCase()}
+      {/* Footer row */}
+      <div className="flex items-center justify-between pt-1 border-t border-[#1c2128]">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1 text-[9px] text-[#8b949e]">
+            <Star className="w-2.5 h-2.5 text-[#f59e0b]" />
+            KOL <span className="text-[#c9d1d9] font-bold ml-0.5">{token.holderKolCount ?? 0}</span>
+          </span>
+          <span className="flex items-center gap-1 text-[9px] text-[#8b949e]">
+            <Users className="w-2.5 h-2.5 text-[#3b82f6]" />
+            Smart <span className="text-[#c9d1d9] font-bold ml-0.5">{token.holderSmartCount ?? 0}</span>
+          </span>
+          {token.intelligenceScore != null && (
+            <span className="flex items-center gap-1 text-[9px]">
+              <Zap className="w-2.5 h-2.5 text-[#f59e0b]" />
+              <span className="text-[#f59e0b] font-bold">{Math.round(token.intelligenceScore)}</span>
             </span>
-          ))}
+          )}
         </div>
-      )}
+
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] text-[#484f58]">
+            <Clock className="w-2.5 h-2.5 inline mr-0.5" />
+            {formatTimeAgo(token.firstDetectedAt)}
+          </span>
+          <button
+            onClick={copy}
+            title="Copy address"
+            className="text-[#30363d] hover:text-[#f59e0b] transition-colors"
+          >
+            <Copy className="w-3 h-3" />
+          </button>
+          <button
+            onClick={gmgn}
+            title="Open on GMGN"
+            className="text-[#30363d] hover:text-[#f59e0b] transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-// ── Table row ─────────────────────────────────────────────────────────────────
-
-function TableRow({ token, onClick }: { token: CallerToken; onClick: () => void }) {
-  const { toast } = useToast();
-  const kind = alertKind(token.factors);
-  const style = ALERT_STYLES[kind];
-
-  const copyAddress = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(token.address);
-    toast({ title: "Copied" });
-  };
-
-  const openGmgn = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    window.open(getGmgnUrl(token.chain, token.address), "_blank", "noopener");
-  };
-
-  return (
-    <tr
-      onClick={onClick}
-      className="border-b border-[#21262d] hover:bg-[#161b22] cursor-pointer transition-colors group"
-    >
-      {/* Token */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <TokenLogoSmall logoUri={token.logoUri} address={token.address} symbol={token.symbol} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[#c9d1d9] text-xs font-bold truncate">{safeSymbol(token.symbol, token.address)}</span>
-              {token.factors.length > 0 && (
-                <span className={cn("text-[7px] font-bold px-1 py-px border tracking-widest", style.border, style.labelColor)}>
-                  {style.label}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1 mt-0.5">
-              <span className="text-[#484f58] text-[10px] font-mono">{truncateAddress(token.address)}</span>
-              <button onClick={copyAddress} className="opacity-0 group-hover:opacity-100 text-[#484f58] hover:text-[#f59e0b] transition-all">
-                <Copy className="w-2.5 h-2.5" />
-              </button>
-              <button onClick={openGmgn} className="opacity-0 group-hover:opacity-100 text-[#484f58] hover:text-[#f59e0b] transition-all">
-                <ExternalLink className="w-2.5 h-2.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </td>
-
-      {/* Score */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <ScoreRing score={token.compositeScore} />
-          {token.intelligenceScore != null && (
-            <div className="flex items-center gap-1">
-              <Zap className="w-3 h-3 text-[#f59e0b] shrink-0" />
-              <span className="text-[#f59e0b] text-[11px] font-bold tabular-nums">{Math.round(token.intelligenceScore)}</span>
-            </div>
-          )}
-        </div>
-      </td>
-
-      {/* KOL / Smart */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-3">
-          <span className="text-[10px]"><span className="text-[#8b949e]">KOL </span><span className="text-[#c9d1d9] font-bold">{token.holderKolCount ?? 0}</span></span>
-          <span className="text-[10px]"><span className="text-[#8b949e]">Smart </span><span className="text-[#c9d1d9] font-bold">{token.holderSmartCount ?? 0}</span></span>
-        </div>
-      </td>
-
-      {/* Called at MC */}
-      <td className="px-4 py-3 tabular-nums text-[11px] text-[#c9d1d9] font-mono">
-        {token.calledAtMcUsd ? formatCompactUsd(token.calledAtMcUsd) : "—"}
-      </td>
-
-      {/* Current MC */}
-      <td className="px-4 py-3 tabular-nums text-[11px] text-[#c9d1d9] font-mono">
-        {token.marketCapUsd ? formatCompactUsd(token.marketCapUsd) : "—"}
-      </td>
-
-      {/* Gain */}
-      <td className={cn("px-4 py-3 tabular-nums text-[11px] font-bold", gainColor(token.gainPct))}>
-        {fmtGain(token.gainPct)}
-      </td>
-
-      {/* ATH Gain */}
-      <td className={cn("px-4 py-3 tabular-nums text-[11px] font-bold", gainColor(token.athGainPct))}>
-        {fmtGain(token.athGainPct)}
-      </td>
-
-      {/* Factors */}
-      <td className="px-4 py-3">
-        <div className="flex flex-wrap gap-1">
-          {token.factors.slice(0, 2).map(f => (
-            <span key={f} className={cn("text-[7px] font-bold px-1.5 py-0.5 border tracking-widest", FACTOR_META[f].color)}>
-              {FACTOR_META[f].label.toUpperCase()}
-            </span>
-          ))}
-          {token.factors.length > 2 && (
-            <span className="text-[7px] text-[#484f58] px-1 py-0.5">+{token.factors.length - 2}</span>
-          )}
-        </div>
-      </td>
-
-      {/* Age */}
-      <td className="px-4 py-3 text-[10px] text-[#8b949e]">
-        {formatTimeAgo(token.firstDetectedAt)}
-      </td>
-    </tr>
-  );
-}
-
-// ── Sort helpers ──────────────────────────────────────────────────────────────
-
-type SortKey = "compositeScore" | "intelligenceScore" | "gainPct" | "athGainPct" | "calledAtMcUsd" | "marketCapUsd";
-
-function SortHeader({ label, field, sort, setSort }: {
-  label: string; field: SortKey;
-  sort: { key: SortKey; dir: "asc" | "desc" };
-  setSort: (s: { key: SortKey; dir: "asc" | "desc" }) => void;
-}) {
-  const active = sort.key === field;
-  return (
-    <th
-      className={cn(
-        "px-4 py-3 text-left text-[9px] uppercase tracking-widest cursor-pointer select-none whitespace-nowrap",
-        active ? "text-[#f59e0b]" : "text-[#484f58] hover:text-[#8b949e]",
-      )}
-      onClick={() => setSort({ key: field, dir: active && sort.dir === "desc" ? "asc" : "desc" })}
-    >
-      <span className="flex items-center gap-1">
-        {label}
-        {active ? (
-          sort.dir === "desc" ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />
-        ) : null}
-      </span>
-    </th>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Caller() {
-  const [, navigate] = useLocation();
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "compositeScore", dir: "desc" });
-  const [filterKind, setFilterKind] = useState<"all" | "good" | "surprise" | "dump">("all");
+  const [, navigate]     = useLocation();
+  const [ageBased, setAgeBased] = useState(true);
 
-  const { data, isLoading, error, refetch } = useQuery<CallerResponse>({
-    queryKey: ["caller-tokens"],
-    queryFn: () => fetch(`${import.meta.env.BASE_URL}api/caller/tokens`).then(r => r.json()),
+  const { data, isLoading, error } = useQuery<CallerResponse>({
+    queryKey: ["caller-tokens", ageBased],
+    queryFn:  () =>
+      fetch(`${import.meta.env.BASE_URL}api/caller/tokens?ageBased=${ageBased}`)
+        .then(r => r.json()),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
-  const tokens = useMemo(() => {
-    if (!data?.tokens) return [];
-    let list = [...data.tokens];
-
-    // Filter by kind
-    if (filterKind !== "all") {
-      list = list.filter(t => alertKind(t.factors) === filterKind);
-    }
-
-    // Sort
-    list.sort((a, b) => {
-      const av = (a[sort.key] ?? 0) as number;
-      const bv = (b[sort.key] ?? 0) as number;
-      return sort.dir === "desc" ? bv - av : av - bv;
-    });
-
-    return list;
-  }, [data, sort, filterKind]);
-
-  // Top performers: top 5 by compositeScore with factors
-  const performers = useMemo(() => {
-    if (!data?.tokens) return [];
-    return [...data.tokens]
-      .filter(t => t.factors.length > 0)
-      .sort((a, b) => b.compositeScore - a.compositeScore)
-      .slice(0, 5);
-  }, [data]);
-
-  const KIND_TABS = [
-    { value: "all",      label: "ALL",      count: data?.tokens?.length ?? 0 },
-    { value: "good",     label: "GOOD",     count: data?.tokens?.filter(t => alertKind(t.factors) === "good").length ?? 0 },
-    { value: "surprise", label: "SURPRISE", count: data?.tokens?.filter(t => alertKind(t.factors) === "surprise").length ?? 0 },
-    { value: "dump",     label: "DUMP",     count: data?.tokens?.filter(t => alertKind(t.factors) === "dump").length ?? 0 },
-  ] as const;
+  const tokens = data?.tokens ?? [];
+  const strong  = tokens.filter(t => t.runnerScore >= 90);
+  const runner  = tokens.filter(t => t.runnerScore >= 70 && t.runnerScore < 90);
+  const watch   = tokens.filter(t => t.runnerScore >= 50 && t.runnerScore < 70);
+  const weak    = tokens.filter(t => t.runnerScore < 50);
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-6">
+
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-bold text-[#f59e0b] tracking-widest uppercase flex items-center gap-2">
             <Radio className="w-4 h-4" />
             Caller
           </h1>
           <p className="text-[#484f58] text-[10px] mt-0.5 tracking-widest uppercase">
-            Composite score · {data?.total ?? 0} tokens tracked
+            Runner potential · {data?.total ?? 0} scored tokens
           </p>
         </div>
+
+        {/* Age-scoring toggle */}
         <button
-          onClick={() => refetch()}
-          className="text-[9px] font-bold uppercase tracking-widest px-3 h-7 border border-[#30363d] text-[#8b949e] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 transition-colors"
+          onClick={() => setAgeBased(v => !v)}
+          className={cn(
+            "flex items-center gap-2 px-3 h-8 border text-[9px] font-bold uppercase tracking-widest transition-colors shrink-0",
+            ageBased
+              ? "border-[#f59e0b]/40 bg-[#f59e0b]/8 text-[#f59e0b]"
+              : "border-[#30363d] bg-transparent text-[#484f58] hover:text-[#8b949e]",
+          )}
         >
-          Refresh
+          {ageBased
+            ? <ToggleRight className="w-4 h-4" />
+            : <ToggleLeft  className="w-4 h-4" />}
+          Age Signals
         </button>
       </div>
 
-      {/* Top performers */}
-      {performers.length > 0 && (
-        <div>
-          <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-2 flex items-center gap-1.5">
-            <TrendingUp className="w-3 h-3 text-[#f59e0b]" />
-            Top Performers
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            {performers.map(t => (
-              <PerformerCard key={t.id} token={t} onClick={() => navigate(`/tokens/${t.id}`)} />
+      {/* ── Score legend ──────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap gap-3">
+        {[
+          { label: "Core signals",    items: CORE_SIGNALS },
+          { label: "Age signals",     items: AGE_SIGNALS,  dim: !ageBased },
+        ].map(group => (
+          <div key={group.label} className={cn("flex items-center gap-2 flex-wrap", group.dim && "opacity-30")}>
+            <span className="text-[8px] text-[#484f58] uppercase tracking-widest whitespace-nowrap">{group.label}:</span>
+            {group.items.map(s => (
+              <span
+                key={s}
+                className="text-[8px] font-bold px-1.5 py-0.5 border tracking-wider"
+                style={{
+                  color:           SIGNAL_META[s].color,
+                  borderColor:     SIGNAL_META[s].color + "35",
+                  backgroundColor: SIGNAL_META[s].color + "10",
+                }}
+              >
+                +{SIGNAL_META[s].pts} {SIGNAL_META[s].label}
+              </span>
             ))}
+          </div>
+        ))}
+      </div>
+
+      {/* ── Loading / error ────────────────────────────────────────────────── */}
+      {isLoading && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="h-52 bg-[#0d1117] border border-[#1c2128] animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="p-8 text-center text-[#ef4444] text-xs border border-[#ef4444]/20 bg-[#ef4444]/5">
+          Failed to load runner signals.
+        </div>
+      )}
+
+      {!isLoading && !error && tokens.length === 0 && (
+        <div className="p-16 text-center border border-[#1c2128]">
+          <Radio className="w-8 h-8 text-[#21262d] mx-auto mb-3" />
+          <div className="text-[#484f58] text-xs tracking-widest uppercase">No runners scored yet</div>
+          <div className="text-[#30363d] text-[9px] mt-1">
+            Tokens appear here once the intelligence engine runs
           </div>
         </div>
       )}
 
-      {/* Filter tabs + table */}
-      <div className="border border-[#30363d] bg-[#0d1117] overflow-hidden">
-        {/* Tab bar */}
-        <div className="flex items-center border-b border-[#30363d] overflow-x-auto">
-          {KIND_TABS.map(tab => (
-            <button
-              key={tab.value}
-              onClick={() => setFilterKind(tab.value as typeof filterKind)}
-              className={cn(
-                "flex items-center gap-1.5 px-4 py-3 text-[9px] font-bold uppercase tracking-widest whitespace-nowrap border-b-2 transition-colors",
-                filterKind === tab.value
-                  ? "border-[#f59e0b] text-[#f59e0b]"
-                  : "border-transparent text-[#484f58] hover:text-[#8b949e]",
-              )}
+      {/* ── Sections ──────────────────────────────────────────────────────── */}
+      {[
+        { label: "Strong Runners",  color: "#22c55e", tokens: strong },
+        { label: "Runners",         color: "#f59e0b", tokens: runner },
+        { label: "Watch",           color: "#3b82f6", tokens: watch  },
+        { label: "Weak",            color: "#8b949e", tokens: weak   },
+      ].filter(s => s.tokens.length > 0).map(section => (
+        <div key={section.label} className="space-y-2">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-3 h-3" style={{ color: section.color }} />
+            <span
+              className="text-[9px] font-bold uppercase tracking-widest"
+              style={{ color: section.color }}
             >
-              {tab.label}
-              <span className={cn(
-                "text-[8px] px-1.5 py-0.5 rounded-sm font-mono",
-                filterKind === tab.value ? "bg-[#f59e0b]/15 text-[#f59e0b]" : "bg-[#1f2937] text-[#484f58]",
-              )}>
-                {tab.count}
-              </span>
-            </button>
-          ))}
+              {section.label}
+            </span>
+            <span className="text-[9px] text-[#30363d] font-mono">{section.tokens.length}</span>
+            <div className="flex-1 h-px bg-[#1c2128]" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {section.tokens.map(t => (
+              <RunnerCard
+                key={t.id}
+                token={t}
+                useAgeBased={ageBased}
+                onClick={() => navigate(`/tokens/${t.id}`)}
+              />
+            ))}
+          </div>
         </div>
-
-        {/* Table */}
-        {isLoading ? (
-          <div className="p-8 text-center text-[#484f58] text-xs tracking-widest uppercase">Loading…</div>
-        ) : error ? (
-          <div className="p-8 text-center text-[#ef4444] text-xs">Failed to load caller data.</div>
-        ) : tokens.length === 0 ? (
-          <div className="p-12 text-center">
-            <Radio className="w-8 h-8 text-[#30363d] mx-auto mb-3" />
-            <div className="text-[#484f58] text-xs tracking-widest uppercase">No tokens scored yet</div>
-            <div className="text-[#30363d] text-[10px] mt-1">Tokens appear here once the intelligence engine runs</div>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-[#21262d]">
-                  <th className="px-4 py-3 text-left text-[9px] text-[#484f58] uppercase tracking-widest">Token</th>
-                  <SortHeader label="Score" field="compositeScore" sort={sort} setSort={setSort} />
-                  <th className="px-4 py-3 text-left text-[9px] text-[#484f58] uppercase tracking-widest">KOL / Smart</th>
-                  <SortHeader label="Called at MC" field="calledAtMcUsd" sort={sort} setSort={setSort} />
-                  <SortHeader label="Current MC" field="marketCapUsd" sort={sort} setSort={setSort} />
-                  <SortHeader label="Gain" field="gainPct" sort={sort} setSort={setSort} />
-                  <SortHeader label="ATH Gain" field="athGainPct" sort={sort} setSort={setSort} />
-                  <th className="px-4 py-3 text-left text-[9px] text-[#484f58] uppercase tracking-widest">Signal</th>
-                  <th className="px-4 py-3 text-left text-[9px] text-[#484f58] uppercase tracking-widest">Age</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tokens.map(t => (
-                  <TableRow key={t.id} token={t} onClick={() => navigate(`/tokens/${t.id}`)} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      ))}
     </div>
   );
 }
