@@ -538,4 +538,81 @@ router.get("/token/:tokenId/history", async (req, res): Promise<void> => {
   }
 });
 
+// ── POST /api/holders/token/:tokenId/fetch ────────────────────────────────────
+// Live on-demand fetch of KOL / Smart holders from GMGN.
+// Stores results in token_holders DB table and returns kolCount, smartCount,
+// and the full wallet list. Called automatically when the user enters a token.
+
+router.post("/token/:tokenId/fetch", async (req, res): Promise<void> => {
+  try {
+    const tokenId = parseInt(req.params.tokenId, 10);
+    if (isNaN(tokenId)) return void res.status(400).json({ error: "Invalid tokenId" });
+
+    // Look up token
+    const [token] = await db
+      .select()
+      .from(tracked_tokens)
+      .where(eq(tracked_tokens.id, tokenId))
+      .limit(1);
+
+    if (!token) return void res.status(404).json({ error: "Token not found" });
+
+    // Fetch from GMGN and persist into token_holders + token_holder_snapshots
+    const upserted = await fetchAndPersistHolders({
+      id:           token.id,
+      address:      token.address,
+      chain:        token.chain,
+      name:         token.name,
+      symbol:       token.symbol,
+      marketCapUsd: token.marketCapUsd,
+    });
+
+    // Query stored KOL + Smart wallets
+    const KOL_LABELS   = ["kol", "renowned"];
+    const SMART_LABELS = ["smart_money", "smart_degen"];
+    const ALL_LABELS   = [...KOL_LABELS, ...SMART_LABELS];
+
+    const wallets = await db
+      .select({
+        walletAddress:    token_holders.walletAddress,
+        twitterName:      token_holders.twitterName,
+        twitterUsername:  token_holders.twitterUsername,
+        labels:           token_holders.labels,
+        amountPercentage: token_holders.amountPercentage,
+        balance:          token_holders.balance,
+        costUsd:          token_holders.costUsd,
+        realizedProfit:   token_holders.realizedProfit,
+        unrealizedProfit: token_holders.unrealizedProfit,
+        buyCount:         token_holders.buyCount,
+        sellCount:        token_holders.sellCount,
+        fetchedAt:        token_holders.fetchedAt,
+      })
+      .from(token_holders)
+      .where(
+        and(
+          eq(token_holders.tokenId, tokenId),
+          sql`${token_holders.labels} && ARRAY[${sql.raw(ALL_LABELS.map(l => `'${l}'`).join(","))}]::text[]`
+        )
+      )
+      .orderBy(desc(token_holders.amountPercentage));
+
+    const kolCount   = wallets.filter(h => (h.labels ?? []).some(l => KOL_LABELS.includes(l.toLowerCase()))).length;
+    const smartCount = wallets.filter(h => (h.labels ?? []).some(l => SMART_LABELS.includes(l.toLowerCase()))).length;
+
+    logger.info({ tokenId, kolCount, smartCount, upserted }, "holders/fetch: complete");
+
+    res.json({
+      kolCount,
+      smartCount,
+      totalCount: wallets.length,
+      upserted,
+      fetchedAt: new Date().toISOString(),
+      wallets,
+    });
+  } catch (err) {
+    logger.error({ err }, "holders/fetch: failed");
+    return void res.status(500).json({ error: String(err) });
+  }
+});
+
 export default router;

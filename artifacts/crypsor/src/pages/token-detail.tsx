@@ -10,7 +10,7 @@ import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from "recharts";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   formatTokenPrice, formatGain, formatMarketCap, formatTimeAgo,
   truncateAddress, getGmgnUrl, cn,
@@ -109,6 +109,29 @@ interface TraderRow {
 }
 
 interface HoldersPage { data: HolderRow[]; total: number; page: number; pages: number; }
+
+interface KolSmartWallet {
+  walletAddress: string;
+  twitterName: string | null;
+  twitterUsername: string | null;
+  labels: string[];
+  amountPercentage: number | null;
+  costUsd: string | null;
+  realizedProfit: string | null;
+  unrealizedProfit: string | null;
+  buyCount: number;
+  sellCount: number;
+  fetchedAt: string | null;
+}
+
+interface KolSmartFetchResult {
+  kolCount: number;
+  smartCount: number;
+  totalCount: number;
+  upserted: number;
+  fetchedAt: string;
+  wallets: KolSmartWallet[];
+}
 interface TradersResponse { source: string; traders: TraderRow[]; fetchedAt: string | null; }
 interface SecurityResponse { source: string; security: SecurityData; secFetchedAt: string; creatorProfile: unknown | null; }
 
@@ -298,9 +321,37 @@ export default function TokenDetailPage() {
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [holderPage, setHolderPage] = useState(1);
-  const [activeTab, setActiveTab] = useState<"holders" | "traders" | "security" | "postmortem">("holders");
+  const [activeTab, setActiveTab] = useState<"kol-smart" | "holders" | "traders" | "security" | "postmortem">("kol-smart");
 
   const BASE = import.meta.env.BASE_URL;
+
+  // ── KOL / Smart auto-fetch on token entry ────────────────────────────────
+  const [kolSmartResult, setKolSmartResult] = useState<KolSmartFetchResult | null>(null);
+  const [kolSmartLoading, setKolSmartLoading] = useState(false);
+  const [kolSmartError, setKolSmartError]   = useState<string | null>(null);
+  const fetchedForId = useRef<number | null>(null);
+
+  const fetchKolSmart = useCallback(async (tokenId: number) => {
+    if (fetchedForId.current === tokenId) return; // already fetched for this token
+    fetchedForId.current = tokenId;
+    setKolSmartLoading(true);
+    setKolSmartError(null);
+    try {
+      const r = await fetch(`${BASE}api/holders/token/${tokenId}/fetch`, { method: "POST" });
+      if (!r.ok) throw new Error(`Fetch error ${r.status}`);
+      const data: KolSmartFetchResult = await r.json();
+      setKolSmartResult(data);
+    } catch (e) {
+      setKolSmartError(e instanceof Error ? e.message : String(e));
+      fetchedForId.current = null; // allow retry
+    } finally {
+      setKolSmartLoading(false);
+    }
+  }, [BASE]);
+
+  useEffect(() => {
+    if (id != null) fetchKolSmart(id);
+  }, [id, fetchKolSmart]);
 
   const { data: token, isLoading } = useQuery<TokenDetail>({
     queryKey: ["token", id],
@@ -716,6 +767,21 @@ export default function TokenDetailPage() {
       <div>
         <div className="flex border-b border-[#30363d] mb-4 overflow-x-auto">
           <button
+            onClick={() => setActiveTab("kol-smart")}
+            className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
+              activeTab === "kol-smart" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
+          >
+            <span className="flex items-center gap-1.5">
+              <Zap className="w-3 h-3" />
+              KOL / Smart
+              {kolSmartResult && (
+                <span className="ml-1 px-1.5 py-0.5 text-[8px] font-bold bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/20">
+                  {kolSmartResult.kolCount + kolSmartResult.smartCount}
+                </span>
+              )}
+            </span>
+          </button>
+          <button
             onClick={() => setActiveTab("holders")}
             className={cn("px-4 py-2 text-[10px] tracking-widest uppercase font-bold border-b-2 transition-colors -mb-px shrink-0",
               activeTab === "holders" ? "border-[#f59e0b] text-[#f59e0b]" : "border-transparent text-[#484f58] hover:text-[#8b949e]")}
@@ -749,6 +815,160 @@ export default function TokenDetailPage() {
             <span className="flex items-center gap-1.5"><FileSearch className="w-3 h-3" />Postmortem</span>
           </button>
         </div>
+
+        {/* ── KOL / Smart Tab ── */}
+        {activeTab === "kol-smart" && (
+          <div>
+            {/* Header row */}
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[9px] text-[#484f58] uppercase tracking-widest flex items-center gap-2">
+                <Zap className="w-3 h-3 text-[#f59e0b]" />
+                <span>KOL &amp; Smart Wallet Intelligence</span>
+                {kolSmartResult?.fetchedAt && (
+                  <span className="text-[#30363d]">· fetched {formatTimeAgo(kolSmartResult.fetchedAt)} ago</span>
+                )}
+              </div>
+              <button
+                onClick={() => { fetchedForId.current = null; if (id != null) fetchKolSmart(id); }}
+                disabled={kolSmartLoading}
+                className="text-[9px] text-[#484f58] hover:text-[#f59e0b] tracking-widest uppercase flex items-center gap-1 transition-colors disabled:opacity-40"
+              >
+                <RefreshCw className={cn("w-3 h-3", kolSmartLoading && "animate-spin")} />
+                {kolSmartLoading ? "Fetching…" : "Refresh"}
+              </button>
+            </div>
+
+            {/* Loading skeleton */}
+            {kolSmartLoading && !kolSmartResult && (
+              <div className="animate-pulse space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="h-24 bg-[#161b22] border border-[#30363d]" />
+                  <div className="h-24 bg-[#161b22] border border-[#30363d]" />
+                </div>
+                {Array(4).fill(0).map((_, i) => <div key={i} className="h-10 bg-[#161b22] border border-[#30363d]" />)}
+              </div>
+            )}
+
+            {/* Error state */}
+            {kolSmartError && !kolSmartLoading && (
+              <div className="border border-[#ef4444]/30 bg-[#ef4444]/5 p-4 text-[10px] text-[#ef4444] tracking-widest">
+                FETCH FAILED — {kolSmartError}
+              </div>
+            )}
+
+            {/* Results */}
+            {kolSmartResult && (
+              <>
+                {/* Stat cards */}
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  <div className="bg-[#0d1117] border border-[#f59e0b]/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Star className="w-4 h-4 text-[#f59e0b]" />
+                      <span className="text-[9px] text-[#8b949e] uppercase tracking-widest">KOL / Renowned</span>
+                    </div>
+                    <div className="text-5xl font-bold text-[#f59e0b] tabular-nums leading-none mb-2">
+                      {kolSmartResult.kolCount}
+                    </div>
+                    <div className="text-[9px] text-[#484f58] tracking-widest uppercase">
+                      wallets stored in DB
+                    </div>
+                  </div>
+                  <div className="bg-[#0d1117] border border-[#60a5fa]/30 p-5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Brain className="w-4 h-4 text-[#60a5fa]" />
+                      <span className="text-[9px] text-[#8b949e] uppercase tracking-widest">Smart Money</span>
+                    </div>
+                    <div className="text-5xl font-bold text-[#60a5fa] tabular-nums leading-none mb-2">
+                      {kolSmartResult.smartCount}
+                    </div>
+                    <div className="text-[9px] text-[#484f58] tracking-widest uppercase">
+                      wallets stored in DB
+                    </div>
+                  </div>
+                </div>
+
+                {/* Summary strip */}
+                <div className="flex gap-4 px-4 py-2.5 bg-[#161b22] border border-[#30363d] mb-4 text-[10px] tracking-widest">
+                  <span className="text-[#484f58]">TOTAL TRACKED <span className="text-[#c9d1d9] font-bold">{kolSmartResult.totalCount}</span></span>
+                  <span className="text-[#30363d]">|</span>
+                  <span className="text-[#484f58]">NEW UPSERTED <span className="text-[#22c55e] font-bold">{kolSmartResult.upserted}</span></span>
+                  <span className="text-[#30363d]">|</span>
+                  <span className="text-[#484f58]">SOURCE <span className="text-[#8b949e]">GMGN → HOLDERS DB</span></span>
+                </div>
+
+                {/* Wallet list */}
+                {kolSmartResult.wallets.length > 0 ? (
+                  <div className="border border-[#30363d] bg-[#0d1117]">
+                    <div className="text-[9px] text-[#484f58] uppercase tracking-widest px-4 py-2 border-b border-[#30363d] bg-[#161b22] flex items-center justify-between">
+                      <span>KOL + Smart Wallets — Holders Database</span>
+                      <span className="text-[#30363d]">{kolSmartResult.wallets.length} wallets</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px]">
+                        <thead>
+                          <tr className="border-b border-[#30363d] bg-[#161b22]/50">
+                            <th className="text-left px-4 py-2 text-[#484f58] tracking-widest font-normal">WALLET</th>
+                            <th className="text-left px-3 py-2 text-[#484f58] tracking-widest font-normal">TYPE</th>
+                            <th className="text-right px-3 py-2 text-[#484f58] tracking-widest font-normal">SUPPLY %</th>
+                            <th className="text-right px-3 py-2 text-[#484f58] tracking-widest font-normal">REALIZED PNL</th>
+                            <th className="text-right px-3 py-2 text-[#484f58] tracking-widest font-normal">TRADES</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {kolSmartResult.wallets.map((w, i) => {
+                            const isKol   = (w.labels ?? []).some(l => ["kol","renowned"].includes(l.toLowerCase()));
+                            const isSmart = (w.labels ?? []).some(l => ["smart_money","smart_degen"].includes(l.toLowerCase()));
+                            const pnl = w.realizedProfit ? parseFloat(w.realizedProfit) : null;
+                            return (
+                              <tr key={w.walletAddress} className={cn("border-b border-[#30363d]/50 hover:bg-[#161b22]/60 transition-colors", i % 2 === 0 ? "" : "bg-[#161b22]/20")}>
+                                <td className="px-4 py-2.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-[#8b949e]">{truncateAddress(w.walletAddress)}</span>
+                                    {w.twitterName && (
+                                      <span className="text-[#f59e0b] font-bold truncate max-w-[100px]">@{w.twitterName}</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <div className="flex gap-1 flex-wrap">
+                                    {isKol   && <span className="text-[8px] font-bold px-1.5 py-0.5 border text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/30 uppercase tracking-wider">KOL</span>}
+                                    {isSmart && <span className="text-[8px] font-bold px-1.5 py-0.5 border text-[#60a5fa] bg-[#60a5fa]/10 border-[#60a5fa]/30 uppercase tracking-wider">SMART</span>}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5 text-right text-[#8b949e] tabular-nums">
+                                  {w.amountPercentage != null ? `${Number(w.amountPercentage).toFixed(2)}%` : "—"}
+                                </td>
+                                <td className="px-3 py-2.5 text-right tabular-nums font-mono font-bold">
+                                  {pnl == null ? <span className="text-[#484f58]">—</span>
+                                    : <span className={pnl >= 0 ? "text-[#22c55e]" : "text-[#ef4444]"}>
+                                        {pnl >= 0 ? "+" : ""}
+                                        {Math.abs(pnl) >= 1000 ? `$${(pnl/1000).toFixed(1)}K` : `$${pnl.toFixed(0)}`}
+                                      </span>
+                                  }
+                                </td>
+                                <td className="px-3 py-2.5 text-right text-[#8b949e] tabular-nums">
+                                  <span className="text-[#22c55e]/70">{w.buyCount ?? 0}B</span>
+                                  {" / "}
+                                  <span className="text-[#ef4444]/70">{w.sellCount ?? 0}S</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="border border-[#30363d] bg-[#0d1117] py-12 text-center">
+                    <Zap className="w-8 h-8 text-[#30363d] mx-auto mb-3" />
+                    <div className="text-[10px] text-[#484f58] tracking-widest uppercase">No KOL or Smart wallets found</div>
+                    <div className="text-[9px] text-[#30363d] mt-1">GMGN returned no KOL / Smart labels for this token</div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* ── Holders Tab ── */}
         {activeTab === "holders" && (
