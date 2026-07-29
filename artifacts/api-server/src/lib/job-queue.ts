@@ -116,7 +116,9 @@ export class PipelineQueue {
       },
       {
         connection,
-        concurrency: config.concurrency,
+        concurrency:      config.concurrency,
+        stalledInterval:  30_000,  // check for stalled jobs every 30 s
+        lockDuration:     60_000,  // job lock expires after 60 s; auto-requeued if worker dies
         removeOnComplete: { count: 20 },
         removeOnFail:     { count: 10 },
       } as WorkerOptions,
@@ -125,6 +127,10 @@ export class PipelineQueue {
     worker.on("failed", (job, err) => {
       this.stats.get(name)!.failed++;
       log.warn({ queue: name, jobId: job?.id, attempt: job?.attemptsMade, err }, "Job failed");
+    });
+
+    worker.on("stalled", (jobId) => {
+      log.error({ queue: name, jobId }, "Job stalled — lock expired; BullMQ will re-queue");
     });
 
     worker.on("error", (err) => {

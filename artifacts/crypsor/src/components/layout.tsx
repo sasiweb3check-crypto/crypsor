@@ -1,11 +1,10 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Settings, Wallet, Users, Activity, Zap, ScrollText, Radio } from "lucide-react";
+import { LayoutDashboard, Settings, Wallet, Users, Activity, Zap, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 
 const NAV = [
   { href: "/",          label: "Dashboard", icon: LayoutDashboard, desc: "Token intelligence" },
-  { href: "/feed",      label: "Feed",      icon: Radio,           desc: "Live activity timeline" },
   { href: "/wallets",   label: "Wallets",   icon: Wallet,          desc: "Monitored wallets" },
   { href: "/holders",   label: "Intel",     icon: Users,           desc: "Holder activity" },
   { href: "/intel-log", label: "Score Log", icon: ScrollText,      desc: "Intel score history" },

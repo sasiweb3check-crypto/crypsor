@@ -66,11 +66,11 @@ router.get("/intel-log/:tokenId", async (req, res) => {
     res.json({
       token: token[0],
       weights: {
-        mcGrowth:    0.35,
+        mcGrowth:    0.27,
         volume:      0.25,
-        holderVel:   0.20,
-        kolSmart:    0.15,
-        liquidity:   0.05,
+        holderVel:   0.22,
+        kolSmart:    0.18,
+        liquidity:   0.08,
       },
       graduationRules: {
         scoreThreshold:    55,
@@ -95,11 +95,11 @@ router.get("/intel-log/:tokenId", async (req, res) => {
 
         // Sub-scores with their weights
         subScores: {
-          mcGrowth:        { score: e.mcGrowthScore,        weight: "35%" },
+          mcGrowth:        { score: e.mcGrowthScore,        weight: "27%" },
           volumeIntensity: { score: e.volumeIntensityScore, weight: "25%" },
-          holderVelocity:  { score: e.holderVelocityScore,  weight: "20%" },
-          kolSmart:        { score: e.kolSmartScore,         weight: "15%" },
-          liquidityHealth: { score: e.liquidityHealthScore,  weight: "5%"  },
+          holderVelocity:  { score: e.holderVelocityScore,  weight: "22%" },
+          kolSmart:        { score: e.kolSmartScore,         weight: "18%" },
+          liquidityHealth: { score: e.liquidityHealthScore,  weight: "8%"  },
         },
 
         // Age factor
@@ -169,6 +169,13 @@ router.get("/intel-log", async (req, res) => {
       .limit(limit);
 
     res.json({
+      weights: {
+        mcGrowth:    0.27,
+        volume:      0.25,
+        holderVel:   0.22,
+        kolSmart:    0.18,
+        liquidity:   0.08,
+      },
       total: entries.length,
       entries: entries.map(e => ({
         id:                   e.id,
@@ -182,15 +189,35 @@ router.get("/intel-log", async (req, res) => {
           ? Math.round((e.intelligenceScore - e.prevIntelligenceScore) * 10) / 10
           : null,
         subScores: {
-          mcGrowth:        e.mcGrowthScore,
-          volumeIntensity: e.volumeIntensityScore,
-          holderVelocity:  e.holderVelocityScore,
-          kolSmart:        e.kolSmartScore,
-          liquidityHealth: e.liquidityHealthScore,
+          mcGrowth:        { score: e.mcGrowthScore,        weight: "27%" },
+          volumeIntensity: { score: e.volumeIntensityScore, weight: "25%" },
+          holderVelocity:  { score: e.holderVelocityScore,  weight: "22%" },
+          kolSmart:        { score: e.kolSmartScore,         weight: "18%" },
+          liquidityHealth: { score: e.liquidityHealthScore,  weight: "8%"  },
         },
         ageHours:      e.tokenAgeHours,
         ageMultiplier: e.ageMultiplier,
         marketCapUsd:  e.marketCapUsd,
+        volume24hUsd:  e.volume24hUsd,
+        liquidityUsd:  e.liquidityUsd,
+        peakMcUsd:     e.peakMcUsd,
+        holderCount:      e.holderCount,
+        holderKolCount:   e.holderKolCount,
+        holderSmartCount: e.holderSmartCount,
+        totalBuys:       e.totalBuys,
+        smartBuys:       e.smartBuys,
+        labeledFraction: e.labeledFraction,
+        cohort: {
+          ageGroup:              e.ageGroup,
+          cohortSize:            e.cohortSize,
+          volumePercentile:      e.cohortVolumePercentile,
+          holderVelocityPerHour: e.holderVelocityPerHour,
+        },
+        graduation: {
+          consecutive:    e.graduationConsecutive,
+          thresholdMet:   e.graduationThresholdMet,
+          requiredStreak: 3,
+        },
         statusBefore:  e.statusBefore,
         statusAfter:   e.statusAfter,
         statusChanged: e.statusChanged,

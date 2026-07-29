@@ -479,6 +479,7 @@ export function startMonitor(): void {
   startHoldersRefresh();
   startIntelligenceEngine();
   startSecurityService();
+  healthMonitor.startWatchdog();
 
   logger.info("Token Intelligence Pipeline started");
 

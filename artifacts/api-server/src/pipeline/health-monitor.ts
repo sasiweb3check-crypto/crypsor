@@ -1,3 +1,12 @@
+import { logger as rootLogger } from "../lib/logger";
+
+const log = rootLogger.child({ module: "health-monitor" });
+
+/** How long (ms) a service can go without an ok() before the watchdog screams. */
+const STALE_THRESHOLD_MS = 10 * 60 * 1_000; // 10 minutes
+/** How often the watchdog runs. */
+const WATCHDOG_INTERVAL_MS = 2 * 60 * 1_000; // 2 minutes
+
 export interface ServiceHealth {
   name: string;
   status: "ok" | "degraded" | "down";
@@ -41,6 +50,11 @@ class HealthMonitor {
     svc.totalErrors++;
     svc.lastError = String(err).slice(0, 300);
     svc.status = svc.totalErrors >= 10 ? "down" : "degraded";
+    // Emit an immediate loud warning when status flips to "down"
+    if (svc.status === "down") {
+      log.error({ service: name, totalErrors: svc.totalErrors, lastError: svc.lastError },
+        "PIPELINE SERVICE DOWN — exceeded error threshold");
+    }
   }
 
   getAll(): ServiceHealth[] {
@@ -55,6 +69,33 @@ class HealthMonitor {
       down:     all.filter(s => s.status === "down").length,
     };
   }
+
+  /** Periodic watchdog — call startWatchdog() once at startup. */
+  startWatchdog(): void {
+    setInterval(() => {
+      const now = Date.now();
+      for (const svc of this.services.values()) {
+        // Alert on explicit "down" status
+        if (svc.status === "down") {
+          log.error(
+            { service: svc.name, totalErrors: svc.totalErrors, lastOkAt: svc.lastOkAt },
+            "WATCHDOG: service is DOWN",
+          );
+          continue;
+        }
+        // Alert when last successful heartbeat is too old
+        if (svc.lastOkAt) {
+          const staleSec = Math.round((now - new Date(svc.lastOkAt).getTime()) / 1_000);
+          if (staleSec * 1_000 > STALE_THRESHOLD_MS) {
+            log.error(
+              { service: svc.name, staleSec, lastOkAt: svc.lastOkAt, status: svc.status },
+              `WATCHDOG: service has not reported ok in ${staleSec}s`,
+            );
+          }
+        }
+      }
+    }, WATCHDOG_INTERVAL_MS).unref(); // unref so the timer doesn't prevent clean shutdown
+  }
 }
 
 export const healthMonitor = new HealthMonitor();
@@ -67,6 +108,9 @@ for (const name of [
   "momentum-engine",
   "wallet-scheduler",
   "projection-engine",
+  "intelligence-engine",
+  "token-updater",
+  "holders-refresh",
 ]) {
   healthMonitor.register(name);
 }
