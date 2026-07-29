@@ -252,6 +252,8 @@ export async function refreshAllIntelligence(): Promise<void> {
       peakMcUsd:         tracked_tokens.peakMcUsd,
       athMarketCapUsd:   tracked_tokens.athMarketCapUsd,
       intelligenceScore: tracked_tokens.intelligenceScore,
+      gainPct:           tracked_tokens.gainPct,
+      athGainPct:        tracked_tokens.athGainPct,
     }).from(tracked_tokens);
 
     if (tokens.length === 0) return;
@@ -383,6 +385,22 @@ export async function refreshAllIntelligence(): Promise<void> {
       // Micro-cap penalty: tokens under $5k market cap are highly speculative
       const mcUsdNum = t.marketCapUsd ? parseFloat(t.marketCapUsd) : 0;
       if (mcUsdNum > 0 && mcUsdNum < 5_000) rawScore -= 10;
+
+      // Post-peak distribution penalty: large drawdown from peak often means selling
+      // pressure masquerading as high volume. Softened if token is still well up from
+      // detection entry (a 280X that corrected 60% is healthier than a 1.2X that did).
+      if (newPeak && newPeak > 0 && currentMcNum > 0) {
+        const peakDrawdown = (newPeak - currentMcNum) / newPeak;
+        if (peakDrawdown > 0.60) {
+          // currentGainFactor: how many X is the token still up from entry (1 = flat)
+          const currentGainFactor = t.gainPct != null ? (t.gainPct / 100) + 1 : 1;
+          // Soften penalty proportionally: a 100X+ winner gets up to 50% reduction
+          const softener = Math.min(0.5, Math.log10(Math.max(1, currentGainFactor)) / 4);
+          rawScore -= Math.round(12 * (1 - softener)); // 6–12 pts depending on entry gain
+        } else if (peakDrawdown > 0.40) {
+          rawScore -= 5; // moderate correction — mild penalty
+        }
+      }
 
       // ── Bonuses ─────────────────────────────────────────────────────────────
       if ((t.holderCount ?? 0) > 75) rawScore += 9;

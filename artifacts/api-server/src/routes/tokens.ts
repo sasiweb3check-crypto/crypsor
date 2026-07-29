@@ -824,12 +824,14 @@ router.get("/:id/history", async (req, res): Promise<void> => {
 
     const [token] = await db
       .select({
-        id:             tracked_tokens.id,
-        marketCapUsd:   tracked_tokens.marketCapUsd,
-        peakMcUsd:      tracked_tokens.peakMcUsd,
+        id:              tracked_tokens.id,
+        marketCapUsd:    tracked_tokens.marketCapUsd,
+        peakMcUsd:       tracked_tokens.peakMcUsd,
         athMarketCapUsd: tracked_tokens.athMarketCapUsd,
         firstDetectedAt: tracked_tokens.firstDetectedAt,
         status:          tracked_tokens.status,
+        gainPct:         tracked_tokens.gainPct,
+        athGainPct:      tracked_tokens.athGainPct,
       })
       .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
     if (!token) return void res.status(404).json({ error: "Token not found" });
@@ -888,18 +890,27 @@ router.get("/:id/history", async (req, res): Promise<void> => {
       currentMcUsd: number | null;
       drawdownPct: number | null;
       peakToCurrentHours: number | null;
-      rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering";
+      rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering" | "correction" | "stabilizing";
+      currentMultiple: number | null;
+      athMultiple: number | null;
     } = {
       peakMcUsd: peakMcNum || null,
       currentMcUsd: currentMc || null,
       drawdownPct: null,
       peakToCurrentHours: null,
       rugSeverity: "stable",
+      currentMultiple: null,
+      athMultiple: null,
     };
 
     if (peakMcNum > 0 && currentMc > 0) {
       const drawdown = (peakMcNum - currentMc) / peakMcNum;
       const drawdownPct = Math.round(drawdown * 100 * 10) / 10;
+
+      // How much is the token still up from detection entry?
+      // gainPct is stored as percentage (e.g. 21100 = 211X). Convert to multiplier.
+      const currentMultiple = token.gainPct != null ? (token.gainPct / 100) + 1 : null;
+      const athMultiple     = token.athGainPct != null ? (token.athGainPct / 100) + 1 : null;
 
       // Estimate time from first detected to now
       const totalHours = (Date.now() - token.firstDetectedAt.getTime()) / 3_600_000;
@@ -915,12 +926,24 @@ router.get("/:id/history", async (req, res): Promise<void> => {
         ? (Date.now() - new Date(peakSnap.snapshotAt).getTime()) / 3_600_000
         : null;
 
-      const severity =
-        drawdown > 0.85 ? "rug" :
-        drawdown > 0.60 ? "dump" :
-        drawdown > 0.30 ? "decline" :
-        drawdown < -0.10 ? "recovering" :
-        "stable";
+      // Severity logic: drawdown-from-peak is modulated by current-vs-entry multiple.
+      // A token still 10X+ from entry correcting 60%+ is "stabilizing", not a dump.
+      const severity = ((): typeof rugAnalysis.rugSeverity => {
+        if (drawdown > 0.85) {
+          // >85% off peak: rug if nearly zeroed vs entry, dump if still a big winner
+          return (currentMultiple && currentMultiple >= 2) ? "dump" : "rug";
+        }
+        if (drawdown > 0.60) {
+          // >60% off peak but significant winner from entry → post-pump stabilization
+          return (currentMultiple && currentMultiple >= 10) ? "stabilizing" : "dump";
+        }
+        if (drawdown > 0.30) {
+          // >30% off peak — healthy correction on a big winner vs genuine decline
+          return (currentMultiple && currentMultiple >= 3) ? "correction" : "decline";
+        }
+        if (drawdown < -0.10) return "recovering"; // still making new highs
+        return "stable";
+      })();
 
       rugAnalysis = {
         peakMcUsd: peakMcNum,
@@ -928,6 +951,8 @@ router.get("/:id/history", async (req, res): Promise<void> => {
         drawdownPct,
         peakToCurrentHours: hoursFromPeakToNow ?? (drawdown > 0.1 ? totalHours : null),
         rugSeverity: severity,
+        currentMultiple: currentMultiple ? Math.round(currentMultiple * 10) / 10 : null,
+        athMultiple:     athMultiple     ? Math.round(athMultiple     * 10) / 10 : null,
       };
     }
 

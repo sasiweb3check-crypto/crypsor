@@ -145,7 +145,9 @@ interface RugAnalysis {
   currentMcUsd: number | null;
   drawdownPct: number | null;
   peakToCurrentHours: number | null;
-  rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering";
+  rugSeverity: "rug" | "dump" | "decline" | "stable" | "recovering" | "correction" | "stabilizing";
+  currentMultiple: number | null;
+  athMultiple: number | null;
 }
 
 interface HistoryResponse {
@@ -968,11 +970,13 @@ export default function TokenDetailPage() {
 
               // Rug severity config
               const rugCfg: Record<string, { color: string; label: string; bg: string }> = {
-                rug:       { color: "#ef4444", label: "🚨 RUG DETECTED",  bg: "#ef4444/10" },
-                dump:      { color: "#f97316", label: "⚠ MAJOR DUMP",     bg: "#f97316/10" },
-                decline:   { color: "#f59e0b", label: "📉 DECLINING",      bg: "#f59e0b/10" },
-                stable:    { color: "#22c55e", label: "✓ STABLE",          bg: "#22c55e/10" },
-                recovering:{ color: "#a78bfa", label: "↑ RECOVERING",      bg: "#a78bfa/10" },
+                rug:         { color: "#ef4444", label: "🚨 RUG DETECTED",          bg: "#ef4444/10" },
+                dump:        { color: "#f97316", label: "⚠ MAJOR DUMP",             bg: "#f97316/10" },
+                decline:     { color: "#f59e0b", label: "📉 DECLINING",              bg: "#f59e0b/10" },
+                stable:      { color: "#22c55e", label: "✓ STABLE",                  bg: "#22c55e/10" },
+                recovering:  { color: "#a78bfa", label: "↑ MAKING NEW HIGHS",        bg: "#a78bfa/10" },
+                correction:  { color: "#60a5fa", label: "📊 HEALTHY CORRECTION",     bg: "#60a5fa/10" },
+                stabilizing: { color: "#34d399", label: "🏔 POST-PUMP STABILIZING",  bg: "#34d399/10" },
               };
               const sev = rugCfg[rugAnalysis.rugSeverity] ?? rugCfg.stable;
 
@@ -1003,36 +1007,46 @@ export default function TokenDetailPage() {
               return (
                 <>
                   {/* Rug analysis summary */}
-                  <div className={`border p-4 grid grid-cols-2 md:grid-cols-4 gap-4`}
+                  <div className={`border p-4 grid grid-cols-2 md:grid-cols-3 gap-4`}
                     style={{ borderColor: sev.color + "40", backgroundColor: sev.color + "08" }}>
-                    <div className="col-span-2 md:col-span-4 flex items-center gap-2 mb-1">
+                    <div className="col-span-2 md:col-span-3 flex items-center gap-3 mb-1">
                       <span className="text-[11px] font-bold tracking-widest" style={{ color: sev.color }}>
                         {sev.label}
                       </span>
+                      {rugAnalysis.currentMultiple != null && rugAnalysis.currentMultiple > 1 && (
+                        <span className="text-[10px] text-[#22c55e] font-bold">
+                          still +{rugAnalysis.currentMultiple.toFixed(1)}X from entry
+                        </span>
+                      )}
                     </div>
                     <div>
                       <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Peak MC</div>
                       <div className="text-lg font-bold text-[#c9d1d9]">
                         {rugAnalysis.peakMcUsd ? fmtMc(rugAnalysis.peakMcUsd) : "—"}
                       </div>
+                      {rugAnalysis.athMultiple != null && (
+                        <div className="text-[9px] text-[#484f58] mt-0.5">{rugAnalysis.athMultiple.toFixed(1)}X ATH</div>
+                      )}
                     </div>
                     <div>
                       <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Current MC</div>
                       <div className="text-lg font-bold text-[#c9d1d9]">
                         {rugAnalysis.currentMcUsd ? fmtMc(rugAnalysis.currentMcUsd) : "—"}
                       </div>
+                      {rugAnalysis.currentMultiple != null && (
+                        <div className="text-[9px] mt-0.5" style={{ color: rugAnalysis.currentMultiple >= 1 ? "#22c55e" : "#ef4444" }}>
+                          {rugAnalysis.currentMultiple >= 1 ? "+" : ""}{rugAnalysis.currentMultiple.toFixed(1)}X from entry
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Drawdown from Peak</div>
                       <div className="text-lg font-bold" style={{ color: (rugAnalysis.drawdownPct ?? 0) > 50 ? "#ef4444" : (rugAnalysis.drawdownPct ?? 0) > 20 ? "#f59e0b" : "#22c55e" }}>
                         {rugAnalysis.drawdownPct != null ? `-${rugAnalysis.drawdownPct.toFixed(1)}%` : "—"}
                       </div>
-                    </div>
-                    <div>
-                      <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-1">Hours since Peak</div>
-                      <div className="text-lg font-bold text-[#c9d1d9]">
-                        {rugAnalysis.peakToCurrentHours != null ? `${rugAnalysis.peakToCurrentHours.toFixed(1)}h` : "—"}
-                      </div>
+                      {rugAnalysis.peakToCurrentHours != null && (
+                        <div className="text-[9px] text-[#484f58] mt-0.5">{rugAnalysis.peakToCurrentHours.toFixed(1)}h ago</div>
+                      )}
                     </div>
                   </div>
 

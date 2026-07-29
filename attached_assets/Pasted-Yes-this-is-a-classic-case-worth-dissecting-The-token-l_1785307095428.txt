@@ -1,0 +1,66 @@
+Yes, this is a classic case worth dissecting.  
+
+The token (looks like $FRANK — Frank Ocean) had a massive run from ~$5k to $3.8M (+ huge multiplier), then corrected -62% to $1.4M. This is very common in memecoins.
+
+Postmortem on This Token
+
+What went right (why it pumped):
+Strong early momentum
+Likely good KOL/Smart money inflow (you show KOL 9, Smart 40 — very strong)
+High holder velocity during the run
+Narrative + hype worked
+
+What happened after peak:
+Profit taking by early buyers + snipers
+Possible dev/team distribution
+Normal memecoin volatility — many tokens correct 50-80% even after big runs.
+
+This is not necessarily a failure of your system — many 10x+ tokens do exactly this.
+
+Why Your Score Might Have Given False Confidence
+
+From the pattern in your logs:
+
+During the parabolic phase, mc_growth, vol_intensity, and holder_velocity go extremely high → intel_score spikes (80+).
+Your current scoring gives heavy weight to velocity & growth without enough penalty for:
+   High concentration (top10%)
+   Sudden slowdown in new buyers
+   Drawdown risk
+
+Result: You get many "GOOD 55" or higher ratings on tokens that are about to dump hard.
+
+Suggested Improvements (Immediate + Medium Term)
+
+Quick Win – Add Drawdown / Distribution Awareness
+
+Add these checks into your quality/intel score:
+
+Recent Drawdown Penalty**: If price is -40%+ from ATH and volume is dropping → reduce score.
+Buyer Slowdown**: If holder_velocity was high but dropped sharply in last 2-3 snapshots → penalty.
+Top Holder Selling Pressure**: If smart money or top wallets are net selling.
+
+Better Composite Score Idea (Degen Filter v2)
+
+// After survival phase (3+ snapshots)
+finalScore = 
+  (intel_score * 0.35) +
+  (kol_smart * 0.25) +
+  (holder_velocity * 0.20) +
+  (mc_growth * 0.10) +
+  (liquidity_health * 0.05) +
+  (survivalBonus)   // ATH gap + low drawdown
+
+Survival Bonus = points for still having room to run + stable holder base.
+
+Action Plan for You
+
+For tokens like this: Add a "Post-Pump Risk" label when drawdown >50% from peak.
+Start logging % from ATH and hours since peak (you already have some of this in the UI).
+Re-weight velocity/growth slightly lower after the token reaches $500k+ MC.
+
+Would you like me to:
+Update your scoring function with drawdown awareness?
+Add a new "Risk Flag" system (High Risk / Stabilizing / Healthy)?
+Or focus on something else first?
+
+This kind of token is exactly why we iterate on the data. You're doing it right. Let’s make the score sharper.
