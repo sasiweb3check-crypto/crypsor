@@ -20,7 +20,7 @@ router.get("/", async (_req, res) => {
       distinctWallets: Number(distinctWallets?.c ?? 0),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -96,7 +96,7 @@ router.get("/stats-by-token", async (_req, res) => {
 
     res.json(stats);
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -163,7 +163,7 @@ router.get("/download", async (_req, res) => {
     );
     res.send(csv);
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -185,7 +185,7 @@ const LABEL_GROUPS: Record<string, string[]> = {
                "maestro", "bonkbot", "banana_gun", "bloom_trading", "nova"],
 };
 
-router.get("/list", async (req, res) => {
+router.get("/list", async (req, res): Promise<void> => {
   try {
     const page    = Math.max(1, parseInt(String(req.query.page  ?? "1"),  10) || 1);
     const limit   = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? "50"), 10) || 50));
@@ -284,7 +284,7 @@ router.get("/list", async (req, res) => {
       pages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -319,10 +319,10 @@ const LABEL_MAP: Record<string, string[]> = {
 //
 // Response shape is backward-compatible with the previous flat-table version.
 
-router.get("/token/:tokenId", async (req, res) => {
+router.get("/token/:tokenId", async (req, res): Promise<void> => {
   try {
     const tokenId = parseInt(req.params.tokenId, 10);
-    if (isNaN(tokenId)) return res.status(400).json({ error: "Invalid tokenId" });
+    if (isNaN(tokenId)) return void res.status(400).json({ error: "Invalid tokenId" });
 
     const labelKey = String(req.query.label ?? "").trim().toLowerCase();
 
@@ -398,7 +398,7 @@ router.get("/token/:tokenId", async (req, res) => {
         ? allHolders.filter(h => hasLabel(h.labels, labelMatches))
         : allHolders;
 
-      return res.json({
+      return void res.json({
         holders:        filtered,
         stats,
         lastSyncedAt:   latestSnap.snapshotAt.toISOString(),
@@ -481,7 +481,7 @@ router.get("/token/:tokenId", async (req, res) => {
       _source:     "flat_table",
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -490,10 +490,10 @@ router.get("/token/:tokenId", async (req, res) => {
 // Each entry includes summary stats and metadata but NOT the full holders_data
 // (to keep response sizes reasonable — fetch individual snapshot for full data).
 
-router.get("/token/:tokenId/history", async (req, res) => {
+router.get("/token/:tokenId/history", async (req, res): Promise<void> => {
   try {
     const tokenId = parseInt(req.params.tokenId, 10);
-    if (isNaN(tokenId)) return res.status(400).json({ error: "Invalid tokenId" });
+    if (isNaN(tokenId)) return void res.status(400).json({ error: "Invalid tokenId" });
 
     const page  = Math.max(1, parseInt(String(req.query.page  ?? "1"), 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
@@ -534,7 +534,7 @@ router.get("/token/:tokenId/history", async (req, res) => {
       pages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 

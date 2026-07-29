@@ -270,7 +270,7 @@ const STATUS_FILTERS = [
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Feed() {
-  const [statusFilter, setStatusFilter] = useState(STATUS_FILTERS[0].value);
+  const [statusFilter, setStatusFilter] = useState<typeof STATUS_FILTERS[number]["value"]>(STATUS_FILTERS[0].value);
   const [showNoNews, setShowNoNews]     = useState(true);
 
   const { data, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery<SocialResponse>({

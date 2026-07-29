@@ -155,7 +155,7 @@ function buildOrder(sort: string, dir: string) {
 //
 //   Response: { data: Token[], total: number, page: number, pages: number }
 
-router.get("/", async (req, res) => {
+router.get("/", async (req, res): Promise<void> => {
   try {
     const page  = Math.max(1, parseInt(String(req.query.page  ?? "1"),  10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? "50"), 10) || 50));
@@ -212,7 +212,7 @@ router.get("/", async (req, res) => {
       pages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -228,7 +228,7 @@ router.get("/", async (req, res) => {
 //
 // Optional body: { holders: true }  — triggers a background holders snapshot
 
-router.post("/:id/refresh", async (req, res) => {
+router.post("/:id/refresh", async (req, res): Promise<void> => {
   try {
     const idOrMint  = req.params.id;
     const numericId = parseInt(idOrMint, 10);
@@ -243,7 +243,7 @@ router.post("/:id/refresh", async (req, res) => {
       token = row;
     }
 
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const refreshHolders = req.body?.holders === true;
     const now = new Date();
@@ -301,7 +301,7 @@ router.post("/:id/refresh", async (req, res) => {
     if (!sourceFreshness.price && !sourceFreshness.holders) {
       const priceErr   = priceResult.status === "rejected" ? String(priceResult.reason) : "no data";
       const holdersErr = holdersResult.status === "rejected" ? String(holdersResult.reason) : null;
-      return res.status(502).json({
+      return void res.status(502).json({
         error: "All refresh sources failed",
         details: { price: priceErr, holders: holdersErr },
       });
@@ -322,7 +322,7 @@ router.post("/:id/refresh", async (req, res) => {
       updated:         mapToken(updated),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -330,10 +330,10 @@ router.post("/:id/refresh", async (req, res) => {
 //
 //   PATCH /api/tokens/:id/migrate   { migrated: true | false }
 
-router.patch("/:id/migrate", async (req, res) => {
+router.patch("/:id/migrate", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const migrated = req.body?.migrated === true || req.body?.migrated === "true";
 
@@ -343,11 +343,11 @@ router.patch("/:id/migrate", async (req, res) => {
       .where(eq(tracked_tokens.id, id))
       .returning();
 
-    if (!updated) return res.status(404).json({ error: "Token not found" });
+    if (!updated) return void res.status(404).json({ error: "Token not found" });
 
     res.json({ ok: true, id, migrated: updated.migrated });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -378,13 +378,13 @@ async function maybeRefreshHolders(token: {
 
 // ── Single token with buy/sell history ────────────────────────────────────────
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db.select().from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     // Fire-and-forget holders refresh (non-blocking)
     maybeRefreshHolders(token).catch(() => {});
@@ -446,7 +446,7 @@ router.get("/:id", async (req, res) => {
       })),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -454,10 +454,10 @@ router.get("/:id", async (req, res) => {
 // gmgnFetch, nextProxy, CHAIN_MAP, and persistHolders are imported from
 // ../lib/gmgn-client (shared with the background holders-refresh pipeline).
 
-router.get("/:id/gmgn", async (req, res) => {
+router.get("/:id/gmgn", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db
       .select({
@@ -471,7 +471,7 @@ router.get("/:id/gmgn", async (req, res) => {
       .where(eq(tracked_tokens.id, id))
       .limit(1);
 
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const chain = CHAIN_MAP[token.chain.toLowerCase()] ?? "sol";
     const addr  = token.address;
@@ -608,17 +608,17 @@ router.get("/:id/gmgn", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
 // ── GET /api/tokens/:id/security ─────────────────────────────────────────────
 // Returns security data for a token: DB-cached first, live GMGN on ?refresh=1
 
-router.get("/:id/security", async (req, res) => {
+router.get("/:id/security", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db
       .select({
@@ -653,7 +653,7 @@ router.get("/:id/security", async (req, res) => {
       .where(eq(tracked_tokens.id, id))
       .limit(1);
 
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const forceRefresh = req.query.refresh === "1";
     const stale = !token.secFetchedAt ||
@@ -661,7 +661,7 @@ router.get("/:id/security", async (req, res) => {
 
     // Return DB cache unless refresh forced or data is stale and we have nothing
     if (!forceRefresh && token.secFetchedAt && !stale) {
-      return res.json({
+      return void res.json({
         source: "cache",
         security: {
           isHoneypot:          token.secIsHoneypot,
@@ -740,17 +740,17 @@ router.get("/:id/security", async (req, res) => {
       _raw: raw,
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
 // ── GET /api/tokens/:id/traders ──────────────────────────────────────────────
 // Top traders for a token, ranked by profit. DB fallback when GMGN blocked.
 
-router.get("/:id/traders", async (req, res) => {
+router.get("/:id/traders", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const forceRefresh = req.query.refresh === "1";
     const limit = Math.min(100, parseInt(String(req.query.limit ?? "40"), 10) || 40);
@@ -760,7 +760,7 @@ router.get("/:id/traders", async (req, res) => {
                 name: tracked_tokens.name, symbol: tracked_tokens.symbol,
                 marketCapUsd: tracked_tokens.marketCapUsd })
       .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     // Check DB cache
     const dbTraders = await db.select().from(token_traders)
@@ -773,7 +773,7 @@ router.get("/:id/traders", async (req, res) => {
     const stale = cacheAge > 10 * 60_000; // 10 min
 
     if (!forceRefresh && dbTraders.length > 0 && !stale) {
-      return res.json({
+      return void res.json({
         source: "cache",
         traders: dbTraders,
         fetchedAt: newestFetch,
@@ -799,7 +799,7 @@ router.get("/:id/traders", async (req, res) => {
         .orderBy(desc(token_traders.profitUsd))
         .limit(limit);
 
-      return res.json({ source: "live", traders: fresh, fetchedAt: new Date().toISOString() });
+      return void res.json({ source: "live", traders: fresh, fetchedAt: new Date().toISOString() });
     }
 
     // Fallback to whatever is in DB
@@ -810,17 +810,17 @@ router.get("/:id/traders", async (req, res) => {
       _gmgnStatus: tradersRes.status,
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
 // ── GET /api/tokens/:id/history ──────────────────────────────────────────────
 // Returns intel score log + price snapshots for postmortem / timeline view.
 
-router.get("/:id/history", async (req, res) => {
+router.get("/:id/history", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db
       .select({
@@ -832,7 +832,7 @@ router.get("/:id/history", async (req, res) => {
         status:          tracked_tokens.status,
       })
       .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
@@ -938,22 +938,22 @@ router.get("/:id/history", async (req, res) => {
       fetchedAt: new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
 // ── GET /api/tokens/:id/pool ─────────────────────────────────────────────────
 // Live pool/DEX info from GMGN (not cached in DB).
 
-router.get("/:id/pool", async (req, res) => {
+router.get("/:id/pool", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db
       .select({ address: tracked_tokens.address, chain: tracked_tokens.chain })
       .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const proxy = nextProxy();
     const poolRes = await fetchTokenPool(token.chain, token.address, proxy);
@@ -965,17 +965,17 @@ router.get("/:id/pool", async (req, res) => {
       fetchedAt: new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
 // ── GET /api/tokens/:id/dev ──────────────────────────────────────────────────
 // Creator / dev wallet: profile, PnL, all holdings.
 
-router.get("/:id/dev", async (req, res) => {
+router.get("/:id/dev", async (req, res): Promise<void> => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    if (isNaN(id)) return void res.status(400).json({ error: "Invalid id" });
 
     const [token] = await db
       .select({
@@ -986,7 +986,7 @@ router.get("/:id/dev", async (req, res) => {
         secCreatorTokenStatus: tracked_tokens.secCreatorTokenStatus,
       })
       .from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
-    if (!token) return res.status(404).json({ error: "Token not found" });
+    if (!token) return void res.status(404).json({ error: "Token not found" });
 
     const creatorAddr = token.secCreatorAddress;
 
@@ -1010,7 +1010,7 @@ router.get("/:id/dev", async (req, res) => {
           secFetchedAt: new Date(),
         }).where(eq(tracked_tokens.id, id));
       }
-      return res.json({
+      return void res.json({
         creatorAddress: security.creatorAddress,
         creatorClose:   security.creatorClose,
         creatorStatus:  security.creatorTokenStatus,
@@ -1038,7 +1038,7 @@ router.get("/:id/dev", async (req, res) => {
       fetchedAt:      new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 
@@ -1046,7 +1046,7 @@ router.get("/:id/dev", async (req, res) => {
 // Wallet profile: labels, PnL stats, token holdings from GMGN.
 // Also accessible via /api/tokens/:id/dev for the creator wallet.
 
-router.get("/wallet/:address/profile", async (req, res) => {
+router.get("/wallet/:address/profile", async (req, res): Promise<void> => {
   try {
     const { address } = req.params;
     const chain = String(req.query.chain ?? "sol");
@@ -1072,7 +1072,7 @@ router.get("/wallet/:address/profile", async (req, res) => {
       fetchedAt: new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    return void res.status(500).json({ error: String(err) });
   }
 });
 

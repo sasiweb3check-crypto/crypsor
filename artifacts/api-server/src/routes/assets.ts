@@ -20,9 +20,9 @@ const MIME: Record<string, string> = {
   jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml",
 };
 
-router.get("/token/:id", async (req, res) => {
+router.get("/token/:id", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id, 10);
-  if (isNaN(id)) return res.status(400).end();
+  if (isNaN(id)) return void res.status(400).end();
 
   // 1. Check disk cache for any extension
   try {
@@ -32,7 +32,7 @@ router.get("/token/:id", async (req, res) => {
       const ext = files[0].split(".").pop() ?? "webp";
       res.setHeader("Content-Type", MIME[ext] ?? "image/webp");
       res.setHeader("Cache-Control", "public, max-age=3600");
-      return createReadStream(filePath).pipe(res);
+      createReadStream(filePath).pipe(res); return;
     }
   } catch {}
 
@@ -43,7 +43,7 @@ router.get("/token/:id", async (req, res) => {
       imageStatus: tracked_tokens.imageStatus,
     }).from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
 
-    if (!token) return res.status(404).end();
+    if (!token) return void res.status(404).end();
 
     // Kick off a background download for next time
     if (token.logoUri && token.imageStatus !== "ok") {
@@ -67,7 +67,7 @@ router.get("/token/:id", async (req, res) => {
           if (done) break;
           res.write(value);
         }
-        return res.end();
+        return void res.end();
       }
     }
   } catch { /* fall through to 404 */ }

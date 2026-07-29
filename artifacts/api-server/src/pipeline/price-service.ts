@@ -79,7 +79,7 @@ async function fetchBatch(chain: string, addresses: string[]): Promise<Map<strin
       };
 
       // Group pairs by token address; prefer Raydium pairs for Solana tokens
-      const byAddr = new Map<string, typeof json.pairs extends Array<infer T> ? T : never>();
+      const byAddr = new Map<string, NonNullable<typeof json.pairs>[number]>();
       for (const pair of json.pairs ?? []) {
         if (pair.chainId !== dexChain || !pair.priceUsd) continue;
         const addr = chain === "solana" ? pair.baseToken.address : pair.baseToken.address.toLowerCase();
