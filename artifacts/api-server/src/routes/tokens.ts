@@ -78,6 +78,10 @@ function mapToken(t: typeof tracked_tokens.$inferSelect) {
     intelligenceUpdatedAt:  t.intelligenceUpdatedAt?.toISOString() ?? null,
     consecutivePositiveChecks: t.consecutivePositiveChecks,
     peakMcUsd:              t.peakMcUsd,
+    // Composite scoring (holder-velocity-dominant formula)
+    compositeScore:         t.compositeScore ?? null,
+    compositeFactors:       (t.compositeFactors as string[] | null) ?? [],
+    compositeUpdatedAt:     t.compositeUpdatedAt?.toISOString() ?? null,
     // Security / CA analysis
     security: t.secFetchedAt ? {
       isHoneypot:          t.secIsHoneypot,

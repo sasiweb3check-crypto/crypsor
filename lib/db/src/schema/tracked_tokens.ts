@@ -140,6 +140,11 @@ export const tracked_tokens = pgTable(
     secRatTraderAmtRate:    real("sec_rat_trader_amt_rate"),
     secCreatorCreatedCount: integer("sec_creator_created_count"),  // how many tokens creator launched
     secFetchedAt:           timestamp("sec_fetched_at"),
+    // ── Composite scoring (scoringEngine.ts — holder-velocity-dominant weights) ──
+    // Runs alongside intelligenceScore; same sub-scores, different formula.
+    compositeScore:         real("composite_score"),
+    compositeFactors:       jsonb("composite_factors").$type<string[]>(),
+    compositeUpdatedAt:     timestamp("composite_updated_at"),
   },
   (t) => [unique("token_chain_unique").on(t.address, t.chain)],
 );

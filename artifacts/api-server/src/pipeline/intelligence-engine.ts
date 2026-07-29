@@ -28,6 +28,7 @@ import { eq, and, gte, lt, sql, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { healthMonitor } from "./health-monitor";
 import { eventBus } from "./event-bus";
+import { computeCompositeScore, type RawSignal } from "../lib/scoring-engine";
 
 const log = logger.child({ module: "intelligence-engine" });
 
@@ -461,11 +462,36 @@ export async function refreshAllIntelligence(): Promise<void> {
         log.info({ tokenId: t.id, trigger, intelligenceScore, prev: prevScore ?? null, ageMult, statusBefore: t.status, statusAfter }, "Intel score log entry");
       }
 
+      // ── Composite score (holder-velocity-dominant, from scoringEngine.ts) ──
+      const rawSignal: RawSignal = {
+        tokenAddress:    t.address,
+        mcGrowth:        mcGrowthScore,
+        volIntensity:    volumeIntensityScore,
+        holderVelocity:  holderVelocityScore,
+        kolSmart:        kolSmartScore,
+        liquidityHealth: liquidityHealthScore,
+        ageMultiplier:   ageMult,
+        ageHours:        r1(ageHrs),
+        holderCount:     t.holderCount,
+        holderKolCount:  t.holderKolCount,
+        holderSmartCount: t.holderSmartCount,
+        totalBuys,
+        smartBuys,
+        labeledFraction: r1(labeledFraction),
+        marketCapUsd:    currentMcNum,
+        volume24hUsd:    t.volume24hUsd ? parseFloat(t.volume24hUsd) : 0,
+        liquidityUsd:    t.liquidityUsd ? parseFloat(t.liquidityUsd) : 0,
+      };
+      const compositeResult = computeCompositeScore(rawSignal);
+
       await db.update(tracked_tokens).set({
         intelligenceScore, qualityLabel,
         mcGrowthScore, volumeIntensityScore, holderVelocityScore,
         kolSmartScore, liquidityHealthScore, intelligenceUpdatedAt: new Date(),
         consecutivePositiveChecks: newConsecutive, peakMcUsd: newPeak ?? undefined,
+        compositeScore:    compositeResult.compositeScore,
+        compositeFactors:  compositeResult.factors,
+        compositeUpdatedAt: new Date(),
         ...(statusOverride ? { status: statusOverride, lastStatusChangeAt: new Date() } : {}),
       }).where(eq(tracked_tokens.id, t.id));
     }
