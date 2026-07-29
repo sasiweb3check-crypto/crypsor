@@ -52,7 +52,9 @@ function calculateRunnerPotential(
   if (t.intelligenceScore > 75) { score += 38; signals.push("intel_score"); }
   if (t.kolSmartScore > 45)      { score += 32; signals.push("kol_smart"); }
   if (t.holderVelocityScore > 75){ score += 22; signals.push("holder_velocity"); }
-  if (t.marketCapUsd < 15_000)   { score += 18; signals.push("low_mc"); }
+  // Target early-stage viable tokens ($5K–$500K MC).
+  // < $5K = effectively dead/zeroed; > $500K = no longer small-cap runner.
+  if (t.marketCapUsd >= 5_000 && t.marketCapUsd <= 500_000) { score += 18; signals.push("low_mc"); }
 
   if (useAgeBased && t.snapshotCount >= 3) {
     const athGap = (t.athGainPct ?? 0) - (t.gainPct ?? 0);
@@ -149,7 +151,10 @@ router.get("/caller/tokens", async (req, res) => {
           useAgeBased,
         );
 
-        if (score === 0) return null;
+        // Require at least 2 signals to fire (min meaningful score = 50).
+        // Single-signal tokens (vel alone=22, kol alone=32, mc alone=18, intel alone=38)
+        // are noise — a genuine runner needs multiple confirmations.
+        if (score < 50) return null;
 
         return {
           id:              t.id,
