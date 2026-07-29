@@ -191,19 +191,30 @@ type HolderRow = {
   fetchedAt: Date;
 };
 
+// Labels that qualify a wallet for storage in token_holders.
+// Only KOL and smart-money wallets are stored — all others are discarded.
+const KOL_SMART_LABELS = new Set([
+  "kol", "renowned",          // KOL wallets
+  "smart_money", "smart_degen", // Smart-money wallets
+]);
+
+function isKolOrSmart(labels: string[]): boolean {
+  return labels.some(l => KOL_SMART_LABELS.has(l));
+}
+
 /**
- * Upsert a raw GMGN holder list into token_holders.
+ * Upsert KOL and smart-money wallets from a raw GMGN holder list into token_holders.
  *
  * IMPORTANT — address fields from GMGN /vas/api/v1/token_holders:
  *   address         = the actual SOL wallet (owner of the token account) — use this
  *   account_address = the Associated Token Account (ATA) — NOT a wallet, never use as primary
  *
- * Label strategy: MERGE (union) labels on conflict so wallet labels accumulate
- * across snapshots. A wallet that had "smart_degen" in an earlier snapshot keeps
- * that label even if the next snapshot doesn't include that wallet.
+ * Only wallets tagged kol / renowned / smart_money / smart_degen are stored.
+ * Deduplication key is wallet_address only — the same wallet appearing in
+ * multiple tokens is stored once; on conflict only balance is updated.
  *
  * snapshotMarketCapUsd captures the token's market cap at the time of this snapshot.
- * Returns row count stored.
+ * Returns count of KOL/smart wallets stored.
  */
 export async function persistHolders(
   tokenId: number,
@@ -214,14 +225,10 @@ export async function persistHolders(
   if (holderList.length === 0) return 0;
 
   let skippedNoWallet = 0;
+  let skippedNotKolSmart = 0;
 
   const rows: HolderRow[] = (holderList as RawHolder[])
     .map(h => {
-      // `address` is the wallet owner; `account_address` is the ATA.
-      // Fall back to account_address only when address is absent (older API variants).
-      // Use only `address` (the wallet owner). `account_address` is the ATA —
-      // storing it as a wallet address creates phantom duplicate entries when
-      // the real wallet address later arrives in a subsequent snapshot.
       const walletAddress = h.address?.trim() ?? "";
       if (!walletAddress) {
         skippedNoWallet++;
@@ -229,6 +236,13 @@ export async function persistHolders(
       }
       const rawLabels = [...(h.tags ?? []), ...(h.maker_token_tags ?? [])];
       const labels = [...new Set(rawLabels.filter(Boolean))];
+
+      // Only store KOL and smart-money wallets
+      if (!isKolOrSmart(labels)) {
+        skippedNotKolSmart++;
+        return null;
+      }
+
       return {
         tokenId,
         walletAddress,
@@ -249,54 +263,47 @@ export async function persistHolders(
     .filter((x): x is HolderRow => x !== null);
 
   if (rows.length === 0) {
-    log.warn({ tokenId, tokenLabel, rawCount: holderList.length, skippedNoWallet },
-      "Holders snapshot: all records skipped (missing wallet address)");
+    log.debug(
+      { tokenId, tokenLabel, rawCount: holderList.length, skippedNoWallet, skippedNotKolSmart },
+      "Holders snapshot: no KOL/smart wallets found in this batch",
+    );
     return 0;
   }
 
-  // Deduplicate within the batch by (tokenId, walletAddress).
-  // GMGN occasionally returns the same wallet twice in one response; PostgreSQL's
-  // ON CONFLICT DO UPDATE rejects batches that try to update the same row twice.
-  // Keep the last occurrence so labels from both entries are unioned below.
+  // Deduplicate within the batch by walletAddress only.
+  // GMGN occasionally returns the same wallet twice; PostgreSQL's ON CONFLICT
+  // rejects batches that try to update the same row twice.
   const dedupMap = new Map<string, HolderRow>();
   for (const row of rows) {
-    const key = `${row.tokenId}::${row.walletAddress}`;
-    const existing = dedupMap.get(key);
+    const existing = dedupMap.get(row.walletAddress);
     if (existing) {
-      // Union labels from both occurrences
       existing.labels = [...new Set([...existing.labels, ...row.labels])];
     } else {
-      dedupMap.set(key, row);
+      dedupMap.set(row.walletAddress, row);
     }
   }
   const dedupedRows = Array.from(dedupMap.values());
 
-  // Upsert: merge (union) labels so historical labels accumulate; refresh all
-  // position/trade fields with the latest values from GMGN.
+  // Upsert by wallet_address: if the wallet already exists (seen in any prior
+  // token), update only balance and fetchedAt. Labels accumulate (union).
   await db.insert(token_holders).values(dedupedRows)
     .onConflictDoUpdate({
-      target: [token_holders.tokenId, token_holders.walletAddress],
+      target: [token_holders.walletAddress],
       set: {
-        // Merge labels: union existing + incoming, deduplicated
+        // Merge labels so historical KOL/smart labels are never lost
         labels:               sql`ARRAY(SELECT DISTINCT unnest(token_holders.labels || excluded.labels))`,
-        amountPercentage:     sql`excluded.amount_percentage`,
+        // Update balance with latest value
         balance:              sql`excluded.balance`,
-        costUsd:              sql`excluded.cost_usd`,
-        realizedProfit:       sql`excluded.realized_profit`,
-        unrealizedProfit:     sql`excluded.unrealized_profit`,
-        buyCount:             sql`excluded.buy_count`,
-        sellCount:            sql`excluded.sell_count`,
-        twitterName:          sql`excluded.twitter_name`,
-        twitterUsername:      sql`excluded.twitter_username`,
-        snapshotMarketCapUsd: sql`excluded.snapshot_market_cap_usd`,
+        // Update last-seen token reference
+        tokenId:              sql`excluded.token_id`,
+        amountPercentage:     sql`excluded.amount_percentage`,
+        twitterName:          sql`COALESCE(NULLIF(excluded.twitter_name, ''), token_holders.twitter_name)`,
+        twitterUsername:      sql`COALESCE(NULLIF(excluded.twitter_username, ''), token_holders.twitter_username)`,
         fetchedAt:            sql`excluded.fetched_at`,
       },
     });
 
-  // ── Sync wallet identity to wallet_profiles (deduplicates across tokens) ──
-  // Labels and twitter handles are merged so a wallet known as "smart_degen"
-  // from one token retains that label regardless of which token you look it up from.
-  // Use dedupedRows (not the original rows) so wallet_profiles also has no duplicates.
+  // ── Sync to wallet_profiles (canonical identity store) ───────────────────
   const profileRows = dedupedRows.map(r => ({
     walletAddress:  r.walletAddress,
     labels:         r.labels,
@@ -321,11 +328,11 @@ export async function persistHolders(
     ? `$${(parseFloat(snapshotMarketCapUsd) / 1000).toFixed(1)}K`
     : "unknown";
   log.info(
-    { tokenId, tokenLabel, upserted: rows.length, skippedNoWallet, mcAtSnapshot: mcLabel },
-    "Holders snapshot upserted",
+    { tokenId, tokenLabel, stored: dedupedRows.length, skippedNotKolSmart, skippedNoWallet, mcAtSnapshot: mcLabel },
+    "KOL/smart holders upserted",
   );
 
-  return rows.length;
+  return dedupedRows.length;
 }
 
 // ── Token security fetch ──────────────────────────────────────────────────────
