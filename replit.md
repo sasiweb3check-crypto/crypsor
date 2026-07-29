@@ -1,17 +1,16 @@
 # Crypsor
 
-A Solana token intelligence dashboard that monitors wallets, scores tokens in real-time, and surfaces KOL/smart-money signals.
+Real-time cryptocurrency token intelligence and monitoring platform focused on Solana. Scans blockchain wallets for new trades, tracks token performance (market cap, price, gains), and aggregates holder intelligence (KOLs, smart money) via GMGN scraping.
 
 ## Stack
 
-- **Frontend**: React + Vite + Tailwind + TanStack Query + Wouter (`artifacts/crypsor`)
-- **Backend**: Express v5 + TypeScript + Drizzle ORM + PostgreSQL (`artifacts/api-server`)
-- **Jobs/Queues**: BullMQ + Redis (`AIVEN_REDIS_URL`)
-- **Database**: Aiven PostgreSQL (`AIVEN_DATABASE_URL`) — Replit's built-in `DATABASE_URL` also supported
-- **Solana RPC**: Helius (`HELIUS_API_KEY`)
-- **Shared libs**: `lib/db`, `lib/api-zod`, `lib/api-client-react`
+- **Frontend:** React + Vite + Tailwind CSS + TanStack Query + Radix UI + Wouter — `artifacts/crypsor/`
+- **Backend:** Node.js + Express v5 + TypeScript + PostgreSQL (Drizzle ORM) — `artifacts/api-server/`
+- **DB schema:** `lib/db/` — Drizzle schema + push scripts
+- **Shared libs:** `lib/` (api-zod types, api-client-react)
+- **Monorepo:** pnpm workspaces
 
-## Running Locally on Replit
+## How to run
 
 Both workflows start automatically:
 
@@ -20,30 +19,30 @@ Both workflows start automatically:
 | `artifacts/crypsor: web` | `pnpm --filter @workspace/crypsor run dev` |
 | `artifacts/api-server: API Server` | `pnpm --filter @workspace/api-server run dev` |
 
-The frontend is served at `/` and the API at `/api`.
+The API server builds with esbuild (`build.mjs`) then runs `dist/index.mjs`.
 
-## Required Secrets
+## Required secrets
 
 | Secret | Purpose |
 |---|---|
-| `HELIUS_API_KEY` | Solana RPC + wallet scanning |
-| `AIVEN_REDIS_URL` | BullMQ job queues + SSE pub/sub |
-| `AIVEN_DATABASE_URL` | Primary Aiven PostgreSQL database |
+| `HELIUS_API_KEY` | Solana RPC — wallet transaction scanning |
+| `AIVEN_REDIS_URL` | BullMQ job queue (rediss:// TLS connection string) |
 | `SESSION_SECRET` | Express session signing |
 
-## Database Schema
+`DATABASE_URL` is provided automatically by Replit's built-in PostgreSQL.
 
-Push schema changes with:
-```
+## Database
+
+Schema is managed via Drizzle ORM. To push schema changes to the dev database:
+
+```bash
 pnpm --filter @workspace/db run push
 ```
 
 ## Architecture
 
-See `ARCHITECTURE.md` for the full pipeline breakdown. Key points:
-- No message broker — plain Node.js `EventEmitter` as internal bus
-- All pipeline services run in the same process as the API server
-- SSE replaces WebSockets for real-time push to the frontend
-- Scan loop runs every 120s; price updates every 20s
+See `ARCHITECTURE.md` for the full pipeline breakdown (Price, Metadata, Lifecycle, Momentum, Intelligence engines, SSE gateway, wallet scheduler).
 
-## User Preferences
+## User preferences
+
+_None yet._
