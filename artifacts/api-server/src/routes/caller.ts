@@ -174,7 +174,13 @@ router.get("/caller/history", async (req, res) => {
       Elite: 7, Excellent: 6, Strong: 5, Good: 4, Average: 3, Speculative: 2, Weak: 1,
     };
 
-    const results = tokens.map(t => {
+    const results = tokens
+      .filter(t => {
+        // Exclude tokens whose current MC has dropped below $5K
+        const currentMc = parseFloat(t.marketCapUsd ?? "0") || 0;
+        return currentMc >= 5000;
+      })
+      .map(t => {
       const hist = histMap.get(t.id)!;
       const calledMc = hist.called_mc ? parseFloat(hist.called_mc) : null;
       const currentMc = parseFloat(t.marketCapUsd ?? "0") || null;
