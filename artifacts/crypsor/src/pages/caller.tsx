@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Copy, ExternalLink, Radio, TrendingUp,
-  Star, Users, Zap, Clock, ArrowUpDown, Flame,
+  Copy, ExternalLink, ArrowUpDown, Twitter, Send, Globe,
+  Star, Users, Zap, Flame, TrendingUp, BarChart2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -12,6 +12,8 @@ import {
 } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface Socials { twitter?: string; telegram?: string; website?: string; }
 
 interface HistoryToken {
   id: number;
@@ -33,29 +35,38 @@ interface HistoryToken {
   intelligenceScore: number | null;
   holderKolCount: number | null;
   holderSmartCount: number | null;
+  postmortemLabel: "GOOD_SETUP" | "SURPRISE_SIGNAL" | "DUMP_WARNING" | "NONE";
+  socials: Socials;
 }
 
-// ── Quality label config ──────────────────────────────────────────────────────
+interface CallerStats {
+  total: number;
+  winRate: number;
+  x2Count: number;
+  x3Count: number;
+  x5Count: number;
+  minAthGain: number;
+  maxAthGain: number;
+}
 
-const QUALITY: Record<string, { color: string; bg: string }> = {
-  Elite:      { color: "#f59e0b", bg: "bg-[#f59e0b]/10" },
-  Excellent:  { color: "#22c55e", bg: "bg-[#22c55e]/10" },
-  Strong:     { color: "#3b82f6", bg: "bg-[#3b82f6]/10" },
-  Good:       { color: "#8b5cf6", bg: "bg-[#8b5cf6]/10" },
-  Average:    { color: "#8b949e", bg: "bg-[#8b949e]/10" },
-  Speculative:{ color: "#f97316", bg: "bg-[#f97316]/10" },
-  Weak:       { color: "#484f58", bg: "bg-[#484f58]/10" },
+// ── Postmortem badge ──────────────────────────────────────────────────────────
+
+const PM_META = {
+  GOOD_SETUP:      { label: "Good",     color: "#22c55e", dot: "#22c55e" },
+  SURPRISE_SIGNAL: { label: "Surprise", color: "#f59e0b", dot: "#f59e0b" },
+  DUMP_WARNING:    { label: "Dump",     color: "#ef4444", dot: "#ef4444" },
+  NONE:            { label: "Neutral",  color: "#484f58", dot: "#484f58" },
 };
 
-function QualityBadge({ label }: { label: string | null }) {
-  if (!label) return null;
-  const q = QUALITY[label] ?? { color: "#484f58", bg: "bg-[#484f58]/10" };
+function PmBadge({ label }: { label: HistoryToken["postmortemLabel"] }) {
+  const m = PM_META[label] ?? PM_META.NONE;
   return (
     <span
-      className={cn("inline-flex items-center px-1.5 py-0.5 text-[9px] font-black tracking-widest uppercase", q.bg)}
-      style={{ color: q.color }}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-black tracking-widest uppercase rounded-sm"
+      style={{ color: m.color, background: `${m.color}18`, border: `1px solid ${m.color}30` }}
     >
-      {label}
+      <span className="w-1 h-1 rounded-full shrink-0" style={{ background: m.dot }} />
+      {m.label}
     </span>
   );
 }
@@ -69,10 +80,18 @@ function gainColor(v: number | null | undefined) {
   return "text-[#8b949e]";
 }
 
-function fmtGain(pct: number | null | undefined) {
+function fmtAth(pct: number | null | undefined): string {
   if (pct == null) return "—";
   const x = pct / 100 + 1;
-  if (x >= 2) return `+${x.toFixed(1)}×`;
+  if (x >= 2)   return `${x.toFixed(1)}×`;
+  if (pct >= 0) return `+${pct.toFixed(0)}%`;
+  return `${pct.toFixed(0)}%`;
+}
+
+function fmtGain(pct: number | null | undefined): string {
+  if (pct == null) return "—";
+  const x = pct / 100 + 1;
+  if (x >= 2)   return `+${x.toFixed(1)}×`;
   if (pct >= 0) return `+${pct.toFixed(1)}%`;
   return `${pct.toFixed(1)}%`;
 }
@@ -82,271 +101,200 @@ function TokenLogo({ logoUri, address, symbol }: {
 }) {
   const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(
     (symbol?.slice(0, 2) || "?").replace(/[^\x00-\x7F]/g, "") || "?"
-  )}&background=0d1117&color=f59e0b&size=40&bold=true`;
+  )}&background=0a0e1a&color=f59e0b&size=40&bold=true`;
   const [src, setSrc] = useState(logoUri || fallback);
   return (
     <img src={src} alt="" onError={() => setSrc(fallback)}
-      className="w-8 h-8 shrink-0 rounded-sm object-cover border border-[#21262d]" />
+      className="w-8 h-8 shrink-0 rounded object-cover"
+      style={{ border: "1px solid rgba(255,255,255,0.08)" }} />
   );
 }
 
-// ── Top performer card ────────────────────────────────────────────────────────
+// ── Stats chips ───────────────────────────────────────────────────────────────
 
-function PerformerCard({ token, rank, onClick }: {
-  token: HistoryToken; rank: number; onClick: () => void;
+function StatChip({ label, value, sub, accent }: {
+  label: string; value: string | number; sub?: string; accent?: string;
 }) {
-  const { toast } = useToast();
-  const q = QUALITY[token.qualityLabel ?? ""] ?? { color: "#484f58", bg: "" };
-  const gain = token.gainSinceCall;
-  const isHot = (gain ?? 0) >= 500;
-
-  const copy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(token.address);
-    toast({ title: "Copied", description: truncateAddress(token.address) });
-  };
-  const gmgn = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    window.open(getGmgnUrl(token.chain, token.address), "_blank", "noopener");
-  };
-
   return (
     <div
-      onClick={onClick}
-      className="group flex flex-col gap-0 border border-[#21262d] hover:border-[#30363d] bg-[#0d1117] hover:bg-[#0f1419] transition-colors cursor-pointer overflow-hidden"
+      className="flex-1 min-w-0 flex flex-col items-center justify-center px-3 py-2.5 rounded-lg"
+      style={{
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.07)",
+        minWidth: 68,
+      }}
     >
-      {/* Gain accent bar */}
-      <div className="h-0.5 w-full" style={{ backgroundColor: gain && gain > 0 ? "#22c55e" : "#484f58", opacity: 0.5 }} />
-
-      <div className="p-3.5 flex flex-col gap-3">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="relative shrink-0">
-              <TokenLogo logoUri={token.logoUri} address={token.address} symbol={token.symbol} />
-              {rank <= 3 && (
-                <span className="absolute -top-1 -left-1 text-[8px] font-black leading-none w-3.5 h-3.5 flex items-center justify-center rounded-full"
-                  style={{ backgroundColor: rank === 1 ? "#f59e0b" : rank === 2 ? "#8b949e" : "#cd7f32", color: "#000" }}>
-                  {rank}
-                </span>
-              )}
-            </div>
-            <div className="min-w-0">
-              <div className="text-[#e6edf3] font-bold text-sm truncate leading-tight flex items-center gap-1">
-                {safeSymbol(token.symbol, token.address)}
-                {isHot && <Flame className="w-3 h-3 text-[#f59e0b] shrink-0" />}
-              </div>
-              <div className="text-[#484f58] text-[10px] truncate mt-0.5">
-                {safeName(token.name, token.symbol, token.address)}
-              </div>
-            </div>
-          </div>
-          {/* Gain */}
-          <div className="shrink-0 text-right">
-            <div className={cn("text-lg font-black tabular-nums leading-none", gainColor(gain))}>
-              {fmtGain(gain)}
-            </div>
-            <div className="text-[8px] text-[#484f58] tracking-widest mt-0.5">GAIN</div>
-          </div>
-        </div>
-
-        {/* Quality + KOL/Smart */}
-        <div className="flex items-center gap-2">
-          <QualityBadge label={token.qualityLabel} />
-          <div className="flex-1" />
-          {token.calledKol > 0 && (
-            <span className="flex items-center gap-1 text-[9px]">
-              <Star className="w-2.5 h-2.5 text-[#f59e0b]" />
-              <span className="text-[#f59e0b] font-bold">{token.calledKol}</span>
-            </span>
-          )}
-          {token.calledSmart > 0 && (
-            <span className="flex items-center gap-1 text-[9px]">
-              <Users className="w-2.5 h-2.5 text-[#3b82f6]" />
-              <span className="text-[#3b82f6] font-bold">{token.calledSmart}</span>
-            </span>
-          )}
-        </div>
-
-        {/* MC row */}
-        <div className="flex items-center justify-between pt-2.5 border-t border-[#1c2128]">
-          <div>
-            <div className="text-[8px] text-[#484f58] uppercase tracking-widest mb-0.5">Called at</div>
-            <div className="text-[#8b949e] text-[10px] font-mono tabular-nums">
-              {token.calledMcUsd ? formatCompactUsd(token.calledMcUsd) : "—"}
-            </div>
-          </div>
-          <div className="text-[#30363d]">→</div>
-          <div className="text-right">
-            <div className="text-[8px] text-[#484f58] uppercase tracking-widest mb-0.5">Now</div>
-            <div className="text-[#c9d1d9] text-[10px] font-mono tabular-nums font-bold">
-              {token.currentMcUsd ? formatCompactUsd(token.currentMcUsd) : "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between">
-          <span className="flex items-center gap-1 text-[9px] text-[#484f58]">
-            <Zap className="w-2.5 h-2.5" style={{ color: q.color }} />
-            <span style={{ color: q.color }}>{Math.round(token.calledIntel)}</span>
-            <span className="text-[#30363d] ml-1">
-              <Clock className="w-2.5 h-2.5 inline mr-0.5" />
-              {formatTimeAgo(token.calledAt)}
-            </span>
-          </span>
-          <div className="flex items-center gap-2">
-            <button onClick={copy} title="Copy CA"
-              className="text-[#30363d] hover:text-[#f59e0b] transition-colors">
-              <Copy className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={gmgn} title="Open GMGN"
-              className="text-[#30363d] hover:text-[#f59e0b] transition-colors">
-              <ExternalLink className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <div className="text-[8px] font-bold uppercase tracking-widest mb-1" style={{ color: "#484f58" }}>{label}</div>
+      <div className="font-black tabular-nums leading-none text-sm" style={{ color: accent ?? "#e6edf3" }}>{value}</div>
+      {sub && <div className="text-[7px] mt-0.5 tabular-nums" style={{ color: "#30363d" }}>{sub}</div>}
     </div>
   );
 }
 
-// ── Called tokens table ───────────────────────────────────────────────────────
+// ── Sort button ───────────────────────────────────────────────────────────────
 
-type SortKey = "calledAt" | "quality" | "gain" | "intel" | "calledMc";
+type SortKey = "calledAt" | "gain" | "ath" | "intel" | "calledMc";
 
-function SortButton({ label, active, asc, onClick }: {
+function SortBtn({ label, active, asc, onClick }: {
   label: string; active: boolean; asc: boolean; onClick: () => void;
 }) {
   return (
     <button onClick={onClick}
-      className={cn(
-        "flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-1 border transition-colors",
-        active
-          ? "border-[#f59e0b]/40 bg-[#f59e0b]/8 text-[#f59e0b]"
-          : "border-[#21262d] text-[#484f58] hover:text-[#8b949e] hover:border-[#30363d]",
-      )}>
-      <ArrowUpDown className="w-2.5 h-2.5" />
+      className="flex items-center gap-1 px-2 py-1 text-[8px] font-bold uppercase tracking-widest rounded transition-colors"
+      style={{
+        background: active ? "rgba(245,158,11,0.10)" : "rgba(255,255,255,0.03)",
+        border: `1px solid ${active ? "rgba(245,158,11,0.35)" : "rgba(255,255,255,0.06)"}`,
+        color: active ? "#f59e0b" : "#484f58",
+      }}>
+      <ArrowUpDown className="w-2 h-2" />
       {label}
       {active && <span className="text-[7px]">{asc ? "↑" : "↓"}</span>}
     </button>
   );
 }
 
-function CalledTable({ tokens, onNavigate }: { tokens: HistoryToken[]; onNavigate: (id: number) => void }) {
-  const { toast } = useToast();
+// ── Token row (mobile-optimised) ──────────────────────────────────────────────
 
-  if (tokens.length === 0) return (
-    <div className="p-10 text-center border border-[#1c2128] text-[#484f58] text-xs tracking-widest uppercase">
-      No tokens called yet
-    </div>
-  );
+function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }) {
+  const { toast } = useToast();
+  const athX = t.athGainPct != null ? t.athGainPct / 100 + 1 : null;
+  const isHot = (athX ?? 0) >= 5;
+
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(t.address);
+    toast({ title: "Copied", description: truncateAddress(t.address) });
+  };
+
+  const openGmgn = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    window.open(getGmgnUrl(t.chain, t.address), "_blank", "noopener");
+  };
 
   return (
-    <div className="border border-[#21262d] overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-[#21262d]">
-            {["Token", "Quality", "Intel", "KOL / Smart", "MC Called", "MC Now", "Gain", ""].map(h => (
-              <th key={h} className="px-3 py-2.5 text-left text-[8px] font-bold uppercase tracking-widest text-[#484f58] whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {tokens.map((t, i) => {
-            const q = QUALITY[t.qualityLabel ?? ""] ?? { color: "#484f58", bg: "" };
-            return (
-              <tr key={t.id} onClick={() => onNavigate(t.id)}
-                className={cn(
-                  "border-b border-[#1c2128] last:border-0 cursor-pointer transition-colors",
-                  i % 2 === 0 ? "bg-[#0d1117]" : "bg-[#080c10]",
-                  "hover:bg-[#0f1419]",
-                )}>
-                <td className="px-3 py-2.5">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
-                    <div className="min-w-0">
-                      <div className="text-[#e6edf3] font-bold truncate max-w-[100px]">
-                        {safeSymbol(t.symbol, t.address)}
-                      </div>
-                      <div className="text-[#484f58] text-[9px]">{formatTimeAgo(t.calledAt)}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-3 py-2.5 whitespace-nowrap"><QualityBadge label={t.qualityLabel} /></td>
-                <td className="px-3 py-2.5 whitespace-nowrap">
-                  <div className="flex items-center gap-1">
-                    <Zap className="w-2.5 h-2.5" style={{ color: q.color }} />
-                    <span className="font-bold tabular-nums" style={{ color: q.color }}>
-                      {Math.round(t.calledIntel)}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-3 py-2.5 whitespace-nowrap">
-                  <div className="flex items-center gap-2">
-                    {t.calledKol > 0 && (
-                      <span className="flex items-center gap-0.5">
-                        <Star className="w-2.5 h-2.5 text-[#f59e0b]" />
-                        <span className="text-[#f59e0b] font-bold text-[10px]">{t.calledKol}</span>
-                      </span>
-                    )}
-                    {t.calledSmart > 0 && (
-                      <span className="flex items-center gap-0.5">
-                        <Users className="w-2.5 h-2.5 text-[#3b82f6]" />
-                        <span className="text-[#3b82f6] font-bold text-[10px]">{t.calledSmart}</span>
-                      </span>
-                    )}
-                    {t.calledKol === 0 && t.calledSmart === 0 && <span className="text-[#30363d]">—</span>}
-                  </div>
-                </td>
-                <td className="px-3 py-2.5 whitespace-nowrap">
-                  <span className="text-[#8b949e] tabular-nums font-mono text-[10px]">
-                    {t.calledMcUsd ? formatCompactUsd(t.calledMcUsd) : "—"}
-                  </span>
-                </td>
-                <td className="px-3 py-2.5 whitespace-nowrap">
-                  <span className="text-[#c9d1d9] tabular-nums font-mono text-[10px]">
-                    {t.currentMcUsd ? formatCompactUsd(t.currentMcUsd) : "—"}
-                  </span>
-                </td>
-                <td className="px-3 py-2.5 whitespace-nowrap">
-                  <span className={cn("font-bold tabular-nums", gainColor(t.gainSinceCall))}>
-                    {fmtGain(t.gainSinceCall)}
-                  </span>
-                </td>
-                <td className="px-3 py-2.5">
-                  <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => {
-                      navigator.clipboard.writeText(t.address);
-                      toast({ title: "Copied", description: truncateAddress(t.address) });
-                    }} className="text-[#30363d] hover:text-[#f59e0b] transition-colors" title="Copy CA">
-                      <Copy className="w-3 h-3" />
-                    </button>
-                    <button onClick={() => window.open(getGmgnUrl(t.chain, t.address), "_blank", "noopener")}
-                      className="text-[#30363d] hover:text-[#f59e0b] transition-colors" title="Open GMGN">
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div
+      onClick={onNavigate}
+      className="flex flex-col gap-2 cursor-pointer rounded-lg px-3 py-3 transition-all active:scale-[0.99]"
+      style={{
+        background: "rgba(255,255,255,0.02)",
+        border: "1px solid rgba(255,255,255,0.055)",
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.045)")}
+      onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.02)")}
+    >
+      {/* Row 1: logo + name + badge + ATH */}
+      <div className="flex items-center gap-2.5">
+        <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[#e6edf3] font-bold text-sm leading-none truncate">
+              {safeSymbol(t.symbol, t.address)}
+            </span>
+            {isHot && <Flame className="w-3 h-3 text-[#f59e0b] shrink-0" />}
+            <PmBadge label={t.postmortemLabel} />
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            {t.calledKol > 0 && (
+              <span className="flex items-center gap-0.5 text-[9px] text-[#f59e0b]">
+                <Star className="w-2.5 h-2.5" />{t.calledKol}
+              </span>
+            )}
+            {t.calledSmart > 0 && (
+              <span className="flex items-center gap-0.5 text-[9px] text-[#3b82f6]">
+                <Users className="w-2.5 h-2.5" />{t.calledSmart}
+              </span>
+            )}
+            <span className="text-[#30363d] text-[8px]">{formatTimeAgo(t.calledAt)}</span>
+          </div>
+        </div>
+
+        {/* ATH column */}
+        <div className="shrink-0 text-right">
+          <div className={cn("text-sm font-black tabular-nums leading-none", t.athGainPct != null && t.athGainPct > 0 ? "text-[#22c55e]" : "text-[#484f58]")}>
+            {fmtAth(t.athGainPct)}
+          </div>
+          <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">ATH</div>
+        </div>
+      </div>
+
+      {/* Row 2: MC called → now + actions */}
+      <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+        {/* MC range */}
+        <div className="flex items-center gap-1 text-[9px] font-mono min-w-0 flex-1">
+          <span className="text-[#484f58]">{t.calledMcUsd ? formatCompactUsd(t.calledMcUsd) : "—"}</span>
+          <span className="text-[#30363d]">→</span>
+          <span className={cn("font-bold", gainColor(t.gainSinceCall))}>
+            {t.currentMcUsd ? formatCompactUsd(t.currentMcUsd) : "—"}
+          </span>
+          {t.gainSinceCall != null && (
+            <span className={cn("text-[8px] ml-0.5", gainColor(t.gainSinceCall))}>
+              ({fmtGain(t.gainSinceCall)})
+            </span>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button onClick={copy} title="Copy CA"
+            className="transition-colors" style={{ color: "#30363d" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "#f59e0b")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#30363d")}>
+            <Copy className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={openGmgn} title="GMGN"
+            className="transition-colors" style={{ color: "#30363d" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "#22c55e")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#30363d")}>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+          {t.socials.twitter && (
+            <a href={t.socials.twitter} target="_blank" rel="noopener noreferrer"
+              title="Twitter" onClick={e => e.stopPropagation()}
+              style={{ color: "#30363d" }}
+              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#1d9bf0")}
+              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
+              <Twitter className="w-3.5 h-3.5" />
+            </a>
+          )}
+          {t.socials.telegram && (
+            <a href={t.socials.telegram} target="_blank" rel="noopener noreferrer"
+              title="Telegram" onClick={e => e.stopPropagation()}
+              style={{ color: "#30363d" }}
+              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#24a1de")}
+              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
+              <Send className="w-3.5 h-3.5" />
+            </a>
+          )}
+          {t.socials.website && (
+            <a href={t.socials.website} target="_blank" rel="noopener noreferrer"
+              title="Website" onClick={e => e.stopPropagation()}
+              style={{ color: "#30363d" }}
+              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#8b5cf6")}
+              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
+              <Globe className="w-3.5 h-3.5" />
+            </a>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type SortKey2 = "calledAt" | "quality" | "gain" | "intel" | "calledMc";
-
 export default function Caller() {
   const [, navigate] = useLocation();
-  const [sortKey, setSortKey] = useState<SortKey2>("calledAt");
+  const [sortKey, setSortKey] = useState<SortKey>("calledAt");
   const [sortAsc, setSortAsc] = useState(false);
+
+  const { data: stats, isLoading: statsLoading } = useQuery<CallerStats>({
+    queryKey: ["caller-stats"],
+    queryFn: () =>
+      fetch(`${import.meta.env.BASE_URL}api/caller/stats`).then(r => r.json()),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
 
   const { data, isLoading } = useQuery<{ total: number; tokens: HistoryToken[] }>({
     queryKey: ["caller-history", sortKey, sortAsc ? "asc" : "desc"],
@@ -357,110 +305,138 @@ export default function Caller() {
     staleTime: 30_000,
   });
 
-  const allTokens = data?.tokens ?? [];
+  const tokens = data?.tokens ?? [];
 
-  // Top performers: tokens with positive gain, sorted by best gain
-  const performers = [...allTokens]
-    .filter(t => t.gainSinceCall != null && t.gainSinceCall > 0)
-    .sort((a, b) => (b.gainSinceCall ?? 0) - (a.gainSinceCall ?? 0))
-    .slice(0, 12);
+  // Sort ath locally if needed (server sorts calledAt/gain/intel/calledMc)
+  const sorted = sortKey === "ath"
+    ? [...tokens].sort((a, b) => {
+        const diff = (b.athGainPct ?? -Infinity) - (a.athGainPct ?? -Infinity);
+        return sortAsc ? -diff : diff;
+      })
+    : tokens;
 
-  const setSort = (key: SortKey2) => {
+  const setSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc(v => !v);
     else { setSortKey(key); setSortAsc(false); }
   };
 
+  const winRateColor = !stats ? "#e6edf3"
+    : stats.winRate >= 60 ? "#22c55e"
+    : stats.winRate >= 40 ? "#f59e0b"
+    : "#ef4444";
+
   return (
-    <div className="space-y-8">
+    <div className="flex flex-col min-h-[calc(100vh-3rem)] px-3 pt-3 pb-6 gap-4 max-w-2xl mx-auto w-full">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-bold text-[#f59e0b] tracking-widest uppercase flex items-center gap-2">
-            <Radio className="w-4 h-4" />
-            Caller
-          </h1>
-          <p className="text-[#484f58] text-[10px] mt-0.5 tracking-widest uppercase">
-            Intel ≥ 90 · KOL or Smart required · MC ≥ $5K
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+          <span className="text-[8px] font-bold uppercase tracking-widest text-[#484f58]">
+            Intel ≥ 90 · KOL / Smart
+          </span>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <span className="text-[#f59e0b] font-black text-xl tabular-nums">{data?.total ?? "—"}</span>
-          <span className="text-[#484f58] text-[8px] uppercase tracking-widest">called tokens</span>
-        </div>
+        <span className="text-[#f59e0b] font-black text-sm tabular-nums">
+          {stats?.total ?? data?.total ?? "—"}
+          <span className="text-[8px] font-normal text-[#484f58] ml-1 uppercase tracking-widest">called</span>
+        </span>
       </div>
 
-      {/* ── Top performers ────────────────────────────────────────────────── */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Flame className="w-3 h-3 text-[#f59e0b]" />
-          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f59e0b]">Top Performers</span>
-          <span className="text-[9px] text-[#30363d] font-mono">{performers.length}</span>
-          <div className="flex-1 h-px bg-[#1c2128]" />
+      {/* ── Stats chips ───────────────────────────────────────────────────── */}
+      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+        <StatChip
+          label="Win Rate"
+          value={statsLoading ? "—" : `${stats?.winRate ?? 0}%`}
+          sub="ATH > 0%"
+          accent={statsLoading ? undefined : winRateColor}
+        />
+        <StatChip
+          label="2× Hit"
+          value={statsLoading ? "—" : stats?.x2Count ?? 0}
+          sub="ATH ≥ 2×"
+          accent="#f59e0b"
+        />
+        <StatChip
+          label="3× Hit"
+          value={statsLoading ? "—" : stats?.x3Count ?? 0}
+          sub="ATH ≥ 3×"
+          accent="#f59e0b"
+        />
+        <StatChip
+          label="5× Hit"
+          value={statsLoading ? "—" : stats?.x5Count ?? 0}
+          sub="ATH ≥ 5×"
+          accent="#f59e0b"
+        />
+        <StatChip
+          label="Best ATH"
+          value={statsLoading || !stats ? "—" : fmtAth(stats.maxAthGain)}
+          sub="all-time"
+          accent="#22c55e"
+        />
+        <StatChip
+          label="Worst"
+          value={statsLoading || !stats ? "—" : fmtAth(stats.minAthGain)}
+          sub="all-time"
+          accent={stats && stats.minAthGain < 0 ? "#ef4444" : "#484f58"}
+        />
+      </div>
+
+      {/* ── Token list ────────────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-3 flex-1">
+        {/* Sort bar */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <BarChart2 className="w-3 h-3 text-[#30363d]" />
+          <span className="text-[8px] text-[#30363d] uppercase tracking-widest">Sort</span>
+          {([
+            { key: "calledAt" as SortKey, label: "Recent" },
+            { key: "ath"      as SortKey, label: "ATH" },
+            { key: "gain"     as SortKey, label: "Gain" },
+            { key: "intel"    as SortKey, label: "Intel" },
+            { key: "calledMc" as SortKey, label: "MC" },
+          ]).map(s => (
+            <SortBtn key={s.key} label={s.label}
+              active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
+              onClick={() => setSort(s.key)} />
+          ))}
         </div>
 
-        {isLoading && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {/* List */}
+        {isLoading ? (
+          <div className="flex flex-col gap-2">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-44 bg-[#0d1117] border border-[#1c2128] animate-pulse" />
+              <div key={i} className="h-20 rounded-lg animate-pulse"
+                style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)" }} />
             ))}
           </div>
-        )}
-
-        {!isLoading && performers.length === 0 && (
-          <div className="p-10 text-center border border-[#1c2128]">
-            <Flame className="w-6 h-6 text-[#21262d] mx-auto mb-2" />
-            <div className="text-[#484f58] text-[10px] tracking-widest uppercase">No performers yet</div>
-            <div className="text-[#30363d] text-[9px] mt-1">Called tokens with positive gain appear here</div>
+        ) : sorted.length === 0 ? (
+          <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
+            <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
+            <div className="text-[10px] uppercase tracking-widest text-[#484f58]">No called tokens yet</div>
+            <div className="text-[9px] text-[#30363d]">Tokens with intel ≥ 90 + KOL/Smart appear here</div>
           </div>
-        )}
-
-        {!isLoading && performers.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {performers.map((t, i) => (
-              <PerformerCard
+        ) : (
+          <div className="flex flex-col gap-2">
+            {sorted.map(t => (
+              <TokenRow
                 key={t.id}
-                token={t}
-                rank={i + 1}
-                onClick={() => navigate(`/tokens/${t.id}`)}
+                t={t}
+                onNavigate={() => navigate(`/tokens/${t.id}`)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* ── Called tokens table ───────────────────────────────────────────── */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <TrendingUp className="w-3 h-3 text-[#8b949e]" />
-          <span className="text-[9px] font-bold uppercase tracking-widest text-[#8b949e]">Called Tokens</span>
-          <span className="text-[9px] text-[#30363d] font-mono">{allTokens.length}</span>
-          <div className="flex-1 h-px bg-[#1c2128]" />
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {([
-              { key: "calledAt" as SortKey2, label: "Recent" },
-              { key: "quality"  as SortKey2, label: "Quality" },
-              { key: "gain"     as SortKey2, label: "Gain" },
-              { key: "intel"    as SortKey2, label: "Intel" },
-              { key: "calledMc" as SortKey2, label: "MC" },
-            ]).map(s => (
-              <SortButton key={s.key} label={s.label}
-                active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
-                onClick={() => setSort(s.key)} />
-            ))}
-          </div>
+      {/* ── Footer note ───────────────────────────────────────────────────── */}
+      {sorted.length > 0 && (
+        <div className="flex items-center justify-center gap-1.5 pt-2">
+          <Zap className="w-2.5 h-2.5 text-[#30363d]" />
+          <span className="text-[8px] text-[#30363d] tracking-widest uppercase">
+            {sorted.length} tokens · Win rate from ATH gain · Sub-$5K excluded
+          </span>
         </div>
-
-        {isLoading ? (
-          <div className="space-y-1">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-12 bg-[#0d1117] border border-[#1c2128] animate-pulse" />
-            ))}
-          </div>
-        ) : (
-          <CalledTable tokens={allTokens} onNavigate={id => navigate(`/tokens/${id}`)} />
-        )}
-      </div>
+      )}
     </div>
   );
 }

@@ -1,8 +1,9 @@
 /**
  * Caller Routes
  *
- * GET /api/caller/tokens   — tokens currently qualifying (intel >= 90, KOL/Smart >= 1)
- * GET /api/caller/history  — all tokens that ever qualified, with performance since call
+ * GET /api/caller/tokens       — tokens currently qualifying (intel >= 90, KOL/Smart >= 1)
+ * GET /api/caller/history      — all tokens that ever qualified, with performance + postmortem + socials
+ * GET /api/caller/stats        — aggregate win-rate stats (2X/3X/5X counts from ATH gain)
  * POST /api/caller/telegram/test — send a test message
  */
 
@@ -10,17 +11,63 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { tracked_tokens, token_intel_log, settings } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { derivePostmortemLabel } from "../lib/postmortem";
+import { extractSocials } from "../lib/socials";
 
 const router = Router();
 
 const MIN_INTEL = 90;
+const MIN_CALLED_MC = 5000;
+
+// ── GET /api/caller/stats ─────────────────────────────────────────────────────
+// Aggregate win-rate metrics computed from ATH gain (not current gain).
+
+router.get("/caller/stats", async (req, res) => {
+  try {
+    const result = await db.execute(sql`
+      WITH called AS (
+        SELECT DISTINCT ON (token_id)
+          token_id,
+          market_cap_usd::numeric AS called_mc
+        FROM token_intel_log
+        WHERE intelligence_score >= ${MIN_INTEL}
+          AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
+          AND market_cap_usd::numeric >= ${MIN_CALLED_MC}
+        ORDER BY token_id, computed_at ASC
+      )
+      SELECT
+        COUNT(*)::int                                            AS total,
+        COUNT(CASE WHEN t.ath_gain_pct > 0 THEN 1 END)::int    AS win,
+        COUNT(CASE WHEN t.ath_gain_pct >= 100 THEN 1 END)::int  AS x2,
+        COUNT(CASE WHEN t.ath_gain_pct >= 200 THEN 1 END)::int  AS x3,
+        COUNT(CASE WHEN t.ath_gain_pct >= 400 THEN 1 END)::int  AS x5,
+        ROUND(MIN(t.ath_gain_pct)::numeric, 1)                  AS min_ath,
+        ROUND(MAX(t.ath_gain_pct)::numeric, 1)                  AS max_ath
+      FROM called c
+      JOIN tracked_tokens t ON t.id = c.token_id
+    `);
+    const row = (result.rows[0] ?? {}) as Record<string, unknown>;
+    const total = Number(row.total ?? 0);
+    const win   = Number(row.win   ?? 0);
+    res.json({
+      total,
+      winRate:    total > 0 ? Math.round((win / total) * 100) : 0,
+      x2Count:   Number(row.x2      ?? 0),
+      x3Count:   Number(row.x3      ?? 0),
+      x5Count:   Number(row.x5      ?? 0),
+      minAthGain: Number(row.min_ath ?? 0),
+      maxAthGain: Number(row.max_ath ?? 0),
+    });
+  } catch (err) {
+    console.error("caller stats error", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ── GET /api/caller/tokens ────────────────────────────────────────────────────
-// Tokens currently meeting the alert criteria, sorted by intel desc.
 
 router.get("/caller/tokens", async (req, res) => {
   try {
-    // Latest snapshot MC per token (from intel log)
     const snapMcRows = await db.execute(sql`
       SELECT DISTINCT ON (token_id)
         token_id,
@@ -36,63 +83,55 @@ router.get("/caller/tokens", async (req, res) => {
 
     const tokens = await db
       .select({
-        id:                tracked_tokens.id,
-        address:           tracked_tokens.address,
-        chain:             tracked_tokens.chain,
-        name:              tracked_tokens.name,
-        symbol:            tracked_tokens.symbol,
-        logoUri:           tracked_tokens.logoUri,
-        imagePath:         tracked_tokens.imagePath,
-        status:            tracked_tokens.status,
-        firstDetectedAt:   tracked_tokens.firstDetectedAt,
-        marketCapUsd:      tracked_tokens.marketCapUsd,
-        gainPct:           tracked_tokens.gainPct,
-        athGainPct:        tracked_tokens.athGainPct,
-        holderCount:       tracked_tokens.holderCount,
-        holderKolCount:    tracked_tokens.holderKolCount,
-        holderSmartCount:  tracked_tokens.holderSmartCount,
+        id: tracked_tokens.id, address: tracked_tokens.address,
+        chain: tracked_tokens.chain, name: tracked_tokens.name,
+        symbol: tracked_tokens.symbol, logoUri: tracked_tokens.logoUri,
+        imagePath: tracked_tokens.imagePath, status: tracked_tokens.status,
+        firstDetectedAt: tracked_tokens.firstDetectedAt,
+        marketCapUsd: tracked_tokens.marketCapUsd,
+        gainPct: tracked_tokens.gainPct, athGainPct: tracked_tokens.athGainPct,
+        holderCount: tracked_tokens.holderCount,
+        holderKolCount: tracked_tokens.holderKolCount,
+        holderSmartCount: tracked_tokens.holderSmartCount,
         intelligenceScore: tracked_tokens.intelligenceScore,
-        qualityLabel:      tracked_tokens.qualityLabel,
-        kolSmartScore:     tracked_tokens.kolSmartScore,
+        qualityLabel: tracked_tokens.qualityLabel,
+        kolSmartScore: tracked_tokens.kolSmartScore,
         holderVelocityScore: tracked_tokens.holderVelocityScore,
-        mcGrowthScore:     tracked_tokens.mcGrowthScore,
-        liquidityUsd:      tracked_tokens.liquidityUsd,
+        mcGrowthScore: tracked_tokens.mcGrowthScore,
+        liquidityUsd: tracked_tokens.liquidityUsd,
         intelligenceUpdatedAt: tracked_tokens.intelligenceUpdatedAt,
+        compositeFactors: tracked_tokens.compositeFactors,
+        rawMetadata: tracked_tokens.rawMetadata,
       })
       .from(tracked_tokens)
       .where(
         sql`intelligence_score >= ${MIN_INTEL}
             AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
-            AND market_cap_usd::numeric >= 5000`,
+            AND market_cap_usd::numeric >= ${MIN_CALLED_MC}`,
       )
       .orderBy(sql`intelligence_score DESC`);
 
     const results = tokens.map(t => {
       const snap = snapMcMap.get(t.id);
       return {
-        id:              t.id,
-        address:         t.address,
-        chain:           t.chain,
-        name:            t.name,
-        symbol:          t.symbol,
-        logoUri:         t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
-        status:          t.status,
+        id: t.id, address: t.address, chain: t.chain,
+        name: t.name, symbol: t.symbol,
+        logoUri: t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
+        status: t.status,
         firstDetectedAt: t.firstDetectedAt?.toISOString() ?? null,
-        marketCapUsd:    parseFloat(t.marketCapUsd ?? "0") || null,
-        snapshotMcUsd:   snap?.mc ? parseFloat(snap.mc) || null : null,
-        snapshotAt:      snap?.at ?? null,
-        gainPct:         t.gainPct,
-        athGainPct:      t.athGainPct,
-        holderCount:     t.holderCount,
-        holderKolCount:  t.holderKolCount,
+        marketCapUsd: parseFloat(t.marketCapUsd ?? "0") || null,
+        snapshotMcUsd: snap?.mc ? parseFloat(snap.mc) || null : null,
+        snapshotAt: snap?.at ?? null,
+        gainPct: t.gainPct, athGainPct: t.athGainPct,
+        holderCount: t.holderCount, holderKolCount: t.holderKolCount,
         holderSmartCount: t.holderSmartCount,
-        intelligenceScore: t.intelligenceScore,
-        qualityLabel:    t.qualityLabel,
-        kolSmartScore:   t.kolSmartScore,
-        holderVelocityScore: t.holderVelocityScore,
-        mcGrowthScore:   t.mcGrowthScore,
-        liquidityUsd:    parseFloat(t.liquidityUsd ?? "0") || null,
+        intelligenceScore: t.intelligenceScore, qualityLabel: t.qualityLabel,
+        kolSmartScore: t.kolSmartScore, holderVelocityScore: t.holderVelocityScore,
+        mcGrowthScore: t.mcGrowthScore,
+        liquidityUsd: parseFloat(t.liquidityUsd ?? "0") || null,
         intelligenceUpdatedAt: t.intelligenceUpdatedAt?.toISOString() ?? null,
+        postmortemLabel: derivePostmortemLabel(t.compositeFactors),
+        socials: extractSocials(t.rawMetadata),
       };
     });
 
@@ -104,15 +143,12 @@ router.get("/caller/tokens", async (req, res) => {
 });
 
 // ── GET /api/caller/history ───────────────────────────────────────────────────
-// Tokens that have ever been called (first time they hit intel >= 90 + KOL/Smart >= 1).
-// "Called at MC" = MC from that first qualifying snapshot.
 
 router.get("/caller/history", async (req, res) => {
   try {
     const sort  = (req.query.sort  as string) ?? "calledAt";
     const order = (req.query.order as string) ?? "desc";
 
-    // First qualifying snapshot per token
     const histRows = await db.execute(sql`
       SELECT DISTINCT ON (token_id)
         token_id,
@@ -124,7 +160,7 @@ router.get("/caller/history", async (req, res) => {
       FROM token_intel_log
       WHERE intelligence_score >= ${MIN_INTEL}
         AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
-        AND market_cap_usd::numeric >= 5000
+        AND market_cap_usd::numeric >= ${MIN_CALLED_MC}
       ORDER BY token_id, computed_at ASC
     `);
 
@@ -134,38 +170,30 @@ router.get("/caller/history", async (req, res) => {
     }
 
     type HistRow = {
-      token_id: number;
-      called_mc: string | null;
-      called_intel: number;
-      called_kol: number;
-      called_smart: number;
-      called_at: string;
+      token_id: number; called_mc: string | null;
+      called_intel: number; called_kol: number;
+      called_smart: number; called_at: string;
     };
     const histMap = new Map<number, HistRow>();
-    for (const r of histRows.rows as HistRow[]) {
-      histMap.set(r.token_id, r);
-    }
+    for (const r of histRows.rows as HistRow[]) histMap.set(r.token_id, r);
     const tokenIds = [...histMap.keys()];
 
     const tokens = await db
       .select({
-        id:                tracked_tokens.id,
-        address:           tracked_tokens.address,
-        chain:             tracked_tokens.chain,
-        name:              tracked_tokens.name,
-        symbol:            tracked_tokens.symbol,
-        logoUri:           tracked_tokens.logoUri,
-        imagePath:         tracked_tokens.imagePath,
-        status:            tracked_tokens.status,
-        marketCapUsd:      tracked_tokens.marketCapUsd,
-        gainPct:           tracked_tokens.gainPct,
-        athGainPct:        tracked_tokens.athGainPct,
-        holderKolCount:    tracked_tokens.holderKolCount,
-        holderSmartCount:  tracked_tokens.holderSmartCount,
+        id: tracked_tokens.id, address: tracked_tokens.address,
+        chain: tracked_tokens.chain, name: tracked_tokens.name,
+        symbol: tracked_tokens.symbol, logoUri: tracked_tokens.logoUri,
+        imagePath: tracked_tokens.imagePath, status: tracked_tokens.status,
+        marketCapUsd: tracked_tokens.marketCapUsd,
+        gainPct: tracked_tokens.gainPct, athGainPct: tracked_tokens.athGainPct,
+        holderKolCount: tracked_tokens.holderKolCount,
+        holderSmartCount: tracked_tokens.holderSmartCount,
         intelligenceScore: tracked_tokens.intelligenceScore,
-        qualityLabel:      tracked_tokens.qualityLabel,
+        qualityLabel: tracked_tokens.qualityLabel,
         holderVelocityScore: tracked_tokens.holderVelocityScore,
-        firstDetectedAt:   tracked_tokens.firstDetectedAt,
+        firstDetectedAt: tracked_tokens.firstDetectedAt,
+        compositeFactors: tracked_tokens.compositeFactors,
+        rawMetadata: tracked_tokens.rawMetadata,
       })
       .from(tracked_tokens)
       .where(sql`id = ANY(ARRAY[${sql.raw(tokenIds.join(","))}]::int[])`);
@@ -174,47 +202,34 @@ router.get("/caller/history", async (req, res) => {
       Elite: 7, Excellent: 6, Strong: 5, Good: 4, Average: 3, Speculative: 2, Weak: 1,
     };
 
-    const results = tokens
-      .filter(t => {
-        // Exclude tokens whose current MC has dropped below $5K
-        const currentMc = parseFloat(t.marketCapUsd ?? "0") || 0;
-        return currentMc >= 5000;
-      })
-      .map(t => {
+    const results = tokens.map(t => {
       const hist = histMap.get(t.id)!;
-      const calledMc = hist.called_mc ? parseFloat(hist.called_mc) : null;
+      const calledMc  = hist.called_mc ? parseFloat(hist.called_mc) : null;
       const currentMc = parseFloat(t.marketCapUsd ?? "0") || null;
       const gainSinceCall = calledMc && currentMc
-        ? ((currentMc - calledMc) / calledMc) * 100
-        : null;
+        ? ((currentMc - calledMc) / calledMc) * 100 : null;
 
       return {
-        id:              t.id,
-        address:         t.address,
-        chain:           t.chain,
-        name:            t.name,
-        symbol:          t.symbol,
-        logoUri:         t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
-        status:          t.status,
+        id: t.id, address: t.address, chain: t.chain,
+        name: t.name, symbol: t.symbol,
+        logoUri: t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
+        status: t.status,
         firstDetectedAt: t.firstDetectedAt?.toISOString() ?? null,
-        calledAt:        hist.called_at,
-        calledMcUsd:     calledMc,
-        calledIntel:     hist.called_intel,
-        calledKol:       hist.called_kol,
-        calledSmart:     hist.called_smart,
-        currentMcUsd:    currentMc,
-        gainSinceCall,
-        athGainPct:      t.athGainPct,
-        qualityLabel:    t.qualityLabel,
+        calledAt: hist.called_at, calledMcUsd: calledMc,
+        calledIntel: hist.called_intel, calledKol: hist.called_kol,
+        calledSmart: hist.called_smart, currentMcUsd: currentMc,
+        gainSinceCall, athGainPct: t.athGainPct,
+        qualityLabel: t.qualityLabel,
         intelligenceScore: t.intelligenceScore,
-        holderKolCount:  t.holderKolCount,
+        holderKolCount: t.holderKolCount,
         holderSmartCount: t.holderSmartCount,
         holderVelocityScore: t.holderVelocityScore,
-        _qualityOrder:   QUALITY_ORDER[t.qualityLabel ?? ""] ?? 0,
+        postmortemLabel: derivePostmortemLabel(t.compositeFactors),
+        socials: extractSocials(t.rawMetadata),
+        _qualityOrder: QUALITY_ORDER[t.qualityLabel ?? ""] ?? 0,
       };
     });
 
-    // Sorting
     results.sort((a, b) => {
       let diff = 0;
       if (sort === "quality")       diff = b._qualityOrder - a._qualityOrder;
@@ -238,22 +253,18 @@ router.post("/caller/telegram/test", async (req, res) => {
   try {
     const rows = await db.select().from(settings)
       .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id')`);
-
     const botToken = rows.find(r => r.key === "telegram_bot_token")?.value ?? "";
     const chatId   = rows.find(r => r.key === "telegram_chat_id")?.value   ?? "";
-
     if (!botToken || !chatId) {
       res.status(400).json({ error: "Save bot token and chat ID first." });
       return;
     }
-
     const text = "✅ *Crypsor Caller* — test message\\. Runner alerts are configured correctly\\.";
     const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "MarkdownV2" }),
     });
-
     if (!tgRes.ok) {
       const body = await tgRes.text();
       res.status(400).json({ error: `Telegram: ${body}` });

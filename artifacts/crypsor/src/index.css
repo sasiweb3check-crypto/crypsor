@@ -116,6 +116,10 @@ body {
 /* ── pb-safe for mobile ─────────────────────────────────────────────── */
 .pb-safe { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 
+/* ── Hide scrollbar but keep scroll ─────────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
 @layer base {
   * { @apply border-border outline-ring/50; }
 }
