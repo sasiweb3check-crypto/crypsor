@@ -26,6 +26,7 @@ import { startHoldersRefresh } from "../pipeline/holders-refresh";
 import { startTokenUpdater } from "../pipeline/token-updater";
 import { startIntelligenceEngine } from "../pipeline/intelligence-engine";
 import { startSecurityService } from "../pipeline/security-service";
+import { startCallerAlerts } from "../pipeline/caller-alerts";
 import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
@@ -479,6 +480,7 @@ export function startMonitor(): void {
   startHoldersRefresh();
   startIntelligenceEngine();
   startSecurityService();
+  startCallerAlerts();
   healthMonitor.startWatchdog();
 
   logger.info("Token Intelligence Pipeline started");
