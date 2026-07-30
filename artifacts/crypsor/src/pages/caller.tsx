@@ -360,7 +360,8 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
 
 // ── Quality filter tab ────────────────────────────────────────────────────────
 
-type QualityFilter = "quality" | "very_good" | "good" | "all";
+// "recent" = quality tokens sorted by calledAt DESC (Recently Added section)
+type QualityFilter = "quality" | "very_good" | "good" | "recent";
 
 function FilterTab({
   label, active, count, onClick,
@@ -429,10 +430,15 @@ export default function Caller() {
     staleTime:       20_000,
   });
 
+  // "recent" maps to quality=quality + sort by calledAt on the server
+  const apiQuality = qualityFilter === "recent" ? "quality" : qualityFilter;
+  const apiSort    = qualityFilter === "recent" ? "calledAt" : sortKey;
+  const apiOrder   = qualityFilter === "recent" ? "desc" : (sortAsc ? "asc" : "desc");
+
   const { data: historyData, isLoading } = useQuery<{ total: number; totalAll: number; tokens: ProToken[] }>({
     queryKey: ["proHistory", qualityFilter, sortKey, sortAsc ? "asc" : "desc"],
     queryFn:  () =>
-      fetch(`${BASE_URL}/api/pro/history?quality=${qualityFilter}&sort=${sortKey}&order=${sortAsc ? "asc" : "desc"}`)
+      fetch(`${BASE_URL}/api/pro/history?quality=${apiQuality}&sort=${apiSort}&order=${apiOrder}`)
         .then(r => r.json()),
     refetchInterval: 30_000,
     staleTime:       20_000,
@@ -445,8 +451,11 @@ export default function Caller() {
   const veryGoodCt   = stats?.veryGoodCount ?? 0;
   const goodCt       = stats?.goodCount     ?? 0;
 
-  // Client-side sort on top of server sort (ensures stable ordering during transitions)
+  // Client-side sort — "recent" tab always sorts by calledAt DESC
   const sorted = [...tokens].sort((a, b) => {
+    if (qualityFilter === "recent") {
+      return new Date(b.calledAt).getTime() - new Date(a.calledAt).getTime();
+    }
     let diff = 0;
     if      (sortKey === "ath")      diff = (b.athMultiple ?? 0)           - (a.athMultiple ?? 0);
     else if (sortKey === "gain")     diff = (b.gainSinceCall ?? -Infinity)  - (a.gainSinceCall ?? -Infinity);
@@ -512,13 +521,8 @@ export default function Caller() {
 
       {/* ── Filter + Sort row ─────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        {/* Quality filter tabs — non-quality tokens are silenced everywhere */}
-        <div className="flex items-center gap-1.5">
-          <FilterTab
-            label="All Quality" active={qualityFilter === "quality"}
-            count={totalCalled}
-            onClick={() => setQF("quality")}
-          />
+        {/* Quality filter tabs — only Very Good + Good tokens shown */}
+        <div className="flex items-center gap-1.5 flex-wrap">
           <FilterTab
             label="⭐ Very Good" active={qualityFilter === "very_good"}
             count={veryGoodCt}
@@ -530,9 +534,14 @@ export default function Caller() {
             onClick={() => setQF("good")}
           />
           <FilterTab
-            label="All Time" active={qualityFilter === "all"}
-            count={totalAllTime}
-            onClick={() => setQF("all")}
+            label="All Quality" active={qualityFilter === "quality"}
+            count={totalCalled}
+            onClick={() => setQF("quality")}
+          />
+          <FilterTab
+            label="🕐 Recently Added" active={qualityFilter === "recent"}
+            count={totalCalled}
+            onClick={() => setQF("recent")}
           />
         </div>
 
@@ -583,7 +592,7 @@ export default function Caller() {
         <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
           <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
           <div className="text-[10px] uppercase tracking-widest text-[#484f58]">
-            No {qualityFilter === "very_good" ? "Very Good" : qualityFilter === "quality" ? "quality" : ""} tokens yet
+            No {qualityFilter === "very_good" ? "Very Good" : qualityFilter === "good" ? "Good" : "quality"} tokens yet
           </div>
           <div className="text-[9px] text-[#30363d]">
             Tokens with Intel ≥ 80 + KOL/Smart + Pro Score ≥ 55 appear here

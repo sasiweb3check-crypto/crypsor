@@ -137,14 +137,19 @@ async function snapshotOnce(): Promise<void> {
         )
       `);
 
-      // Update running ATH + pro_score + quality_label + any new milestones
+      // Update running ATH + pro_score + milestones.
+      // quality_label is FROZEN once very_good or good — never downgrade to below.
+      // A token that earned quality keeps its label even if market data temporarily weakens.
       await db.execute(sql`
         UPDATE pro_calls
         SET
           ath_multiple     = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
           last_snapshot_at = NOW(),
           pro_score        = ${proScore},
-          quality_label    = ${qualityLabel}
+          quality_label    = CASE
+            WHEN quality_label IN ('very_good', 'good') THEN quality_label
+            ELSE ${qualityLabel}
+          END
           ${sql.raw(milestoneClause)}
         WHERE id = ${r.pro_call_id}
       `);
