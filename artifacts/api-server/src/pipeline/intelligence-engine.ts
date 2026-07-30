@@ -166,19 +166,32 @@ function computeHolderVelocityScore(
 }
 
 // ── 4. KOL / Smart Signal Score ───────────────────────────────────────────────
-// Spec formula: weighted density of KOL + smart holders relative to total.
-// kolWeight   = (kolCount  / total) * 100 * 2.5  (capped at 100)
-// smartWeight = (smartCount / total) * 100 * 2.0  (capped at 100)
+// Two sources of KOL/smart signal, takes the higher of both:
+//
+//  A) GMGN holder classification — density of KOL + smart holders vs total.
+//     kolWeight   = (kolCount  / total) * 100 * 2.5  (capped at 100)
+//     smartWeight = (smartCount / total) * 100 * 2.0  (capped at 100)
+//
+//  B) Tracked wallet buys — any wallet in walletdatasource that bought is a
+//     high-conviction signal regardless of label. Score = distinctCount * 25
+//     (1 wallet = 25, 2 = 50, 3 = 75, 4+ = 100).
+//
+// Using max() means GMGN data takes over when available, but tracked wallet
+// buys provide a reliable fallback when GMGN holder data hasn't arrived yet.
 
 function computeKolSmartScore(
-  holderKolCount:   number,
-  holderSmartCount: number,
-  holderCount:      number,
+  holderKolCount:        number,
+  holderSmartCount:      number,
+  holderCount:           number,
+  distinctTrackedWallets = 0,
 ): number {
-  if (holderCount <= 0) return 0;
-  const kolWeight   = (holderKolCount   / holderCount) * 100 * 2.5;
-  const smartWeight = (holderSmartCount / holderCount) * 100 * 2.0;
-  return clamp(Math.round(kolWeight + smartWeight));
+  // Source A: GMGN holder classification
+  const gmgnScore = holderCount > 0
+    ? (holderKolCount / holderCount) * 100 * 2.5 + (holderSmartCount / holderCount) * 100 * 2.0
+    : 0;
+  // Source B: tracked wallet buys (each distinct wallet = 25 pts, cap 100)
+  const trackedScore = Math.min(100, distinctTrackedWallets * 25);
+  return clamp(Math.round(Math.max(gmgnScore, trackedScore)));
 }
 
 // ── Quality label from final score ────────────────────────────────────────────
@@ -297,20 +310,30 @@ export async function refreshAllIntelligence(): Promise<void> {
       }
     }
 
+    // ALL wallets in walletdatasource are treated as KOL/smart — they were
+    // specifically added to the tracking list, which is itself a conviction signal.
+    // The old /smart|kol|whale/i label regex excluded wallets like v1/v2/v3/deepents
+    // that are legitimate tracked wallets and should count as smart-money signals.
     const labeledWallets = await db.select({ id: walletdatasource.id, label: walletdatasource.label }).from(walletdatasource);
-    const smartWalletIds = new Set(
-      labeledWallets.filter(w => /smart|kol|whale/i.test(w.label ?? "")).map(w => w.id),
-    );
+    const smartWalletIds = new Set(labeledWallets.map(w => w.id));
 
     const allBuys = await db.select({ tokenId: token_buys.tokenId, walletId: token_buys.walletId })
       .from(token_buys).where(inArray(token_buys.tokenId, tokenIds));
 
-    const totalBuysByToken = new Map<number, number>();
-    const smartBuysByToken = new Map<number, number>();
+    const totalBuysByToken     = new Map<number, number>();
+    const smartBuysByToken     = new Map<number, number>();
+    // Track distinct wallet IDs per token so the kol_smart_score uses conviction
+    // count rather than raw transaction count (3 wallets each buying once = 3,
+    // not 3 × transaction count).
+    const distinctSmartWalletsByToken = new Map<number, Set<number>>();
     for (const b of allBuys) {
       totalBuysByToken.set(b.tokenId, (totalBuysByToken.get(b.tokenId) ?? 0) + 1);
       if (smartWalletIds.has(b.walletId)) {
         smartBuysByToken.set(b.tokenId, (smartBuysByToken.get(b.tokenId) ?? 0) + 1);
+        if (!distinctSmartWalletsByToken.has(b.tokenId)) {
+          distinctSmartWalletsByToken.set(b.tokenId, new Set());
+        }
+        distinctSmartWalletsByToken.get(b.tokenId)!.add(b.walletId);
       }
     }
 
@@ -360,7 +383,8 @@ export async function refreshAllIntelligence(): Promise<void> {
       const volumeIntensityScore  = r1(clamp(volResult.score));
       const holderVelResult       = computeHolderVelocityScore(hSnaps, t.holderCount, cohortVelocities[group]);
       const holderVelocityScore   = r1(clamp(holderVelResult.score));
-      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount)));
+      const distinctTracked       = distinctSmartWalletsByToken.get(t.id)?.size ?? 0;
+      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount, distinctTracked)));
       const liquidityHealthScore  = r1(clamp(computeLiquidityHealthScore(t.liquidityUsd, t.lowLiquidityFlag, pSnaps)));
 
       const ageHrs  = (Date.now() - t.firstDetectedAt.getTime()) / 3_600_000;
@@ -451,7 +475,11 @@ export async function refreshAllIntelligence(): Promise<void> {
           mcGrowthScore, volumeIntensityScore, holderVelocityScore, kolSmartScore, liquidityHealthScore,
           ageMultiplier: ageMult, tokenAgeHours: r1(ageHrs),
           marketCapUsd: t.marketCapUsd, volume24hUsd: t.volume24hUsd, liquidityUsd: t.liquidityUsd, peakMcUsd: newPeak,
-          holderCount: t.holderCount, holderKolCount: t.holderKolCount, holderSmartCount: t.holderSmartCount,
+          // Use effectiveKolCount so the pro-scanner (which checks holder_kol_count >= 1)
+          // can see the signal from tracked wallet buys even before GMGN holder data arrives.
+          holderCount: t.holderCount,
+          holderKolCount: Math.max(t.holderKolCount ?? 0, distinctTracked),
+          holderSmartCount: t.holderSmartCount,
           totalBuys, smartBuys, labeledFraction: r1(labeledFraction),
           ageGroup: group, cohortSize: cohortVolumes[group].length,
           cohortVolumePercentile: r1(volResult.percentile), holderVelocityPerHour: r1(holderVelResult.velocityPerHour),
