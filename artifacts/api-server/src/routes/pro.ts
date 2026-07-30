@@ -25,6 +25,9 @@ router.get("/pro/stats", async (_req, res) => {
   try {
     const result = await db.execute(sql`
       SELECT
+        -- Denominator: tokens with current MC >= $5K OR that had a meaningful run (ATH >= 1.5x).
+        -- This gives the same "63 called" set the user sees and is the honest win-rate base.
+        -- Tokens that never ran AND have since died are excluded (they never had a fair shot).
         COUNT(*)::int                                              AS total,
         COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS win,
         COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int   AS x1,
@@ -39,7 +42,11 @@ router.get("/pro/stats", async (_req, res) => {
         COUNT(CASE WHEN pc.quality_label IN ('very_good','good') THEN 1 END)::int AS quality_count
       FROM pro_calls pc
       JOIN tracked_tokens t ON t.id = pc.token_id
-      WHERE CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
+      WHERE
+        -- Still alive with meaningful MC
+        CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
+        -- OR had a real run (even if dead now) — those count as called
+        OR pc.ath_multiple >= 1.5
     `);
 
     const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
@@ -118,8 +125,8 @@ router.get("/pro/history", async (req, res) => {
         ORDER BY snapshot_at DESC
         LIMIT 1
       ) ps ON true
-      WHERE CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
-        OR pc.ath_multiple >= 1.2
+      -- No MC filter here — all pro_calls qualify (scanner enforced $5K at call time)
+      -- Dead/low-MC tokens still show under "All" and count in win rate denominator
     `);
 
     type CallRow = {

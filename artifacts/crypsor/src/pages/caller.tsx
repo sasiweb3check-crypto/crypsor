@@ -436,7 +436,9 @@ export default function Caller() {
   });
 
   const tokens     = historyData?.tokens ?? [];
-  const totalAll   = historyData?.totalAll ?? 0;
+  // Use stats.total as the canonical "called" count — it covers ALL pro_calls
+  // including tokens that have since died (not filtered by current MC).
+  const totalCalled = stats?.total ?? historyData?.totalAll ?? 0;
   const veryGoodCt = stats?.veryGoodCount ?? 0;
   const goodCt     = (stats?.qualityCount ?? 0) - veryGoodCt;
 
@@ -478,7 +480,7 @@ export default function Caller() {
           </p>
         </div>
         <div className="text-right">
-          <div className="text-[11px] font-black text-white">{totalAll}</div>
+          <div className="text-[11px] font-black text-white">{totalCalled}</div>
           <div className="text-[8px] text-[#484f58] uppercase tracking-widest">called</div>
         </div>
       </div>
@@ -514,7 +516,7 @@ export default function Caller() {
           />
           <FilterTab
             label="All" active={qualityFilter === "all"}
-            count={totalAll}
+            count={totalCalled}
             onClick={() => setQF("all")}
           />
         </div>
