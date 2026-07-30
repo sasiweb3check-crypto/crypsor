@@ -25,9 +25,8 @@ router.get("/pro/stats", async (_req, res) => {
   try {
     const result = await db.execute(sql`
       SELECT
-        -- Denominator: tokens with current MC >= $5K OR that had a meaningful run (ATH >= 1.5x).
-        -- This gives the same "63 called" set the user sees and is the honest win-rate base.
-        -- Tokens that never ran AND have since died are excluded (they never had a fair shot).
+        -- All stats scoped to quality tokens only (very_good + good Pro Score).
+        -- Non-quality tokens are silenced everywhere — stats, UI, and alerts.
         COUNT(*)::int                                              AS total,
         COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS win,
         COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int   AS x1,
@@ -39,14 +38,9 @@ router.get("/pro/stats", async (_req, res) => {
         COUNT(CASE WHEN pc.ath_multiple >= 200 THEN 1 END)::int   AS x200,
         ROUND(MAX(pc.ath_multiple)::numeric, 2)                   AS best_ath,
         COUNT(CASE WHEN pc.quality_label = 'very_good' THEN 1 END)::int AS very_good_count,
-        COUNT(CASE WHEN pc.quality_label IN ('very_good','good') THEN 1 END)::int AS quality_count
+        COUNT(CASE WHEN pc.quality_label = 'good'      THEN 1 END)::int AS good_count
       FROM pro_calls pc
-      JOIN tracked_tokens t ON t.id = pc.token_id
-      WHERE
-        -- Still alive with meaningful MC
-        CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
-        -- OR had a real run (even if dead now) — those count as called
-        OR pc.ath_multiple >= 1.5
+      WHERE pc.quality_label IN ('very_good', 'good')
     `);
 
     const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
@@ -65,7 +59,8 @@ router.get("/pro/stats", async (_req, res) => {
       x200Count:      Number(row.x200 ?? 0),
       bestAth:        row.best_ath != null ? Number(row.best_ath) : null,
       veryGoodCount:  Number(row.very_good_count ?? 0),
-      qualityCount:   Number(row.quality_count   ?? 0),
+      goodCount:      Number(row.good_count      ?? 0),
+      qualityCount:   Number(row.very_good_count ?? 0) + Number(row.good_count ?? 0),
     });
   } catch (err) {
     console.error("pro stats error", err);
