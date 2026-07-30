@@ -49,6 +49,7 @@ type SortOrder = "asc" | "desc";
 const PAGE_LIMIT = 50;
 
 const LIFECYCLE_TABS = [
+  { value: "smart",    label: "INTEL ≥80" },  // default: intel≥80, status new/active/watch, MC≥5K
   { value: "all",      label: "ALL" },
   { value: "new",      label: "NEW" },
   { value: "active",   label: "ACTIVE" },
@@ -280,7 +281,7 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [sortField, setSortField] = useState<SortField>("systemAge");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState("smart");
   const [page, setPage] = useState(1);
 
   useEffect(() => { setPage(1); }, [activeTab, sortField, sortOrder]);
@@ -297,6 +298,11 @@ export default function Dashboard() {
         sort: sortField, order: sortOrder,
       });
       if (activeTab !== "all") params.set("status", activeTab);
+      // "smart" tab: enforce intel ≥ 80 and MC ≥ 5 000 at the API level
+      if (activeTab === "smart") {
+        params.set("minIntelScore", "80");
+        params.set("minMc", "5000");
+      }
       const r = await fetch(`${import.meta.env.BASE_URL}api/tokens?${params}`);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
@@ -475,7 +481,9 @@ export default function Dashboard() {
                 <tr>
                   <td colSpan={9} className="py-20 text-center">
                     <Coins className="w-8 h-8 mx-auto mb-3 text-[#30363d]" />
-                    <p className="text-[#8b949e] text-xs tracking-widest uppercase">No Tokens{activeTab !== "all" ? ` in "${activeTab}"` : ""}</p>
+                    <p className="text-[#8b949e] text-xs tracking-widest uppercase">
+              {activeTab === "smart" ? "No tokens passing Intel ≥80 · MC ≥5K" : activeTab !== "all" ? `No tokens in "${activeTab}"` : "No tokens"}
+            </p>
                   </td>
                 </tr>
               ) : pageTokens.map((token, i) => (

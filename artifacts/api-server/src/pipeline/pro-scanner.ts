@@ -51,6 +51,7 @@ async function scanOnce(): Promise<void> {
       WHERE l.intelligence_score        >= ${MIN_INTEL}
         AND (l.holder_kol_count >= 1 OR l.holder_smart_count >= 1)
         AND l.market_cap_usd::numeric   >= ${MIN_MC}
+        AND l.status_after IN ('new', 'active', 'watch')
         AND NOT EXISTS (
           SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id
         )

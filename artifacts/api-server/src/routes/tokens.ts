@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { tracked_tokens, token_buys, token_sells, walletdatasource, token_holders, token_traders, wallet_profiles, token_intel_log, token_price_snapshots as tps } from "@workspace/db";
-import { eq, desc, asc, count, sql, and, or, ilike, isNotNull, gte } from "drizzle-orm";
+import { eq, desc, asc, count, sql, and, or, ilike, isNotNull, gte, inArray } from "drizzle-orm";
 import { fetchLivePrice } from "../pipeline/price-service";
 import {
   gmgnFetch, nextProxy, persistHolders, CHAIN_MAP, fetchAndPersistHolders,
@@ -171,12 +171,19 @@ router.get("/", async (req, res): Promise<void> => {
     const q     = String(req.query.q     ?? "").trim();
     const chain = String(req.query.chain ?? "").trim();
 
+    // Quality-gate params
+    const minIntelScore = parseFloat(String(req.query.minIntelScore ?? "0")) || 0;
+    const minMc         = parseFloat(String(req.query.minMc         ?? "0")) || 0;
+
     // Build WHERE conditions
     const VALID_STATUSES = ["new", "active", "watch", "archive", "revived"];
     const conditions = [];
 
     if (status === "migrated") {
       conditions.push(eq(tracked_tokens.migrated, true));
+    } else if (status === "smart") {
+      // Intel-qualified view: new/active/watch only (excludes archive, revived, migrated)
+      conditions.push(inArray(tracked_tokens.status, ["new", "active", "watch"]));
     } else if (VALID_STATUSES.includes(status)) {
       conditions.push(eq(tracked_tokens.status, status));
     }
@@ -192,6 +199,18 @@ router.get("/", async (req, res): Promise<void> => {
           ilike(tracked_tokens.symbol,  `%${q}%`),
           ilike(tracked_tokens.address, `%${q}%`),
         )!,
+      );
+    }
+
+    // Intelligence score gate (e.g. minIntelScore=80)
+    if (minIntelScore > 0) {
+      conditions.push(gte(tracked_tokens.intelligenceScore, minIntelScore));
+    }
+
+    // Market cap floor — rejects dead/micro tokens below threshold (e.g. minMc=5000)
+    if (minMc > 0) {
+      conditions.push(
+        sql`CAST(NULLIF(${tracked_tokens.marketCapUsd},'') AS NUMERIC) >= ${minMc}`,
       );
     }
 
