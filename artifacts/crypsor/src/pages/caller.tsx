@@ -68,6 +68,7 @@ interface ProStats {
   veryGoodCount: number;
   goodCount: number;
   qualityCount: number;
+  recentCount: number;
 }
 
 // ── Run-status badge ──────────────────────────────────────────────────────────
@@ -430,8 +431,8 @@ export default function Caller() {
     staleTime:       20_000,
   });
 
-  // "recent" maps to quality=quality + sort by calledAt on the server
-  const apiQuality = qualityFilter === "recent" ? "quality" : qualityFilter;
+  // "recent" = quality tokens from last 24 h, sorted by calledAt desc
+  const apiQuality = qualityFilter === "recent" ? "recent" : qualityFilter;
   const apiSort    = qualityFilter === "recent" ? "calledAt" : sortKey;
   const apiOrder   = qualityFilter === "recent" ? "desc" : (sortAsc ? "asc" : "desc");
 
@@ -450,6 +451,7 @@ export default function Caller() {
   const totalAllTime = stats?.totalAllTime ?? 0;
   const veryGoodCt   = stats?.veryGoodCount ?? 0;
   const goodCt       = stats?.goodCount     ?? 0;
+  const recentCt     = stats?.recentCount   ?? 0;
 
   // Client-side sort — "recent" tab always sorts by calledAt DESC
   const sorted = [...tokens].sort((a, b) => {
@@ -540,7 +542,7 @@ export default function Caller() {
           />
           <FilterTab
             label="🕐 Recently Added" active={qualityFilter === "recent"}
-            count={totalCalled}
+            count={recentCt}
             onClick={() => setQF("recent")}
           />
         </div>

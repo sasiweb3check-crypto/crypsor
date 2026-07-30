@@ -44,6 +44,7 @@ async function snapshotOnce(): Promise<void> {
         -- milestone flags (read to avoid overwriting already-set ones)
         pc.hit_2x,   pc.hit_3x,   pc.hit_5x,   pc.hit_10x,   pc.hit_100x,
         t.market_cap_usd             AS current_mc,
+        t.ath_market_cap_usd         AS ath_mc_usd,
         t.holder_kol_count           AS kol_count,
         t.holder_smart_count         AS smart_count,
         t.intelligence_score         AS intel_score,
@@ -67,7 +68,7 @@ async function snapshotOnce(): Promise<void> {
       called_kol_count: number | null; called_smart_count: number | null;
       hit_2x: boolean | null; hit_3x: boolean | null; hit_5x: boolean | null;
       hit_10x: boolean | null; hit_100x: boolean | null;
-      current_mc: string | null; kol_count: number | null;
+      current_mc: string | null; ath_mc_usd: string | null; kol_count: number | null;
       smart_count: number | null; intel_score: number | null;
       liquidity_usd: string | null;
       sec_is_honeypot: boolean | null;
@@ -82,8 +83,12 @@ async function snapshotOnce(): Promise<void> {
     for (const r of rows.rows as Row[]) {
       const calledMc  = parseFloat(r.called_mc_usd ?? "0") || 0;
       const currentMc = parseFloat(r.current_mc ?? "0") || 0;
+      const athMcUsd  = parseFloat(r.ath_mc_usd  ?? "0") || currentMc;
+      // Use the pipeline's real ATH MC (ath_market_cap_usd) as authoritative peak.
+      // This prevents missing ATH spikes that fall between 5-min snapshot windows.
       const multiple  = calledMc > 0 ? currentMc / calledMc : 1;
-      const newAth    = Math.max(r.prev_ath ?? 1, multiple);
+      const athFromPipeline = calledMc > 0 ? athMcUsd / calledMc : 1;
+      const newAth    = Math.max(r.prev_ath ?? 1, multiple, athFromPipeline);
       const gainPct   = calledMc > 0 ? ((currentMc - calledMc) / calledMc) * 100 : 0;
       const liquidityUsd = parseFloat(r.liquidity_usd ?? "0") || 0;
 

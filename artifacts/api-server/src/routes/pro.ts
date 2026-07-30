@@ -40,7 +40,11 @@ router.get("/pro/stats", async (_req, res) => {
         COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
         ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
         COUNT(CASE WHEN quality_label = 'very_good' THEN 1 END)::int                  AS very_good_count,
-        COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count
+        COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count,
+        COUNT(*) FILTER (
+          WHERE quality_label IN ('very_good','good')
+            AND called_at >= NOW() - INTERVAL '24 hours'
+        )::int                                                                         AS recent_count
       FROM pro_calls pc
     `);
 
@@ -63,6 +67,7 @@ router.get("/pro/stats", async (_req, res) => {
       veryGoodCount:  Number(row.very_good_count ?? 0),
       goodCount:      Number(row.good_count      ?? 0),
       qualityCount:   Number(row.very_good_count ?? 0) + Number(row.good_count ?? 0),
+      recentCount:    Number(row.recent_count    ?? 0),
     });
   } catch (err) {
     console.error("pro stats error", err);
@@ -233,9 +238,15 @@ router.get("/pro/history", async (req, res) => {
     });
 
     // Apply quality filter
+    const now24hAgo = Date.now() - 24 * 60 * 60 * 1000;
     const filtered = results.filter(t => {
       if (quality === "all")       return true;
       if (quality === "very_good") return t.qualityLabel === "very_good";
+      if (quality === "recent") {
+        // Quality tokens (very_good + good) called within the last 24 hours
+        return (t.qualityLabel === "very_good" || t.qualityLabel === "good")
+          && new Date(t.calledAt).getTime() >= now24hAgo;
+      }
       // default "quality" = very_good + good
       return t.qualityLabel === "very_good" || t.qualityLabel === "good";
     });
