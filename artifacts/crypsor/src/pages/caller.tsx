@@ -3,19 +3,21 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   Copy, ExternalLink, ArrowUpDown, Twitter, Send, Globe,
-  Star, Users, Zap, Flame, TrendingUp, BarChart2,
+  Star, Users, Zap, TrendingUp, BarChart2, Activity,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   cn, truncateAddress, formatCompactUsd, formatTimeAgo,
-  getGmgnUrl, safeSymbol, safeName,
+  getGmgnUrl, safeSymbol,
 } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Socials { twitter?: string; telegram?: string; website?: string; }
 
-interface HistoryToken {
+type RunStatus = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
+
+interface ProToken {
   id: number;
   address: string;
   chain: string;
@@ -25,47 +27,52 @@ interface HistoryToken {
   status: string;
   calledAt: string;
   calledMcUsd: number | null;
-  calledIntel: number;
+  calledIntel: number | null;
   calledKol: number;
   calledSmart: number;
+  calledKolSmartScore: number | null;
   currentMcUsd: number | null;
   gainSinceCall: number | null;
-  athGainPct: number | null;
-  qualityLabel: string | null;
-  intelligenceScore: number | null;
-  holderKolCount: number | null;
-  holderSmartCount: number | null;
-  postmortemLabel: "GOOD_SETUP" | "SURPRISE_SIGNAL" | "DUMP_WARNING" | "NONE";
+  athMultiple: number | null;
+  runStatus: RunStatus;
+  currentKol: number;
+  currentSmart: number;
+  currentIntel: number | null;
+  lastSnapshotAt: string | null;
   socials: Socials;
 }
 
-interface CallerStats {
+interface ProStats {
   total: number;
   winRate: number;
+  x1Count: number;
   x2Count: number;
   x3Count: number;
   x5Count: number;
-  minAthGain: number;
-  maxAthGain: number;
+  x10Count: number;
+  x100Count: number;
+  x200Count: number;
+  bestAth: number | null;
 }
 
-// ── Postmortem badge ──────────────────────────────────────────────────────────
+// ── Run-status badge ──────────────────────────────────────────────────────────
 
-const PM_META = {
-  GOOD_SETUP:      { label: "Good",     color: "#22c55e", dot: "#22c55e" },
-  SURPRISE_SIGNAL: { label: "Surprise", color: "#f59e0b", dot: "#f59e0b" },
-  DUMP_WARNING:    { label: "Dump",     color: "#ef4444", dot: "#ef4444" },
-  NONE:            { label: "Neutral",  color: "#484f58", dot: "#484f58" },
+const RUN_META: Record<RunStatus, { label: string; color: string }> = {
+  PUMPING: { label: "Pumping", color: "#22c55e" },
+  RAN:     { label: "Ran",     color: "#3b82f6" },
+  SLOW:    { label: "Slow",    color: "#f59e0b" },
+  FLAT:    { label: "Flat",    color: "#484f58" },
+  DEAD:    { label: "Dead",    color: "#ef4444" },
 };
 
-function PmBadge({ label }: { label: HistoryToken["postmortemLabel"] }) {
-  const m = PM_META[label] ?? PM_META.NONE;
+function RunBadge({ status }: { status: RunStatus }) {
+  const m = RUN_META[status] ?? RUN_META.FLAT;
   return (
     <span
       className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-black tracking-widest uppercase rounded-sm"
       style={{ color: m.color, background: `${m.color}18`, border: `1px solid ${m.color}30` }}
     >
-      <span className="w-1 h-1 rounded-full shrink-0" style={{ background: m.dot }} />
+      <span className="w-1 h-1 rounded-full shrink-0" style={{ background: m.color }} />
       {m.label}
     </span>
   );
@@ -80,10 +87,10 @@ function gainColor(v: number | null | undefined) {
   return "text-[#8b949e]";
 }
 
-function fmtAth(pct: number | null | undefined): string {
-  if (pct == null) return "—";
-  const x = pct / 100 + 1;
-  if (x >= 2)   return `${x.toFixed(1)}×`;
+function fmtMultiple(x: number | null | undefined): string {
+  if (x == null) return "—";
+  if (x >= 2) return `${x.toFixed(1)}×`;
+  const pct = (x - 1) * 100;
   if (pct >= 0) return `+${pct.toFixed(0)}%`;
   return `${pct.toFixed(0)}%`;
 }
@@ -110,7 +117,7 @@ function TokenLogo({ logoUri, address, symbol }: {
   );
 }
 
-// ── Stats chips ───────────────────────────────────────────────────────────────
+// ── Stats chip ────────────────────────────────────────────────────────────────
 
 function StatChip({ label, value, sub, accent }: {
   label: string; value: string | number; sub?: string; accent?: string;
@@ -121,7 +128,7 @@ function StatChip({ label, value, sub, accent }: {
       style={{
         background: "rgba(255,255,255,0.03)",
         border: "1px solid rgba(255,255,255,0.07)",
-        minWidth: 68,
+        minWidth: 64,
       }}
     >
       <div className="text-[8px] font-bold uppercase tracking-widest mb-1" style={{ color: "#484f58" }}>{label}</div>
@@ -153,12 +160,12 @@ function SortBtn({ label, active, asc, onClick }: {
   );
 }
 
-// ── Token row (mobile-optimised) ──────────────────────────────────────────────
+// ── Token row ─────────────────────────────────────────────────────────────────
 
-function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }) {
+function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
   const { toast } = useToast();
-  const athX = t.athGainPct != null ? t.athGainPct / 100 + 1 : null;
-  const isHot = (athX ?? 0) >= 5;
+  const isDead = t.runStatus === "DEAD";
+  const isPumping = t.runStatus === "PUMPING";
 
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -176,13 +183,14 @@ function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }
       onClick={onNavigate}
       className="flex flex-col gap-2 cursor-pointer rounded-lg px-3 py-3 transition-all active:scale-[0.99]"
       style={{
-        background: "rgba(255,255,255,0.02)",
-        border: "1px solid rgba(255,255,255,0.055)",
+        background: isPumping ? "rgba(34,197,94,0.04)" : "rgba(255,255,255,0.02)",
+        border: `1px solid ${isPumping ? "rgba(34,197,94,0.12)" : "rgba(255,255,255,0.055)"}`,
+        opacity: isDead ? 0.5 : 1,
       }}
-      onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.045)")}
-      onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.02)")}
+      onMouseEnter={e => (e.currentTarget.style.background = isPumping ? "rgba(34,197,94,0.07)" : "rgba(255,255,255,0.045)")}
+      onMouseLeave={e => (e.currentTarget.style.background = isPumping ? "rgba(34,197,94,0.04)" : "rgba(255,255,255,0.02)")}
     >
-      {/* Row 1: logo + name + badge + ATH */}
+      {/* Row 1: logo + name + badge + ATH multiple */}
       <div className="flex items-center gap-2.5">
         <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
 
@@ -191,8 +199,7 @@ function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }
             <span className="text-[#e6edf3] font-bold text-sm leading-none truncate">
               {safeSymbol(t.symbol, t.address)}
             </span>
-            {isHot && <Flame className="w-3 h-3 text-[#f59e0b] shrink-0" />}
-            <PmBadge label={t.postmortemLabel} />
+            <RunBadge status={t.runStatus} />
           </div>
           <div className="flex items-center gap-2 mt-1">
             {t.calledKol > 0 && (
@@ -205,14 +212,26 @@ function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }
                 <Users className="w-2.5 h-2.5" />{t.calledSmart}
               </span>
             )}
+            {/* Live kol/smart if changed since call */}
+            {(t.currentKol !== t.calledKol || t.currentSmart !== t.calledSmart) && (
+              <span className="flex items-center gap-0.5 text-[8px] text-[#30363d]">
+                <Activity className="w-2 h-2" />
+                {t.currentKol}/{t.currentSmart}
+              </span>
+            )}
             <span className="text-[#30363d] text-[8px]">{formatTimeAgo(t.calledAt)}</span>
           </div>
         </div>
 
-        {/* ATH column */}
+        {/* ATH from called MC */}
         <div className="shrink-0 text-right">
-          <div className={cn("text-sm font-black tabular-nums leading-none", t.athGainPct != null && t.athGainPct > 0 ? "text-[#22c55e]" : "text-[#484f58]")}>
-            {fmtAth(t.athGainPct)}
+          <div className={cn(
+            "text-sm font-black tabular-nums leading-none",
+            (t.athMultiple ?? 1) >= 2 ? "text-[#22c55e]"
+            : (t.athMultiple ?? 1) >= 1.1 ? "text-[#f59e0b]"
+            : "text-[#484f58]"
+          )}>
+            {fmtMultiple(t.athMultiple)}
           </div>
           <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">ATH</div>
         </div>
@@ -220,7 +239,6 @@ function TokenRow({ t, onNavigate }: { t: HistoryToken; onNavigate: () => void }
 
       {/* Row 2: MC called → now + actions */}
       <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-        {/* MC range */}
         <div className="flex items-center gap-1 text-[9px] font-mono min-w-0 flex-1">
           <span className="text-[#484f58]">{t.calledMcUsd ? formatCompactUsd(t.calledMcUsd) : "—"}</span>
           <span className="text-[#30363d]">→</span>
@@ -288,18 +306,18 @@ export default function Caller() {
   const [sortKey, setSortKey] = useState<SortKey>("calledAt");
   const [sortAsc, setSortAsc] = useState(false);
 
-  const { data: stats, isLoading: statsLoading } = useQuery<CallerStats>({
-    queryKey: ["caller-stats"],
+  const { data: stats, isLoading: statsLoading } = useQuery<ProStats>({
+    queryKey: ["pro-stats"],
     queryFn: () =>
-      fetch(`${import.meta.env.BASE_URL}api/caller/stats`).then(r => r.json()),
+      fetch(`${import.meta.env.BASE_URL}api/pro/stats`).then(r => r.json()),
     refetchInterval: 5 * 60_000,
     staleTime: 60_000,
   });
 
-  const { data, isLoading } = useQuery<{ total: number; tokens: HistoryToken[] }>({
-    queryKey: ["caller-history", sortKey, sortAsc ? "asc" : "desc"],
+  const { data, isLoading } = useQuery<{ total: number; tokens: ProToken[] }>({
+    queryKey: ["pro-history", sortKey, sortAsc ? "asc" : "desc"],
     queryFn: () =>
-      fetch(`${import.meta.env.BASE_URL}api/caller/history?sort=${sortKey}&order=${sortAsc ? "asc" : "desc"}`)
+      fetch(`${import.meta.env.BASE_URL}api/pro/history?sort=${sortKey}&order=${sortAsc ? "asc" : "desc"}`)
         .then(r => r.json()),
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -307,10 +325,9 @@ export default function Caller() {
 
   const tokens = data?.tokens ?? [];
 
-  // Sort ath locally if needed (server sorts calledAt/gain/intel/calledMc)
   const sorted = sortKey === "ath"
     ? [...tokens].sort((a, b) => {
-        const diff = (b.athGainPct ?? -Infinity) - (a.athGainPct ?? -Infinity);
+        const diff = (b.athMultiple ?? 0) - (a.athMultiple ?? 0);
         return sortAsc ? -diff : diff;
       })
     : tokens;
@@ -333,7 +350,7 @@ export default function Caller() {
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
           <span className="text-[8px] font-bold uppercase tracking-widest text-[#484f58]">
-            Intel ≥ 90 · KOL / Smart
+            Intel ≥ 80 · KOL / Smart
           </span>
         </div>
         <span className="text-[#f59e0b] font-black text-sm tabular-nums">
@@ -347,38 +364,19 @@ export default function Caller() {
         <StatChip
           label="Win Rate"
           value={statsLoading ? "—" : `${stats?.winRate ?? 0}%`}
-          sub="ATH > 0%"
+          sub="ATH ≥ 2×"
           accent={statsLoading ? undefined : winRateColor}
         />
+        <StatChip label="2×"   value={statsLoading ? "—" : (stats?.x2Count  ?? 0)} sub="ATH ≥ 2×"   accent="#f59e0b" />
+        <StatChip label="3×"   value={statsLoading ? "—" : (stats?.x3Count  ?? 0)} sub="ATH ≥ 3×"   accent="#f59e0b" />
+        <StatChip label="5×"   value={statsLoading ? "—" : (stats?.x5Count  ?? 0)} sub="ATH ≥ 5×"   accent="#f59e0b" />
+        <StatChip label="10×"  value={statsLoading ? "—" : (stats?.x10Count ?? 0)} sub="ATH ≥ 10×"  accent="#22c55e" />
+        <StatChip label="100×" value={statsLoading ? "—" : (stats?.x100Count ?? 0)} sub="ATH ≥ 100×" accent="#22c55e" />
         <StatChip
-          label="2× Hit"
-          value={statsLoading ? "—" : stats?.x2Count ?? 0}
-          sub="ATH ≥ 2×"
-          accent="#f59e0b"
-        />
-        <StatChip
-          label="3× Hit"
-          value={statsLoading ? "—" : stats?.x3Count ?? 0}
-          sub="ATH ≥ 3×"
-          accent="#f59e0b"
-        />
-        <StatChip
-          label="5× Hit"
-          value={statsLoading ? "—" : stats?.x5Count ?? 0}
-          sub="ATH ≥ 5×"
-          accent="#f59e0b"
-        />
-        <StatChip
-          label="Best ATH"
-          value={statsLoading || !stats ? "—" : fmtAth(stats.maxAthGain)}
+          label="Best"
+          value={statsLoading || !stats ? "—" : fmtMultiple(stats.bestAth)}
           sub="all-time"
           accent="#22c55e"
-        />
-        <StatChip
-          label="Worst"
-          value={statsLoading || !stats ? "—" : fmtAth(stats.minAthGain)}
-          sub="all-time"
-          accent={stats && stats.minAthGain < 0 ? "#ef4444" : "#484f58"}
         />
       </div>
 
@@ -412,28 +410,24 @@ export default function Caller() {
         ) : sorted.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
             <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
-            <div className="text-[10px] uppercase tracking-widest text-[#484f58]">No called tokens yet</div>
-            <div className="text-[9px] text-[#30363d]">Tokens with intel ≥ 90 + KOL/Smart appear here</div>
+            <div className="text-[10px] uppercase tracking-widest text-[#484f58]">No pro calls yet</div>
+            <div className="text-[9px] text-[#30363d]">Tokens with intel ≥ 80 + KOL/Smart appear here</div>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
             {sorted.map(t => (
-              <TokenRow
-                key={t.id}
-                t={t}
-                onNavigate={() => navigate(`/tokens/${t.id}`)}
-              />
+              <TokenRow key={t.id} t={t} onNavigate={() => navigate(`/tokens/${t.id}`)} />
             ))}
           </div>
         )}
       </div>
 
-      {/* ── Footer note ───────────────────────────────────────────────────── */}
+      {/* ── Footer ────────────────────────────────────────────────────────── */}
       {sorted.length > 0 && (
         <div className="flex items-center justify-center gap-1.5 pt-2">
           <Zap className="w-2.5 h-2.5 text-[#30363d]" />
           <span className="text-[8px] text-[#30363d] tracking-widest uppercase">
-            {sorted.length} tokens · Win rate from ATH gain · Sub-$5K excluded
+            {sorted.length} tokens · ATH from called MC · Pro snapshots every 5 min
           </span>
         </div>
       )}
