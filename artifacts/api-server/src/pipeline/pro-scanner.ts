@@ -11,6 +11,14 @@
  *
  * Runs every 5 minutes with a 20-second startup delay (after the intelligence
  * engine's own first pass).
+ *
+ * Auto-backfill (runs before every INSERT pass):
+ *   The intelligence engine logs KOL/smart = 0 on the first pass because GMGN
+ *   holder data hasn't arrived yet (typical delay: 12–60 s after detection).
+ *   The scanner picks the EARLIEST qualifying log row per token — so if that
+ *   first entry has kol = 0 it never qualifies, even after GMGN data arrives.
+ *   The backfill step copies current kol/smart counts from tracked_tokens into
+ *   any intel-log entry where kol/smart were still 0, unblocking the INSERT.
  */
 
 import { db } from "@workspace/db";
@@ -25,7 +33,41 @@ const STARTUP_DELAY_MS = 20_000;
 const MIN_INTEL = 80;
 const MIN_MC    = 5_000;
 
+// ── Step 0: backfill KOL/smart counts in intel log ───────────────────────────
+// Fixes the timing gap where GMGN data arrives after the first intel log entry.
+
+async function backfillKolSmartCounts(): Promise<void> {
+  try {
+    const result = await db.execute(sql`
+      UPDATE token_intel_log l
+      SET
+        holder_kol_count   = t.holder_kol_count,
+        holder_smart_count = t.holder_smart_count,
+        kol_smart_score    = LEAST(100.0, GREATEST(0.0, (
+          (t.holder_kol_count::float / NULLIF(t.holder_count, 0)) * 250.0 +
+          (t.holder_smart_count::float / NULLIF(t.holder_count, 0)) * 200.0
+        )::real))
+      FROM tracked_tokens t
+      WHERE l.token_id = t.id
+        AND (l.holder_kol_count IS NULL OR l.holder_kol_count = 0)
+        AND (l.holder_smart_count IS NULL OR l.holder_smart_count = 0)
+        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
+        AND l.intelligence_score >= ${MIN_INTEL}
+    `);
+    const updated = Number((result as unknown as { rowCount?: number }).rowCount ?? 0);
+    if (updated > 0) {
+      log.info({ updated }, "KOL/smart backfill: intel log entries updated");
+    }
+  } catch (err) {
+    log.warn({ err }, "KOL/smart backfill error (non-fatal)");
+  }
+}
+
 async function scanOnce(): Promise<void> {
+  // Backfill before every scan: ensures intel-log rows that were written with
+  // kol=0 (GMGN data not yet arrived) get their real counts before the INSERT.
+  await backfillKolSmartCounts();
+
   try {
     // Find the earliest qualifying intel-log row per token, excluding tokens
     // already registered in pro_calls.

@@ -153,9 +153,12 @@ async function refreshCycle(): Promise<void> {
     // Refresh tokens that EITHER have active momentum OR have stale / missing
     // holder data. This ensures archived tokens with zero recent buys still get
     // live GMGN snapshots rather than freezing at whatever was last fetched.
-    //   • momentum-active  → refresh every 60s cycle (always included)
-    //   • stale (>30 min)  → included until fresh; priority = 0 (background)
-    //   • never fetched    → always included (first-time hydration)
+    //   • momentum-active           → refresh every 60s cycle (always included)
+    //   • stale (>30 min)           → included until fresh; priority = 0 (background)
+    //   • never fetched             → always included (first-time hydration)
+    //   • high-intel, kol=0 (>15m)  → independent of wallet buys; ensures GMGN
+    //                                  KOL/smart classification arrives for qualifying
+    //                                  tokens even when no tracked wallet has bought them
     const tokens = await db
       .select({
         id:                    tracked_tokens.id,
@@ -175,6 +178,16 @@ async function refreshCycle(): Promise<void> {
           gt(tracked_tokens.momentum1h,  0),
           isNull(tracked_tokens.lastHoldersUpdatedAt),
           lt(tracked_tokens.lastHoldersUpdatedAt, sql`NOW() - INTERVAL '30 minutes'`),
+          // Independent KOL/smart refresh: high-intel tokens with no KOL/smart data
+          // refreshed on a 15-min window regardless of buy activity.
+          sql`(
+            intelligence_score >= 70
+            AND (holder_kol_count = 0 OR holder_kol_count IS NULL)
+            AND (holder_smart_count = 0 OR holder_smart_count IS NULL)
+            AND market_cap_usd::numeric >= 5000
+            AND last_holders_updated_at IS NOT NULL
+            AND last_holders_updated_at < NOW() - INTERVAL '15 minutes'
+          )`,
         ),
       )
       .limit(30); // cap per cycle — prevents flooding the queue with hundreds of jobs at startup

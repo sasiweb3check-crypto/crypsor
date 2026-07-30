@@ -318,8 +318,11 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
         <span className={cn("text-[10px] font-bold", gainColor(t.gainSinceCall))}>
           {fmtGain(t.gainSinceCall)}
         </span>
-        {/* Age */}
-        <span className="text-[8px] text-[#30363d]">{formatTimeAgo(t.calledAt)}</span>
+        {/* Called age */}
+        <div className="flex items-center gap-1">
+          <span className="text-[7px] text-[#484f58] uppercase tracking-widest">Age</span>
+          <span className="text-[8px]" style={{ color: "#484f58" }}>{formatTimeAgo(t.calledAt)}</span>
+        </div>
       </div>
 
       {/* External link + copy — visible on hover */}
@@ -542,7 +545,7 @@ export default function Caller() {
         <div className="flex items-center gap-1">
           {([
             { key: "proScore" as SortKey, label: "Score" },
-            { key: "calledAt" as SortKey, label: "Recent" },
+            { key: "calledAt" as SortKey, label: "Age" },
             { key: "ath"      as SortKey, label: "ATH" },
             { key: "gain"     as SortKey, label: "Gain" },
             { key: "intel"    as SortKey, label: "Intel" },
