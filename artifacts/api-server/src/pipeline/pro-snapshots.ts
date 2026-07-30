@@ -45,6 +45,7 @@ async function snapshotOnce(): Promise<void> {
         pc.hit_2x,   pc.hit_3x,   pc.hit_5x,   pc.hit_10x,   pc.hit_100x,
         t.market_cap_usd             AS current_mc,
         t.ath_market_cap_usd         AS ath_mc_usd,
+        t.fdv_usd                    AS fdv_usd,
         t.holder_kol_count           AS kol_count,
         t.holder_smart_count         AS smart_count,
         t.intelligence_score         AS intel_score,

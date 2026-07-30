@@ -90,7 +90,10 @@ async function fetchBatch(chain: string, addresses: string[]): Promise<Map<strin
       }
 
       for (const [addr, pair] of byAddr) {
-        const mc = pair.marketCap ?? pair.fdv ?? null;
+        // Never fall back to FDV for marketCap — FDV = price × total supply (1B for pump.fun),
+        // not circulating MC. Migrated pump.fun tokens have no real marketCap on DexScreener;
+        // the PumpFun/CoinGecko fallback provides the correct circulating MC instead.
+        const mc = pair.marketCap ?? null;
         map.set(addr, {
           price:        pair.priceUsd!,
           logo:         pair.info?.imageUrl ?? null,
