@@ -2,7 +2,12 @@
  * Pro Caller Routes
  *
  * GET /api/pro/stats    — aggregate performance (hit rates from called MC)
- * GET /api/pro/history  — all pro-called tokens with latest snapshot + run status
+ * GET /api/pro/history  — pro-called tokens with quality scores + run status
+ *
+ * Quality labels  (Pro Score thresholds)
+ *   very_good  ≥ 75
+ *   good       55–74
+ *   below      < 55
  */
 
 import { Router } from "express";
@@ -10,59 +15,28 @@ import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { extractSocials } from "../lib/socials";
+import { computeProScore, deriveRunStatus, type QualityLabel } from "../lib/pro-scoring";
 
 const router = Router();
-
-// ── Run-status derivation ─────────────────────────────────────────────────────
-
-type RunStatus = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
-
-function deriveRunStatus(
-  currentMc: number | null,
-  calledMc:  number | null,
-  athMultiple: number | null,
-): RunStatus {
-  if (!currentMc || currentMc < 5_000) return "DEAD";
-  if (!calledMc  || calledMc  === 0)   return "FLAT";
-
-  const ratio  = currentMc / calledMc;
-  const ath    = athMultiple ?? 1;
-  const athMc  = calledMc * ath;
-
-  // Still actively pumping — above call price and near ATH
-  if (ratio >= 1.1 && currentMc >= athMc * 0.70) return "PUMPING";
-
-  // Had a meaningful run (≥ 2×) but has since pulled back significantly
-  if (ath >= 2.0 && currentMc < athMc * 0.50)    return "RAN";
-
-  // Small pump, came back — peaked but not a 2× runner
-  if (ath >= 1.3 && currentMc < athMc * 0.60)    return "RAN";
-
-  // Barely moved since the call
-  if (ratio >= 0.70 && ratio <= 1.30)             return "SLOW";
-
-  return "FLAT";
-}
 
 // ── GET /api/pro/stats ────────────────────────────────────────────────────────
 
 router.get("/pro/stats", async (_req, res) => {
   try {
-    // Only count calls where the token's current MC is still >= $5 000.
-    // Tokens that have since died (MC < 5K) are excluded from win-rate math
-    // so the rate reflects performance on tokens that actually had a fair run.
     const result = await db.execute(sql`
       SELECT
-        COUNT(*)::int                                            AS total,
-        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int AS win,
-        COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int AS x1,
-        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int AS x2,
-        COUNT(CASE WHEN pc.ath_multiple >= 3   THEN 1 END)::int AS x3,
-        COUNT(CASE WHEN pc.ath_multiple >= 5   THEN 1 END)::int AS x5,
-        COUNT(CASE WHEN pc.ath_multiple >= 10  THEN 1 END)::int AS x10,
-        COUNT(CASE WHEN pc.ath_multiple >= 100 THEN 1 END)::int AS x100,
-        COUNT(CASE WHEN pc.ath_multiple >= 200 THEN 1 END)::int AS x200,
-        ROUND(MAX(pc.ath_multiple)::numeric, 2)                 AS best_ath
+        COUNT(*)::int                                              AS total,
+        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS win,
+        COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int   AS x1,
+        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS x2,
+        COUNT(CASE WHEN pc.ath_multiple >= 3   THEN 1 END)::int   AS x3,
+        COUNT(CASE WHEN pc.ath_multiple >= 5   THEN 1 END)::int   AS x5,
+        COUNT(CASE WHEN pc.ath_multiple >= 10  THEN 1 END)::int   AS x10,
+        COUNT(CASE WHEN pc.ath_multiple >= 100 THEN 1 END)::int   AS x100,
+        COUNT(CASE WHEN pc.ath_multiple >= 200 THEN 1 END)::int   AS x200,
+        ROUND(MAX(pc.ath_multiple)::numeric, 2)                   AS best_ath,
+        COUNT(CASE WHEN pc.quality_label = 'very_good' THEN 1 END)::int AS very_good_count,
+        COUNT(CASE WHEN pc.quality_label IN ('very_good','good') THEN 1 END)::int AS quality_count
       FROM pro_calls pc
       JOIN tracked_tokens t ON t.id = pc.token_id
       WHERE CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
@@ -74,15 +48,17 @@ router.get("/pro/stats", async (_req, res) => {
 
     res.json({
       total,
-      winRate:   total > 0 ? Math.round((win / total) * 100) : 0,
-      x1Count:   Number(row.x1   ?? 0),
-      x2Count:   Number(row.x2   ?? 0),
-      x3Count:   Number(row.x3   ?? 0),
-      x5Count:   Number(row.x5   ?? 0),
-      x10Count:  Number(row.x10  ?? 0),
-      x100Count: Number(row.x100 ?? 0),
-      x200Count: Number(row.x200 ?? 0),
-      bestAth:   row.best_ath != null ? Number(row.best_ath) : null,
+      winRate:        total > 0 ? Math.round((win / total) * 100) : 0,
+      x1Count:        Number(row.x1   ?? 0),
+      x2Count:        Number(row.x2   ?? 0),
+      x3Count:        Number(row.x3   ?? 0),
+      x5Count:        Number(row.x5   ?? 0),
+      x10Count:       Number(row.x10  ?? 0),
+      x100Count:      Number(row.x100 ?? 0),
+      x200Count:      Number(row.x200 ?? 0),
+      bestAth:        row.best_ath != null ? Number(row.best_ath) : null,
+      veryGoodCount:  Number(row.very_good_count ?? 0),
+      qualityCount:   Number(row.quality_count   ?? 0),
     });
   } catch (err) {
     console.error("pro stats error", err);
@@ -94,10 +70,12 @@ router.get("/pro/stats", async (_req, res) => {
 
 router.get("/pro/history", async (req, res) => {
   try {
-    const sort  = (req.query.sort  as string) ?? "calledAt";
-    const order = (req.query.order as string) ?? "desc";
+    const sort    = (req.query.sort    as string) ?? "proScore";
+    const order   = (req.query.order   as string) ?? "desc";
+    // quality filter: 'all' | 'quality' (very_good + good only) | 'very_good'
+    const quality = (req.query.quality as string) ?? "quality";
 
-    // Load all pro_calls with latest snapshot data — only tokens with MC >= $5 000
+    // Load all pro_calls with latest snapshot + security data
     const callRows = await db.execute(sql`
       SELECT
         pc.id              AS pro_call_id,
@@ -109,109 +87,151 @@ router.get("/pro/history", async (req, res) => {
         pc.called_smart_count,
         pc.called_kol_smart_score,
         pc.ath_multiple,
-        -- Latest snapshot data
-        snap.mc_usd        AS snap_mc,
-        snap.kol_count     AS snap_kol,
-        snap.smart_count   AS snap_smart,
-        snap.intel_score   AS snap_intel,
-        snap.snapshot_at   AS snap_at
+        pc.last_snapshot_at AS snap_at,
+        pc.pro_score,
+        pc.quality_label,
+        -- latest snapshot for MC/kol/intel
+        ps.mc_usd          AS snap_mc,
+        ps.kol_count       AS snap_kol,
+        ps.smart_count     AS snap_smart,
+        ps.intel_score     AS snap_intel,
+        -- current token state
+        t.address, t.chain, t.name, t.symbol,
+        t.logo_uri, t.image_path,
+        t.status,
+        t.market_cap_usd,
+        t.liquidity_usd,
+        t.raw_metadata,
+        t.sec_is_honeypot,
+        t.sec_mint_renounced,
+        t.sec_freeze_renounced,
+        t.sec_top10_holder_rate,
+        t.sec_lp_locked,
+        t.sec_rat_trader_amt_rate
       FROM pro_calls pc
-      JOIN tracked_tokens tt ON tt.id = pc.token_id
-        AND CAST(NULLIF(tt.market_cap_usd, '') AS NUMERIC) >= 5000
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      -- latest snapshot per pro_call
       LEFT JOIN LATERAL (
-        SELECT mc_usd, kol_count, smart_count, intel_score, snapshot_at
+        SELECT mc_usd, kol_count, smart_count, intel_score
         FROM pro_snapshots
         WHERE pro_call_id = pc.id
         ORDER BY snapshot_at DESC
         LIMIT 1
-      ) snap ON TRUE
+      ) ps ON true
+      WHERE CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
+        OR pc.ath_multiple >= 1.2
     `);
-
-    if (callRows.rows.length === 0) {
-      res.json({ total: 0, tokens: [] });
-      return;
-    }
 
     type CallRow = {
       pro_call_id: number; token_id: number;
       called_at: string; called_mc_usd: string | null;
       called_intel_score: number | null;
-      called_kol_count: number; called_smart_count: number;
+      called_kol_count: number | null; called_smart_count: number | null;
       called_kol_smart_score: number | null;
-      ath_multiple: number | null;
+      ath_multiple: number | null; snap_at: string | null;
+      pro_score: number | null; quality_label: string | null;
       snap_mc: string | null; snap_kol: number | null;
       snap_smart: number | null; snap_intel: number | null;
-      snap_at: string | null;
+      address: string; chain: string; name: string | null; symbol: string | null;
+      logo_uri: string | null; image_path: string | null;
+      status: string; market_cap_usd: string | null;
+      liquidity_usd: string | null; raw_metadata: unknown;
+      sec_is_honeypot: boolean | null; sec_mint_renounced: boolean | null;
+      sec_freeze_renounced: boolean | null; sec_top10_holder_rate: number | null;
+      sec_lp_locked: boolean | null; sec_rat_trader_amt_rate: number | null;
     };
 
-    const callMap = new Map<number, CallRow>();
-    for (const r of callRows.rows as CallRow[]) callMap.set(r.token_id, r);
-    const tokenIds = [...callMap.keys()];
-
-    // Load token metadata
-    const tokens = await db
-      .select({
-        id:          tracked_tokens.id,
-        address:     tracked_tokens.address,
-        chain:       tracked_tokens.chain,
-        name:        tracked_tokens.name,
-        symbol:      tracked_tokens.symbol,
-        logoUri:     tracked_tokens.logoUri,
-        imagePath:   tracked_tokens.imagePath,
-        status:      tracked_tokens.status,
-        marketCapUsd: tracked_tokens.marketCapUsd,
-        rawMetadata: tracked_tokens.rawMetadata,
-      })
-      .from(tracked_tokens)
-      .where(sql`id = ANY(ARRAY[${sql.raw(tokenIds.join(","))}]::int[])`);
-
-    const results = tokens.map(t => {
-      const call = callMap.get(t.id)!;
+    const results = (callRows.rows as CallRow[]).map(call => {
       const calledMc  = call.called_mc_usd ? parseFloat(call.called_mc_usd) : null;
-      // Prefer snapshot MC (most recent pro-snapshot), fall back to tracked_tokens MC
-      const snapMc    = call.snap_mc    ? parseFloat(call.snap_mc)    : null;
-      const currentMc = snapMc ?? (parseFloat(t.marketCapUsd ?? "0") || null);
+      const snapMc    = call.snap_mc ? parseFloat(call.snap_mc) : null;
+      const currentMc = snapMc ?? (parseFloat(call.market_cap_usd ?? "0") || null);
+      const liquidityUsd = parseFloat(call.liquidity_usd ?? "0") || null;
       const gainSinceCall = calledMc && currentMc
         ? ((currentMc - calledMc) / calledMc) * 100 : null;
       const athMultiple = call.ath_multiple ?? 1;
-      const runStatus   = deriveRunStatus(currentMc, calledMc, athMultiple);
+      const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
+
+      // Use stored score if available; otherwise compute live
+      let proScore: number;
+      let qualityLabel: QualityLabel;
+      if (call.pro_score != null && call.quality_label != null) {
+        proScore = call.pro_score;
+        qualityLabel = call.quality_label as QualityLabel;
+      } else {
+        const result = computeProScore({
+          calledIntelScore:    call.called_intel_score,
+          calledKolCount:      call.called_kol_count ?? 0,
+          calledSmartCount:    call.called_smart_count ?? 0,
+          calledMcUsd:         calledMc,
+          currentMcUsd:        currentMc,
+          athMultiple,
+          gainSinceCall,
+          runStatus,
+          liquidityUsd,
+          secIsHoneypot:        call.sec_is_honeypot,
+          secMintRenounced:     call.sec_mint_renounced,
+          secFreezeRenounced:   call.sec_freeze_renounced,
+          secTop10HolderRate:   call.sec_top10_holder_rate,
+          secLpLocked:          call.sec_lp_locked,
+          secRatTraderAmtRate:  call.sec_rat_trader_amt_rate,
+        });
+        proScore = result.score;
+        qualityLabel = result.qualityLabel;
+      }
 
       return {
-        id: t.id, address: t.address, chain: t.chain,
-        name: t.name, symbol: t.symbol,
-        logoUri: t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
-        status: t.status,
-        calledAt:      call.called_at,
-        calledMcUsd:   calledMc,
-        calledIntel:   call.called_intel_score,
-        calledKol:     call.called_kol_count,
-        calledSmart:   call.called_smart_count,
+        id:             call.token_id,
+        address:        call.address,
+        chain:          call.chain,
+        name:           call.name,
+        symbol:         call.symbol,
+        logoUri:        call.image_path ? `/api/assets${call.image_path}` : call.logo_uri,
+        status:         call.status,
+        calledAt:       call.called_at,
+        calledMcUsd:    calledMc,
+        calledIntel:    call.called_intel_score,
+        calledKol:      call.called_kol_count ?? 0,
+        calledSmart:    call.called_smart_count ?? 0,
         calledKolSmartScore: call.called_kol_smart_score,
-        currentMcUsd:  currentMc,
+        currentMcUsd:   currentMc,
         gainSinceCall,
         athMultiple,
         runStatus,
-        // Current kol/smart from latest snapshot (or fall back to call-time values)
-        currentKol:    call.snap_kol   ?? call.called_kol_count,
-        currentSmart:  call.snap_smart ?? call.called_smart_count,
-        currentIntel:  call.snap_intel ?? call.called_intel_score,
+        proScore,
+        qualityLabel,
+        currentKol:     call.snap_kol   ?? call.called_kol_count ?? 0,
+        currentSmart:   call.snap_smart ?? call.called_smart_count ?? 0,
+        currentIntel:   call.snap_intel ?? call.called_intel_score,
         lastSnapshotAt: call.snap_at ?? null,
-        socials:       extractSocials(t.rawMetadata),
+        // Security summary
+        secMintRenounced:   call.sec_mint_renounced,
+        secFreezeRenounced: call.sec_freeze_renounced,
+        secIsHoneypot:      call.sec_is_honeypot,
+        socials:            extractSocials(call.raw_metadata),
       };
     });
 
+    // Apply quality filter
+    const filtered = results.filter(t => {
+      if (quality === "all")       return true;
+      if (quality === "very_good") return t.qualityLabel === "very_good";
+      // default "quality" = very_good + good
+      return t.qualityLabel === "very_good" || t.qualityLabel === "good";
+    });
+
     // Sort
-    results.sort((a, b) => {
+    filtered.sort((a, b) => {
       let diff = 0;
-      if      (sort === "ath")      diff = (b.athMultiple ?? 0)    - (a.athMultiple ?? 0);
+      if      (sort === "ath")      diff = (b.athMultiple ?? 0)          - (a.athMultiple ?? 0);
       else if (sort === "gain")     diff = (b.gainSinceCall ?? -Infinity) - (a.gainSinceCall ?? -Infinity);
-      else if (sort === "intel")    diff = (b.currentIntel ?? 0)   - (a.currentIntel ?? 0);
-      else if (sort === "calledMc") diff = (b.calledMcUsd ?? 0)    - (a.calledMcUsd ?? 0);
+      else if (sort === "intel")    diff = (b.currentIntel ?? 0)          - (a.currentIntel ?? 0);
+      else if (sort === "calledMc") diff = (b.calledMcUsd ?? 0)           - (a.calledMcUsd ?? 0);
+      else if (sort === "proScore") diff = (b.proScore ?? 0)              - (a.proScore ?? 0);
       else                          diff = new Date(b.calledAt).getTime() - new Date(a.calledAt).getTime();
       return order === "asc" ? -diff : diff;
     });
 
-    res.json({ total: results.length, tokens: results });
+    res.json({ total: filtered.length, totalAll: results.length, tokens: filtered });
   } catch (err) {
     console.error("pro history error", err);
     res.status(500).json({ error: "Internal server error" });

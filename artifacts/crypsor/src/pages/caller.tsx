@@ -1,9 +1,14 @@
+/**
+ * Pro Caller Page — shows only Very Good (≥75) and Good (55–74) tokens
+ * sorted by Pro Score by default.
+ */
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Copy, ExternalLink, ArrowUpDown, Twitter, Send, Globe,
-  Star, Users, Zap, TrendingUp, BarChart2, Activity,
+  Copy, ExternalLink, Twitter, Send, Globe,
+  TrendingUp, Zap, Shield, ShieldCheck, ShieldOff,
+  Star, Users, BarChart2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -14,8 +19,9 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Socials { twitter?: string; telegram?: string; website?: string; }
-
-type RunStatus = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
+type RunStatus   = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
+type QualityLabel = "very_good" | "good" | "below";
+type SortKey     = "proScore" | "calledAt" | "ath" | "gain" | "intel" | "calledMc";
 
 interface ProToken {
   id: number;
@@ -35,10 +41,15 @@ interface ProToken {
   gainSinceCall: number | null;
   athMultiple: number | null;
   runStatus: RunStatus;
+  proScore: number;
+  qualityLabel: QualityLabel;
   currentKol: number;
   currentSmart: number;
   currentIntel: number | null;
   lastSnapshotAt: string | null;
+  secMintRenounced: boolean | null;
+  secFreezeRenounced: boolean | null;
+  secIsHoneypot: boolean | null;
   socials: Socials;
 }
 
@@ -53,16 +64,18 @@ interface ProStats {
   x100Count: number;
   x200Count: number;
   bestAth: number | null;
+  veryGoodCount: number;
+  qualityCount: number;
 }
 
 // ── Run-status badge ──────────────────────────────────────────────────────────
 
-const RUN_META: Record<RunStatus, { label: string; color: string }> = {
-  PUMPING: { label: "Pumping", color: "#22c55e" },
-  RAN:     { label: "Ran",     color: "#3b82f6" },
-  SLOW:    { label: "Slow",    color: "#f59e0b" },
-  FLAT:    { label: "Flat",    color: "#484f58" },
-  DEAD:    { label: "Dead",    color: "#ef4444" },
+const RUN_META: Record<RunStatus, { label: string; color: string; glow: string }> = {
+  PUMPING: { label: "Pumping", color: "#22c55e", glow: "#22c55e30" },
+  RAN:     { label: "Ran",     color: "#3b82f6", glow: "#3b82f630" },
+  SLOW:    { label: "Slow",    color: "#f59e0b", glow: "#f59e0b30" },
+  FLAT:    { label: "Flat",    color: "#484f58", glow: "#484f5830" },
+  DEAD:    { label: "Dead",    color: "#ef4444", glow: "#ef444430" },
 };
 
 function RunBadge({ status }: { status: RunStatus }) {
@@ -70,10 +83,43 @@ function RunBadge({ status }: { status: RunStatus }) {
   return (
     <span
       className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-black tracking-widest uppercase rounded-sm"
-      style={{ color: m.color, background: `${m.color}18`, border: `1px solid ${m.color}30` }}
+      style={{ color: m.color, background: m.glow, border: `1px solid ${m.color}30` }}
     >
       <span className="w-1 h-1 rounded-full shrink-0" style={{ background: m.color }} />
       {m.label}
+    </span>
+  );
+}
+
+// ── Quality badge ─────────────────────────────────────────────────────────────
+
+function QualityBadge({ label, score }: { label: QualityLabel; score: number }) {
+  if (label === "very_good") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-black tracking-wider uppercase rounded-full"
+        style={{
+          background: "linear-gradient(135deg, #f59e0b22, #22c55e22)",
+          border: "1px solid #f59e0b50",
+          color: "#f59e0b",
+        }}
+      >
+        <Star className="w-2.5 h-2.5" fill="currentColor" />
+        Very Good · {score.toFixed(0)}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-black tracking-wider uppercase rounded-full"
+      style={{
+        background: "#3b82f615",
+        border: "1px solid #3b82f640",
+        color: "#3b82f6",
+      }}
+    >
+      <BarChart2 className="w-2.5 h-2.5" />
+      Good · {score.toFixed(0)}
     </span>
   );
 }
@@ -82,25 +128,42 @@ function RunBadge({ status }: { status: RunStatus }) {
 
 function gainColor(v: number | null | undefined) {
   if (v == null) return "text-[#484f58]";
-  if (v > 0) return "text-[#22c55e]";
-  if (v < 0) return "text-[#ef4444]";
+  if (v > 0)  return "text-[#22c55e]";
+  if (v < 0)  return "text-[#ef4444]";
   return "text-[#8b949e]";
-}
-
-function fmtMultiple(x: number | null | undefined): string {
-  if (x == null) return "—";
-  if (x >= 2) return `${x.toFixed(1)}×`;
-  const pct = (x - 1) * 100;
-  if (pct >= 0) return `+${pct.toFixed(0)}%`;
-  return `${pct.toFixed(0)}%`;
 }
 
 function fmtGain(pct: number | null | undefined): string {
   if (pct == null) return "—";
   const x = pct / 100 + 1;
-  if (x >= 2)   return `+${x.toFixed(1)}×`;
-  if (pct >= 0) return `+${pct.toFixed(1)}%`;
+  if (Math.abs(x) >= 2)   return `${pct > 0 ? "+" : ""}${x.toFixed(1)}×`;
+  if (pct >= 0)           return `+${pct.toFixed(1)}%`;
   return `${pct.toFixed(1)}%`;
+}
+
+function fmtAth(x: number | null | undefined): string {
+  if (x == null) return "—";
+  if (x >= 2)   return `${x.toFixed(1)}×`;
+  const pct = (x - 1) * 100;
+  if (pct >= 0) return `+${pct.toFixed(0)}%`;
+  return `${pct.toFixed(0)}%`;
+}
+
+function SecurityIcons({
+  mint, freeze, honeypot,
+}: { mint: boolean | null; freeze: boolean | null; honeypot: boolean | null }) {
+  if (honeypot === true) return (
+    <span title="Honeypot detected" style={{ color: "#ef4444" }}>
+      <ShieldOff className="w-3 h-3" />
+    </span>
+  );
+  if (mint === true || freeze === true) return (
+    <span title={`Renounced: ${[mint && "mint", freeze && "freeze"].filter(Boolean).join(" + ")}`}
+      style={{ color: "#22c55e" }}>
+      <ShieldCheck className="w-3 h-3" />
+    </span>
+  );
+  return <Shield className="w-3 h-3" style={{ color: "#30363d" }} />;
 }
 
 function TokenLogo({ logoUri, address, symbol }: {
@@ -112,50 +175,64 @@ function TokenLogo({ logoUri, address, symbol }: {
   const [src, setSrc] = useState(logoUri || fallback);
   return (
     <img src={src} alt="" onError={() => setSrc(fallback)}
-      className="w-8 h-8 shrink-0 rounded object-cover"
+      className="w-9 h-9 shrink-0 rounded-lg object-cover"
       style={{ border: "1px solid rgba(255,255,255,0.08)" }} />
   );
 }
 
 // ── Stats chip ────────────────────────────────────────────────────────────────
 
-function StatChip({ label, value, sub, accent }: {
-  label: string; value: string | number; sub?: string; accent?: string;
+function StatChip({
+  label, value, sub, accent, large,
+}: {
+  label: string; value: string | number; sub?: string;
+  accent?: string; large?: boolean;
 }) {
+  const color = accent ?? "#8b949e";
   return (
     <div
-      className="flex-1 min-w-0 flex flex-col items-center justify-center px-3 py-2.5 rounded-lg"
+      className="flex flex-col items-center justify-center px-3 py-2.5 rounded-xl gap-0.5"
       style={{
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.07)",
-        minWidth: 64,
+        background: `${color}0c`,
+        border: `1px solid ${color}25`,
+        minWidth: large ? 72 : 58,
       }}
     >
-      <div className="text-[8px] font-bold uppercase tracking-widest mb-1" style={{ color: "#484f58" }}>{label}</div>
-      <div className="font-black tabular-nums leading-none text-sm" style={{ color: accent ?? "#e6edf3" }}>{value}</div>
-      {sub && <div className="text-[7px] mt-0.5 tabular-nums" style={{ color: "#30363d" }}>{sub}</div>}
+      {sub && <div className="text-[7px] text-[#484f58] uppercase tracking-widest">{sub}</div>}
+      <div className={cn(
+        "font-black tracking-tight",
+        large ? "text-2xl" : "text-lg",
+      )} style={{ color }}>
+        {value}
+      </div>
+      <div className="text-[7px] uppercase tracking-widest" style={{ color: `${color}99` }}>
+        {label}
+      </div>
     </div>
   );
 }
 
 // ── Sort button ───────────────────────────────────────────────────────────────
 
-type SortKey = "calledAt" | "gain" | "ath" | "intel" | "calledMc";
-
-function SortBtn({ label, active, asc, onClick }: {
-  label: string; active: boolean; asc: boolean; onClick: () => void;
-}) {
+function SortBtn({
+  label, active, asc, onClick,
+}: { label: string; active: boolean; asc: boolean; onClick: () => void }) {
   return (
-    <button onClick={onClick}
-      className="flex items-center gap-1 px-2 py-1 text-[8px] font-bold uppercase tracking-widest rounded transition-colors"
-      style={{
-        background: active ? "rgba(245,158,11,0.10)" : "rgba(255,255,255,0.03)",
-        border: `1px solid ${active ? "rgba(245,158,11,0.35)" : "rgba(255,255,255,0.06)"}`,
-        color: active ? "#f59e0b" : "#484f58",
-      }}>
-      <ArrowUpDown className="w-2 h-2" />
+    <button
+      onClick={onClick}
+      className="flex items-center gap-0.5 px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest transition-all"
+      style={
+        active
+          ? { background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b40" }
+          : { background: "transparent", color: "#484f58", border: "1px solid #21262d" }
+      }
+    >
       {label}
-      {active && <span className="text-[7px]">{asc ? "↑" : "↓"}</span>}
+      {active && (
+        <span className="text-[7px]" style={{ color: "#f59e0b80" }}>
+          {asc ? "↑" : "↓"}
+        </span>
+      )}
     </button>
   );
 }
@@ -164,286 +241,352 @@ function SortBtn({ label, active, asc, onClick }: {
 
 function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
   const { toast } = useToast();
-  const isDead = t.runStatus === "DEAD";
-  const isPumping = t.runStatus === "PUMPING";
+  const sym = safeSymbol(t.symbol, t.address);
 
-  const copy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(t.address);
-    toast({ title: "Copied", description: truncateAddress(t.address) });
-  };
-
-  const openGmgn = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    window.open(getGmgnUrl(t.chain, t.address), "_blank", "noopener");
-  };
+  const isVeryGood = t.qualityLabel === "very_good";
+  const borderColor = isVeryGood ? "#f59e0b22" : "#3b82f618";
+  const accentColor = isVeryGood ? "#f59e0b" : "#3b82f6";
+  const bgGlow     = isVeryGood ? "#f59e0b06" : "transparent";
 
   return (
     <div
       onClick={onNavigate}
-      className="flex flex-col gap-2 cursor-pointer rounded-lg px-3 py-3 transition-all active:scale-[0.99]"
+      className="relative flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer transition-all duration-150 group"
       style={{
-        background: isPumping ? "rgba(34,197,94,0.04)" : "rgba(255,255,255,0.02)",
-        border: `1px solid ${isPumping ? "rgba(34,197,94,0.12)" : "rgba(255,255,255,0.055)"}`,
-        opacity: isDead ? 0.5 : 1,
+        background: bgGlow,
+        border: `1px solid ${borderColor}`,
       }}
-      onMouseEnter={e => (e.currentTarget.style.background = isPumping ? "rgba(34,197,94,0.07)" : "rgba(255,255,255,0.045)")}
-      onMouseLeave={e => (e.currentTarget.style.background = isPumping ? "rgba(34,197,94,0.04)" : "rgba(255,255,255,0.02)")}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + "55")}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}
     >
-      {/* Row 1: logo + name + badge + ATH multiple */}
-      <div className="flex items-center gap-2.5">
-        <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
+      {/* Quality accent strip */}
+      <div
+        className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r"
+        style={{ background: isVeryGood
+          ? "linear-gradient(180deg,#f59e0b,#22c55e)"
+          : "linear-gradient(180deg,#3b82f6,#6366f1)" }}
+      />
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[#e6edf3] font-bold text-sm leading-none truncate">
-              {safeSymbol(t.symbol, t.address)}
-            </span>
-            <RunBadge status={t.runStatus} />
-          </div>
-          <div className="flex items-center gap-2 mt-1">
-            {t.calledKol > 0 && (
-              <span className="flex items-center gap-0.5 text-[9px] text-[#f59e0b]">
-                <Star className="w-2.5 h-2.5" />{t.calledKol}
-              </span>
-            )}
-            {t.calledSmart > 0 && (
-              <span className="flex items-center gap-0.5 text-[9px] text-[#3b82f6]">
-                <Users className="w-2.5 h-2.5" />{t.calledSmart}
-              </span>
-            )}
-            {/* Live kol/smart if changed since call */}
-            {(t.currentKol !== t.calledKol || t.currentSmart !== t.calledSmart) && (
-              <span className="flex items-center gap-0.5 text-[8px] text-[#30363d]">
-                <Activity className="w-2 h-2" />
-                {t.currentKol}/{t.currentSmart}
-              </span>
-            )}
-            <span className="text-[#30363d] text-[8px]">{formatTimeAgo(t.calledAt)}</span>
-          </div>
+      {/* Logo */}
+      <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
+
+      {/* Name + badges */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] font-bold text-white truncate max-w-[100px]">{sym}</span>
+          <RunBadge status={t.runStatus} />
+          <QualityBadge label={t.qualityLabel} score={t.proScore} />
         </div>
-
-        {/* GAIN + ATH from called MC — both shown side-by-side */}
-        <div className="shrink-0 flex items-center gap-2.5">
-          {/* Current gain */}
-          <div className="text-right">
-            <div className={cn(
-              "text-sm font-black tabular-nums leading-none",
-              t.gainSinceCall == null ? "text-[#484f58]"
-              : t.gainSinceCall > 0   ? "text-[#22c55e]"
-              : t.gainSinceCall < 0   ? "text-[#ef4444]"
-              : "text-[#8b949e]",
-            )}>
-              {t.gainSinceCall != null ? fmtGain(t.gainSinceCall) : "—"}
-            </div>
-            <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">Gain</div>
-          </div>
-
-          {/* Divider */}
-          <div className="w-px h-6 bg-[#21262d]" />
-
-          {/* ATH multiple */}
-          <div className="text-right">
-            <div className={cn(
-              "text-sm font-black tabular-nums leading-none",
-              (t.athMultiple ?? 1) >= 2   ? "text-[#22c55e]"
-              : (t.athMultiple ?? 1) >= 1.1 ? "text-[#f59e0b]"
-              : "text-[#484f58]",
-            )}>
-              {fmtMultiple(t.athMultiple)}
-            </div>
-            <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">ATH</div>
-          </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <span className="text-[9px] text-[#484f58]">
+            MC {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
+          </span>
+          {/* KOL / Smart indicators */}
+          {t.currentKol > 0 && (
+            <span className="text-[8px] font-bold" style={{ color: "#a855f7" }}>
+              K{t.currentKol}
+            </span>
+          )}
+          {t.currentSmart > 0 && (
+            <span className="text-[8px] font-bold" style={{ color: "#06b6d4" }}>
+              S{t.currentSmart}
+            </span>
+          )}
+          <SecurityIcons
+            mint={t.secMintRenounced}
+            freeze={t.secFreezeRenounced}
+            honeypot={t.secIsHoneypot}
+          />
         </div>
       </div>
 
-      {/* Row 2: MC called → now + actions */}
-      <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center gap-1 text-[9px] font-mono min-w-0 flex-1">
-          <span className="text-[#484f58] text-[8px] uppercase tracking-widest mr-0.5">MC</span>
-          <span className="text-[#484f58]">{t.calledMcUsd ? formatCompactUsd(t.calledMcUsd) : "—"}</span>
-          <span className="text-[#30363d]">→</span>
-          <span className={cn("font-bold", gainColor(t.gainSinceCall))}>
-            {t.currentMcUsd ? formatCompactUsd(t.currentMcUsd) : "—"}
+      {/* Gain + ATH + age (right column) */}
+      <div className="flex flex-col items-end gap-0.5 shrink-0">
+        {/* ATH multiple */}
+        <div className="flex items-center gap-1">
+          <span className="text-[8px] text-[#484f58] uppercase tracking-widest">ATH</span>
+          <span
+            className="text-[11px] font-black"
+            style={{ color: t.athMultiple != null && t.athMultiple >= 2 ? "#f59e0b" : "#8b949e" }}
+          >
+            {fmtAth(t.athMultiple)}
           </span>
         </div>
+        {/* Gain since call */}
+        <span className={cn("text-[10px] font-bold", gainColor(t.gainSinceCall))}>
+          {fmtGain(t.gainSinceCall)}
+        </span>
+        {/* Age */}
+        <span className="text-[8px] text-[#30363d]">{formatTimeAgo(t.calledAt)}</span>
+      </div>
 
-        {/* Action buttons */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <button onClick={copy} title="Copy CA"
-            className="transition-colors" style={{ color: "#30363d" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "#f59e0b")}
-            onMouseLeave={e => (e.currentTarget.style.color = "#30363d")}>
-            <Copy className="w-3.5 h-3.5" />
-          </button>
-          <button onClick={openGmgn} title="GMGN"
-            className="transition-colors" style={{ color: "#30363d" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "#22c55e")}
-            onMouseLeave={e => (e.currentTarget.style.color = "#30363d")}>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </button>
-          {t.socials.twitter && (
-            <a href={t.socials.twitter} target="_blank" rel="noopener noreferrer"
-              title="Twitter" onClick={e => e.stopPropagation()}
-              style={{ color: "#30363d" }}
-              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#1d9bf0")}
-              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
-              <Twitter className="w-3.5 h-3.5" />
-            </a>
-          )}
-          {t.socials.telegram && (
-            <a href={t.socials.telegram} target="_blank" rel="noopener noreferrer"
-              title="Telegram" onClick={e => e.stopPropagation()}
-              style={{ color: "#30363d" }}
-              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#24a1de")}
-              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
-              <Send className="w-3.5 h-3.5" />
-            </a>
-          )}
-          {t.socials.website && (
-            <a href={t.socials.website} target="_blank" rel="noopener noreferrer"
-              title="Website" onClick={e => e.stopPropagation()}
-              style={{ color: "#30363d" }}
-              onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = "#8b5cf6")}
-              onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "#30363d")}>
-              <Globe className="w-3.5 h-3.5" />
-            </a>
-          )}
-        </div>
+      {/* External link + copy — visible on hover */}
+      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        <button
+          onClick={e => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(t.address);
+            toast({ title: "Copied", description: t.address.slice(0, 20) + "…" });
+          }}
+          className="p-1 rounded hover:bg-white/5"
+        >
+          <Copy className="w-3 h-3 text-[#484f58]" />
+        </button>
+        <a
+          href={getGmgnUrl(t.chain, t.address)} target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className="p-1 rounded hover:bg-white/5"
+        >
+          <ExternalLink className="w-3 h-3 text-[#484f58]" />
+        </a>
+        {t.socials.twitter && (
+          <a href={t.socials.twitter} target="_blank" rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()} className="p-1 rounded hover:bg-white/5">
+            <Twitter className="w-3 h-3 text-[#484f58]" />
+          </a>
+        )}
+        {t.socials.telegram && (
+          <a href={t.socials.telegram} target="_blank" rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()} className="p-1 rounded hover:bg-white/5">
+            <Send className="w-3 h-3 text-[#484f58]" />
+          </a>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ── Quality filter tab ────────────────────────────────────────────────────────
+
+type QualityFilter = "quality" | "very_good" | "all";
+
+function FilterTab({
+  label, active, count, onClick,
+}: { label: string; active: boolean; count?: number; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all"
+      style={
+        active
+          ? { background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b40" }
+          : { background: "transparent", color: "#484f58", border: "1px solid #21262d" }
+      }
+    >
+      {label}
+      {count != null && (
+        <span
+          className="px-1 rounded-full text-[7px] font-black"
+          style={{ background: active ? "#f59e0b30" : "#21262d", color: active ? "#f59e0b" : "#484f58" }}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ── Pro Score bar ─────────────────────────────────────────────────────────────
+
+function ProScoreBar({ score }: { score: number }) {
+  const isVG = score >= 75;
+  const isG  = score >= 55;
+  const color = isVG ? "#f59e0b" : isG ? "#3b82f6" : "#484f58";
+  return (
+    <div className="h-0.5 rounded-full overflow-hidden" style={{ background: "#21262d", width: 40 }}>
+      <div
+        className="h-full rounded-full transition-all duration-500"
+        style={{ width: `${Math.min(100, score)}%`, background: color }}
+      />
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 
 export default function Caller() {
   const [, navigate] = useLocation();
-  const [sortKey, setSortKey] = useState<SortKey>("calledAt");
-  const [sortAsc, setSortAsc] = useState(false);
+  const [sortKey, setSortKey]         = useState<SortKey>("proScore");
+  const [sortAsc, setSortAsc]         = useState(false);
+  const [qualityFilter, setQF]        = useState<QualityFilter>("quality");
 
-  const { data: stats, isLoading: statsLoading } = useQuery<ProStats>({
-    queryKey: ["pro-stats"],
-    queryFn: () =>
-      fetch(`${import.meta.env.BASE_URL}api/pro/stats`).then(r => r.json()),
-    refetchInterval: 5 * 60_000,
-    staleTime: 60_000,
-  });
-
-  const { data, isLoading } = useQuery<{ total: number; tokens: ProToken[] }>({
-    queryKey: ["pro-history", sortKey, sortAsc ? "asc" : "desc"],
-    queryFn: () =>
-      fetch(`${import.meta.env.BASE_URL}api/pro/history?sort=${sortKey}&order=${sortAsc ? "asc" : "desc"}`)
-        .then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-
-  const tokens = data?.tokens ?? [];
-
-  const sorted = sortKey === "ath"
-    ? [...tokens].sort((a, b) => {
-        const diff = (b.athMultiple ?? 0) - (a.athMultiple ?? 0);
-        return sortAsc ? -diff : diff;
-      })
-    : tokens;
-
-  const setSort = (key: SortKey) => {
-    if (sortKey === key) setSortAsc(v => !v);
+  function setSort(key: SortKey) {
+    if (key === sortKey) setSortAsc(v => !v);
     else { setSortKey(key); setSortAsc(false); }
-  };
+  }
 
-  const winRateColor = !stats ? "#e6edf3"
-    : stats.winRate >= 60 ? "#22c55e"
-    : stats.winRate >= 40 ? "#f59e0b"
-    : "#ef4444";
+  // ── Data fetching ──────────────────────────────────────────────────────────
+
+  const { data: stats } = useQuery<ProStats>({
+    queryKey: ["proStats"],
+    queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
+    refetchInterval: 30_000,
+    staleTime:       20_000,
+  });
+
+  const { data: historyData, isLoading } = useQuery<{ total: number; totalAll: number; tokens: ProToken[] }>({
+    queryKey: ["proHistory", qualityFilter, sortKey, sortAsc ? "asc" : "desc"],
+    queryFn:  () =>
+      fetch(`${BASE_URL}/api/pro/history?quality=${qualityFilter}&sort=${sortKey}&order=${sortAsc ? "asc" : "desc"}`)
+        .then(r => r.json()),
+    refetchInterval: 30_000,
+    staleTime:       20_000,
+  });
+
+  const tokens     = historyData?.tokens ?? [];
+  const totalAll   = historyData?.totalAll ?? 0;
+  const veryGoodCt = stats?.veryGoodCount ?? 0;
+  const goodCt     = (stats?.qualityCount ?? 0) - veryGoodCt;
+
+  // Client-side sort on top of server sort (ensures stable ordering during transitions)
+  const sorted = [...tokens].sort((a, b) => {
+    let diff = 0;
+    if      (sortKey === "ath")      diff = (b.athMultiple ?? 0)           - (a.athMultiple ?? 0);
+    else if (sortKey === "gain")     diff = (b.gainSinceCall ?? -Infinity)  - (a.gainSinceCall ?? -Infinity);
+    else if (sortKey === "intel")    diff = (b.currentIntel ?? 0)           - (a.currentIntel ?? 0);
+    else if (sortKey === "calledMc") diff = (b.calledMcUsd ?? 0)            - (a.calledMcUsd ?? 0);
+    else if (sortKey === "calledAt") diff = new Date(b.calledAt).getTime()  - new Date(a.calledAt).getTime();
+    else                             diff = (b.proScore ?? 0)               - (a.proScore ?? 0);
+    return sortAsc ? -diff : diff;
+  });
+
+  const bestAth    = stats?.bestAth ?? null;
+  const winRate    = stats?.winRate ?? 0;
 
   return (
-    <div className="flex flex-col min-h-[calc(100vh-3rem)] px-3 pt-3 pb-6 gap-4 max-w-2xl mx-auto w-full">
+    <div className="flex flex-col min-h-0 flex-1 gap-3 px-3 py-3 max-w-2xl mx-auto w-full">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-          <span className="text-[8px] font-bold uppercase tracking-widest text-[#484f58]">
-            Intel ≥ 80 · KOL / Smart
-          </span>
+        <div>
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4" style={{ color: "#f59e0b" }} />
+            <span className="text-[13px] font-black uppercase tracking-widest text-white">
+              Pro Intel
+            </span>
+            <span
+              className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider"
+              style={{ background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b30" }}
+            >
+              Very Good + Good only
+            </span>
+          </div>
+          <p className="text-[9px] text-[#484f58] mt-0.5">
+            Intel ≥ 80 · KOL/Smart · MC ≥ $5K at call · Pro scored
+          </p>
         </div>
-        <span className="text-[#f59e0b] font-black text-sm tabular-nums">
-          {isLoading ? "—" : (data?.total ?? "—")}
-          <span className="text-[8px] font-normal text-[#484f58] ml-1 uppercase tracking-widest">called</span>
-        </span>
+        <div className="text-right">
+          <div className="text-[11px] font-black text-white">{totalAll}</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">called</div>
+        </div>
       </div>
 
-      {/* ── Stats chips ───────────────────────────────────────────────────── */}
-      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-        <StatChip
-          label="Win Rate"
-          value={statsLoading ? "—" : `${stats?.winRate ?? 0}%`}
-          sub="ATH ≥ 2×"
-          accent={statsLoading ? undefined : winRateColor}
-        />
-        <StatChip label="2×"   value={statsLoading ? "—" : (stats?.x2Count  ?? 0)} sub="ATH ≥ 2×"   accent="#f59e0b" />
-        <StatChip label="3×"   value={statsLoading ? "—" : (stats?.x3Count  ?? 0)} sub="ATH ≥ 3×"   accent="#f59e0b" />
-        <StatChip label="5×"   value={statsLoading ? "—" : (stats?.x5Count  ?? 0)} sub="ATH ≥ 5×"   accent="#f59e0b" />
-        <StatChip label="10×"  value={statsLoading ? "—" : (stats?.x10Count ?? 0)} sub="ATH ≥ 10×"  accent="#22c55e" />
-        <StatChip label="100×" value={statsLoading ? "—" : (stats?.x100Count ?? 0)} sub="ATH ≥ 100×" accent="#22c55e" />
-        <StatChip
-          label="Best"
-          value={statsLoading || !stats ? "—" : fmtMultiple(stats.bestAth)}
-          sub="all-time"
-          accent="#22c55e"
-        />
+      {/* ── Stats row ─────────────────────────────────────────────────────── */}
+      <div className="flex gap-1.5 flex-wrap">
+        <StatChip label="Win Rate" value={`${winRate}%`} accent="#22c55e" large />
+        <StatChip label="Very Good" value={veryGoodCt} accent="#f59e0b" />
+        <StatChip label="Good" value={goodCt} accent="#3b82f6" />
+        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
+        <StatChip label="2×" value={stats?.x2Count ?? "—"} sub="ATH" />
+        <StatChip label="3×" value={stats?.x3Count ?? "—"} />
+        <StatChip label="5×" value={stats?.x5Count ?? "—"} />
+        <StatChip label="10×" value={stats?.x10Count ?? "—"} accent={stats?.x10Count ? "#f59e0b" : undefined} />
+        <StatChip label="100×" value={stats?.x100Count ?? "—"} accent={stats?.x100Count ? "#ef4444" : undefined} />
+        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
+        <StatChip label="Best ATH" value={bestAth != null ? `${bestAth.toFixed(1)}×` : "—"} accent="#f59e0b" large />
       </div>
 
-      {/* ── Token list ────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3 flex-1">
-        {/* Sort bar */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <BarChart2 className="w-3 h-3 text-[#30363d]" />
-          <span className="text-[8px] text-[#30363d] uppercase tracking-widest">Sort</span>
+      {/* ── Filter + Sort row ─────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        {/* Quality filter tabs */}
+        <div className="flex items-center gap-1.5">
+          <FilterTab
+            label="Quality" active={qualityFilter === "quality"}
+            count={(stats?.qualityCount ?? 0)}
+            onClick={() => setQF("quality")}
+          />
+          <FilterTab
+            label="⭐ Very Good" active={qualityFilter === "very_good"}
+            count={veryGoodCt}
+            onClick={() => setQF("very_good")}
+          />
+          <FilterTab
+            label="All" active={qualityFilter === "all"}
+            count={totalAll}
+            onClick={() => setQF("all")}
+          />
+        </div>
+
+        {/* Sort buttons */}
+        <div className="flex items-center gap-1">
           {([
+            { key: "proScore" as SortKey, label: "Score" },
             { key: "calledAt" as SortKey, label: "Recent" },
             { key: "ath"      as SortKey, label: "ATH" },
             { key: "gain"     as SortKey, label: "Gain" },
             { key: "intel"    as SortKey, label: "Intel" },
-            { key: "calledMc" as SortKey, label: "MC" },
           ]).map(s => (
             <SortBtn key={s.key} label={s.label}
               active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
               onClick={() => setSort(s.key)} />
           ))}
         </div>
-
-        {/* List */}
-        {isLoading ? (
-          <div className="flex flex-col gap-2">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-20 rounded-lg animate-pulse"
-                style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)" }} />
-            ))}
-          </div>
-        ) : sorted.length === 0 ? (
-          <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
-            <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
-            <div className="text-[10px] uppercase tracking-widest text-[#484f58]">No pro calls yet</div>
-            <div className="text-[9px] text-[#30363d]">Tokens with intel ≥ 80 + KOL/Smart appear here</div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {sorted.map(t => (
-              <TokenRow key={t.id} t={t} onNavigate={() => navigate(`/tokens/${t.id}`)} />
-            ))}
-          </div>
-        )}
       </div>
+
+      {/* ── Pro Score legend ───────────────────────────────────────────────── */}
+      <div className="flex items-center gap-3 px-3 py-2 rounded-lg"
+        style={{ background: "#0d1117", border: "1px solid #21262d" }}>
+        <div className="flex items-center gap-1.5">
+          <Star className="w-2.5 h-2.5" style={{ color: "#f59e0b" }} fill="#f59e0b" />
+          <span className="text-[8px] font-bold" style={{ color: "#f59e0b" }}>Very Good</span>
+          <span className="text-[7px] text-[#484f58]">≥ 75</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <BarChart2 className="w-2.5 h-2.5" style={{ color: "#3b82f6" }} />
+          <span className="text-[8px] font-bold" style={{ color: "#3b82f6" }}>Good</span>
+          <span className="text-[7px] text-[#484f58]">55–74</span>
+        </div>
+        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
+        <span className="text-[7px] text-[#30363d]">
+          Intel strength · MC/Liq · ATH · Gain momentum · Run status · Risk
+        </span>
+      </div>
+
+      {/* ── Token list ────────────────────────────────────────────────────── */}
+      {isLoading ? (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-16 rounded-xl animate-pulse"
+              style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)" }} />
+          ))}
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
+          <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
+          <div className="text-[10px] uppercase tracking-widest text-[#484f58]">
+            No {qualityFilter === "very_good" ? "Very Good" : qualityFilter === "quality" ? "quality" : ""} tokens yet
+          </div>
+          <div className="text-[9px] text-[#30363d]">
+            Tokens with Intel ≥ 80 + KOL/Smart + Pro Score ≥ 55 appear here
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {sorted.map(t => (
+            <TokenRow key={t.id} t={t}
+              onNavigate={() => navigate(`/tokens/${t.id}`)} />
+          ))}
+        </div>
+      )}
 
       {/* ── Footer ────────────────────────────────────────────────────────── */}
       {sorted.length > 0 && (
-        <div className="flex items-center justify-center gap-1.5 pt-2">
+        <div className="flex items-center justify-center gap-2 pt-1">
           <Zap className="w-2.5 h-2.5 text-[#30363d]" />
           <span className="text-[8px] text-[#30363d] tracking-widest uppercase">
-            {sorted.length} tokens · ATH from called MC · Pro snapshots every 5 min
+            {sorted.length} shown · Pro Score updated every 5 min · ATH from called MC
           </span>
         </div>
       )}

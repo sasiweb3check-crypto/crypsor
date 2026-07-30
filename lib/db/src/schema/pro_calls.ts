@@ -36,5 +36,11 @@ export const pro_calls = pgTable("pro_calls", {
   athMultiple:      real("ath_multiple").default(1), // max(current_mc / called_mc) ever seen
   lastSnapshotAt:   timestamp("last_snapshot_at"),
 
+  // ── Pro Score (0-100) and quality label (updated every snapshot cycle) ──
+  // Composite of: intel strength, MC/liquidity, ATH multiplier, gain momentum,
+  // run-status quality, risk/security.  very_good ≥ 75 | good 55-74 | below < 55
+  proScore:         real("pro_score"),
+  qualityLabel:     text("quality_label"), // 'very_good' | 'good' | 'below'
+
   createdAt:        timestamp("created_at").defaultNow(),
 });
