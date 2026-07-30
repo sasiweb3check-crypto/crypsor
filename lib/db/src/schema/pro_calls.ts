@@ -43,6 +43,15 @@ export const pro_calls = pgTable("pro_calls", {
   proScore:         real("pro_score"),
   qualityLabel:     text("quality_label"), // 'very_good' | 'good' | 'below'
 
+  // ── Surfaced tracking — when the token first became visible in Pro Intel ──
+  // Set once the first time quality_label transitions out of 'below'/null to
+  // 'good' or 'very_good'.  Null for tokens that qualified immediately at call
+  // time or for historical records predating this field.
+  // Use surfaced_mc_usd as the real "entry" price shown to users; fall back to
+  // called_mc_usd only when this is null.
+  surfacedAt:       timestamp("surfaced_at", { withTimezone: true }),
+  surfacedMcUsd:    text("surfaced_mc_usd"),
+
   // ── Milestone tracker — set once, never cleared ───────────────────────────
   // Flags and timestamps for when ath_multiple first crossed each threshold.
   // Set by the pro-snapshots worker; immutable once true.

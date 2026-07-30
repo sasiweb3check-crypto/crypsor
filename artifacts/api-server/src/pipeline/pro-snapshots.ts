@@ -149,6 +149,15 @@ async function snapshotOnce(): Promise<void> {
       //   • allow upgrade from good → very_good when score improves to ≥ 75
       //   • never downgrade from good → below (quality earned is kept)
       //   • new/below tokens get the freshly-computed label
+      //
+      // surfaced_at / surfaced_mc_usd: set exactly once when quality first
+      // transitions out of 'below'/NULL into 'good' or 'very_good'.
+      // This is the real moment users can see the token in Pro Intel.
+      const surfacingNow = (qualityLabel === "good" || qualityLabel === "very_good");
+      const surfacedClause = surfacingNow
+        ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
+        : sql``;
+
       await db.execute(sql`
         UPDATE pro_calls
         SET
@@ -161,6 +170,7 @@ async function snapshotOnce(): Promise<void> {
             WHEN quality_label = 'good'                             THEN 'good'
             ELSE ${qualityLabel}
           END
+          ${surfacedClause}
           ${sql.raw(milestoneClause)}
         WHERE id = ${r.pro_call_id}
       `);

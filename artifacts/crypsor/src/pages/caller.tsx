@@ -47,6 +47,8 @@ interface ProToken {
   currentSmart: number;
   currentIntel: number | null;
   lastSnapshotAt: string | null;
+  surfacedAt: string | null;
+  surfacedMcUsd: number | null;
   secMintRenounced: boolean | null;
   secFreezeRenounced: boolean | null;
   secIsHoneypot: boolean | null;
@@ -280,9 +282,19 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
           <QualityBadge label={t.qualityLabel} score={t.proScore} />
         </div>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[9px] text-[#484f58]">
-            MC {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
-          </span>
+          {/* Show surfaced MC (when token first appeared in Pro Intel) as the
+              real entry price. Fall back to calledMcUsd for tokens that
+              qualified immediately or predating this field. */}
+          {t.surfacedMcUsd != null && t.surfacedMcUsd !== t.calledMcUsd ? (
+            <span className="text-[9px] text-[#484f58]" title={`First detected at ${formatCompactUsd(t.calledMcUsd)}`}>
+              <span style={{ color: "#f59e0b88" }}>⚑</span>{" "}
+              {formatCompactUsd(t.surfacedMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
+            </span>
+          ) : (
+            <span className="text-[9px] text-[#484f58]">
+              MC {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
+            </span>
+          )}
           {/* KOL / Smart indicators */}
           {t.currentKol > 0 && (
             <span className="text-[8px] font-bold" style={{ color: "#a855f7" }}>

@@ -105,6 +105,8 @@ router.get("/pro/history", async (req, res) => {
         pc.hit_5x,  pc.hit_5x_at,
         pc.hit_10x, pc.hit_10x_at,
         pc.hit_100x,pc.hit_100x_at,
+        pc.surfaced_at,
+        pc.surfaced_mc_usd,
         -- latest snapshot for MC/kol/intel
         ps.mc_usd          AS snap_mc,
         ps.kol_count       AS snap_kol,
@@ -154,6 +156,8 @@ router.get("/pro/history", async (req, res) => {
       hit_5x: boolean | null; hit_5x_at: string | null;
       hit_10x: boolean | null; hit_10x_at: string | null;
       hit_100x: boolean | null; hit_100x_at: string | null;
+      surfaced_at: string | null;
+      surfaced_mc_usd: string | null;
       snap_mc: string | null; snap_kol: number | null;
       snap_smart: number | null; snap_intel: number | null;
       live_kol: number | null; live_smart: number | null;
@@ -238,6 +242,12 @@ router.get("/pro/history", async (req, res) => {
         hit5x:    call.hit_5x    ?? false, hit5xAt:  call.hit_5x_at   ?? null,
         hit10x:   call.hit_10x   ?? false, hit10xAt: call.hit_10x_at  ?? null,
         hit100x:  call.hit_100x  ?? false, hit100xAt:call.hit_100x_at ?? null,
+        // Surfaced tracking — when the token first became visible in Pro Intel.
+        // surfacedMcUsd is the real "entry" price users should see.
+        // Falls back to calledMcUsd for tokens that qualified immediately or
+        // for historical records predating this field.
+        surfacedAt:     call.surfaced_at ?? null,
+        surfacedMcUsd:  call.surfaced_mc_usd ? parseFloat(call.surfaced_mc_usd) : null,
         // Security summary
         secMintRenounced:   call.sec_mint_renounced,
         secFreezeRenounced: call.sec_freeze_renounced,
