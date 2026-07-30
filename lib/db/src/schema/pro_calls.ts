@@ -16,6 +16,7 @@ import {
   real,
   text,
   timestamp,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 export const pro_calls = pgTable("pro_calls", {
@@ -41,6 +42,20 @@ export const pro_calls = pgTable("pro_calls", {
   // run-status quality, risk/security.  very_good ≥ 75 | good 55-74 | below < 55
   proScore:         real("pro_score"),
   qualityLabel:     text("quality_label"), // 'very_good' | 'good' | 'below'
+
+  // ── Milestone tracker — set once, never cleared ───────────────────────────
+  // Flags and timestamps for when ath_multiple first crossed each threshold.
+  // Set by the pro-snapshots worker; immutable once true.
+  hit2x:    boolean("hit_2x").default(false),
+  hit2xAt:  timestamp("hit_2x_at"),
+  hit3x:    boolean("hit_3x").default(false),
+  hit3xAt:  timestamp("hit_3x_at"),
+  hit5x:    boolean("hit_5x").default(false),
+  hit5xAt:  timestamp("hit_5x_at"),
+  hit10x:   boolean("hit_10x").default(false),
+  hit10xAt: timestamp("hit_10x_at"),
+  hit100x:  boolean("hit_100x").default(false),
+  hit100xAt: timestamp("hit_100x_at"),
 
   createdAt:        timestamp("created_at").defaultNow(),
 });

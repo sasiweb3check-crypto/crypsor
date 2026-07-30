@@ -8,6 +8,8 @@
  * Also:
  *   • Updates `pro_calls.ath_multiple` with the running max
  *   • Computes and stores the Pro Score + quality label on every cycle
+ *   • Sets hit_2x / hit_3x / hit_5x / hit_10x / hit_100x flags + timestamps
+ *     the first time each milestone is crossed (irreversible once set)
  */
 
 import { db } from "@workspace/db";
@@ -20,6 +22,14 @@ const log = logger.child({ module: "pro-snapshots" });
 const SNAP_INTERVAL_MS = 5 * 60_000;
 const STARTUP_DELAY_MS = 40_000;
 
+const MILESTONES = [
+  { mult: 2,   hitCol: "hit_2x",   atCol: "hit_2x_at"   },
+  { mult: 3,   hitCol: "hit_3x",   atCol: "hit_3x_at"   },
+  { mult: 5,   hitCol: "hit_5x",   atCol: "hit_5x_at"   },
+  { mult: 10,  hitCol: "hit_10x",  atCol: "hit_10x_at"  },
+  { mult: 100, hitCol: "hit_100x", atCol: "hit_100x_at" },
+] as const;
+
 async function snapshotOnce(): Promise<void> {
   try {
     const rows = await db.execute(sql`
@@ -31,6 +41,8 @@ async function snapshotOnce(): Promise<void> {
         pc.called_intel_score,
         pc.called_kol_count,
         pc.called_smart_count,
+        -- milestone flags (read to avoid overwriting already-set ones)
+        pc.hit_2x,   pc.hit_3x,   pc.hit_5x,   pc.hit_10x,   pc.hit_100x,
         t.market_cap_usd             AS current_mc,
         t.holder_kol_count           AS kol_count,
         t.holder_smart_count         AS smart_count,
@@ -53,6 +65,8 @@ async function snapshotOnce(): Promise<void> {
       called_mc_usd: string | null; prev_ath: number | null;
       called_intel_score: number | null;
       called_kol_count: number | null; called_smart_count: number | null;
+      hit_2x: boolean | null; hit_3x: boolean | null; hit_5x: boolean | null;
+      hit_10x: boolean | null; hit_100x: boolean | null;
       current_mc: string | null; kol_count: number | null;
       smart_count: number | null; intel_score: number | null;
       liquidity_usd: string | null;
@@ -94,6 +108,24 @@ async function snapshotOnce(): Promise<void> {
         secRatTraderAmtRate:  r.sec_rat_trader_amt_rate,
       });
 
+      // Build milestone SET clause — only update flags not yet set
+      const existingFlags: Record<string, boolean | null> = {
+        hit_2x:   r.hit_2x,
+        hit_3x:   r.hit_3x,
+        hit_5x:   r.hit_5x,
+        hit_10x:  r.hit_10x,
+        hit_100x: r.hit_100x,
+      };
+      const milestoneUpdates: string[] = [];
+      for (const m of MILESTONES) {
+        if (!existingFlags[m.hitCol] && newAth >= m.mult) {
+          milestoneUpdates.push(`${m.hitCol} = true, ${m.atCol} = NOW()`);
+        }
+      }
+      const milestoneClause = milestoneUpdates.length > 0
+        ? ", " + milestoneUpdates.join(", ")
+        : "";
+
       // Insert snapshot row
       await db.execute(sql`
         INSERT INTO pro_snapshots (pro_call_id, token_id, mc_usd, kol_count, smart_count, intel_score, ath_multiple)
@@ -105,14 +137,15 @@ async function snapshotOnce(): Promise<void> {
         )
       `);
 
-      // Update running ATH + pro_score + quality_label
+      // Update running ATH + pro_score + quality_label + any new milestones
       await db.execute(sql`
         UPDATE pro_calls
         SET
-          ath_multiple   = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
+          ath_multiple     = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
           last_snapshot_at = NOW(),
-          pro_score      = ${proScore},
-          quality_label  = ${qualityLabel}
+          pro_score        = ${proScore},
+          quality_label    = ${qualityLabel}
+          ${sql.raw(milestoneClause)}
         WHERE id = ${r.pro_call_id}
       `);
 

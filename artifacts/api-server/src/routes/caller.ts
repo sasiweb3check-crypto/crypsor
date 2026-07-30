@@ -24,27 +24,19 @@ const MIN_CALLED_MC = 5000;
 
 router.get("/caller/stats", async (req, res) => {
   try {
+    // Use pro_calls for accurate win-rate — ath_multiple is anchored to called_mc_usd.
+    // Scoped to caller-tier threshold (intel >= 90) matching MIN_INTEL above.
     const result = await db.execute(sql`
-      WITH called AS (
-        SELECT DISTINCT ON (token_id)
-          token_id,
-          market_cap_usd::numeric AS called_mc
-        FROM token_intel_log
-        WHERE intelligence_score >= ${MIN_INTEL}
-          AND (holder_kol_count >= 1 OR holder_smart_count >= 1)
-          AND market_cap_usd::numeric >= ${MIN_CALLED_MC}
-        ORDER BY token_id, computed_at ASC
-      )
       SELECT
-        COUNT(*)::int                                            AS total,
-        COUNT(CASE WHEN t.ath_gain_pct > 0 THEN 1 END)::int    AS win,
-        COUNT(CASE WHEN t.ath_gain_pct >= 100 THEN 1 END)::int  AS x2,
-        COUNT(CASE WHEN t.ath_gain_pct >= 200 THEN 1 END)::int  AS x3,
-        COUNT(CASE WHEN t.ath_gain_pct >= 400 THEN 1 END)::int  AS x5,
-        ROUND(MIN(t.ath_gain_pct)::numeric, 1)                  AS min_ath,
-        ROUND(MAX(t.ath_gain_pct)::numeric, 1)                  AS max_ath
-      FROM called c
-      JOIN tracked_tokens t ON t.id = c.token_id
+        COUNT(*)::int                                              AS total,
+        COUNT(CASE WHEN ath_multiple >= 2   THEN 1 END)::int      AS win,
+        COUNT(CASE WHEN ath_multiple >= 2   THEN 1 END)::int      AS x2,
+        COUNT(CASE WHEN ath_multiple >= 3   THEN 1 END)::int      AS x3,
+        COUNT(CASE WHEN ath_multiple >= 5   THEN 1 END)::int      AS x5,
+        ROUND((MIN(ath_multiple) - 1)::numeric * 100, 1)          AS min_ath,
+        ROUND((MAX(ath_multiple) - 1)::numeric * 100, 1)          AS max_ath
+      FROM pro_calls
+      WHERE called_intel_score >= ${MIN_INTEL}
     `);
     const row = (result.rows[0] ?? {}) as Record<string, unknown>;
     const total = Number(row.total ?? 0);
@@ -232,8 +224,9 @@ router.get("/caller/history", async (req, res) => {
       };
     });
 
-    // Drop tokens currently flagged as dump risk
-    const filtered = results.filter(t => t.postmortemLabel !== "DUMP_WARNING");
+    // History shows ALL ever-called tokens regardless of current MC or postmortem label.
+    // (Live tokens endpoint keeps the MC filter; history is permanent.)
+    const filtered = results;
 
     filtered.sort((a, b) => {
       let diff = 0;

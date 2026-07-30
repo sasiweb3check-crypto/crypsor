@@ -1,8 +1,9 @@
 /**
  * Pro Caller Routes
  *
- * GET /api/pro/stats    — aggregate performance (hit rates from called MC)
- * GET /api/pro/history  — pro-called tokens with quality scores + run status
+ * GET /api/pro/stats         — aggregate performance (hit rates from called MC)
+ * GET /api/pro/history       — pro-called tokens with quality scores + run status
+ * GET /api/pro/token/:id     — single token's pro call record (milestones, entry point)
  *
  * Quality labels  (Pro Score thresholds)
  *   very_good  ≥ 75
@@ -25,22 +26,22 @@ router.get("/pro/stats", async (_req, res) => {
   try {
     const result = await db.execute(sql`
       SELECT
-        -- All stats scoped to quality tokens only (very_good + good Pro Score).
-        -- Non-quality tokens are silenced everywhere — stats, UI, and alerts.
-        COUNT(*)::int                                              AS total,
-        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS win,
-        COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int   AS x1,
-        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int   AS x2,
-        COUNT(CASE WHEN pc.ath_multiple >= 3   THEN 1 END)::int   AS x3,
-        COUNT(CASE WHEN pc.ath_multiple >= 5   THEN 1 END)::int   AS x5,
-        COUNT(CASE WHEN pc.ath_multiple >= 10  THEN 1 END)::int   AS x10,
-        COUNT(CASE WHEN pc.ath_multiple >= 100 THEN 1 END)::int   AS x100,
-        COUNT(CASE WHEN pc.ath_multiple >= 200 THEN 1 END)::int   AS x200,
-        ROUND(MAX(pc.ath_multiple)::numeric, 2)                   AS best_ath,
-        COUNT(CASE WHEN pc.quality_label = 'very_good' THEN 1 END)::int AS very_good_count,
-        COUNT(CASE WHEN pc.quality_label = 'good'      THEN 1 END)::int AS good_count
+        -- Quality-scoped counts (very_good + good only)
+        COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int           AS total,
+        -- All-time total regardless of current quality label
+        COUNT(*)::int                                                                  AS total_all_time,
+        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS win,
+        COUNT(CASE WHEN ath_multiple >= 1.5 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x1,
+        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x2,
+        COUNT(CASE WHEN ath_multiple >= 3   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x3,
+        COUNT(CASE WHEN ath_multiple >= 5   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x5,
+        COUNT(CASE WHEN ath_multiple >= 10  AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x10,
+        COUNT(CASE WHEN ath_multiple >= 100 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x100,
+        COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
+        ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
+        COUNT(CASE WHEN quality_label = 'very_good' THEN 1 END)::int                  AS very_good_count,
+        COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count
       FROM pro_calls pc
-      WHERE pc.quality_label IN ('very_good', 'good')
     `);
 
     const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
@@ -49,6 +50,7 @@ router.get("/pro/stats", async (_req, res) => {
 
     res.json({
       total,
+      totalAllTime:   Number(row.total_all_time ?? 0),
       winRate:        total > 0 ? Math.round((win / total) * 100) : 0,
       x1Count:        Number(row.x1   ?? 0),
       x2Count:        Number(row.x2   ?? 0),
@@ -77,7 +79,7 @@ router.get("/pro/history", async (req, res) => {
     // quality filter: 'all' | 'quality' (very_good + good only) | 'very_good'
     const quality = (req.query.quality as string) ?? "quality";
 
-    // Load all pro_calls with latest snapshot + security data
+    // Load all pro_calls with latest snapshot + security data + milestones
     const callRows = await db.execute(sql`
       SELECT
         pc.id              AS pro_call_id,
@@ -92,6 +94,12 @@ router.get("/pro/history", async (req, res) => {
         pc.last_snapshot_at AS snap_at,
         pc.pro_score,
         pc.quality_label,
+        -- milestone flags + timestamps
+        pc.hit_2x,  pc.hit_2x_at,
+        pc.hit_3x,  pc.hit_3x_at,
+        pc.hit_5x,  pc.hit_5x_at,
+        pc.hit_10x, pc.hit_10x_at,
+        pc.hit_100x,pc.hit_100x_at,
         -- latest snapshot for MC/kol/intel
         ps.mc_usd          AS snap_mc,
         ps.kol_count       AS snap_kol,
@@ -132,6 +140,11 @@ router.get("/pro/history", async (req, res) => {
       called_kol_smart_score: number | null;
       ath_multiple: number | null; snap_at: string | null;
       pro_score: number | null; quality_label: string | null;
+      hit_2x: boolean | null; hit_2x_at: string | null;
+      hit_3x: boolean | null; hit_3x_at: string | null;
+      hit_5x: boolean | null; hit_5x_at: string | null;
+      hit_10x: boolean | null; hit_10x_at: string | null;
+      hit_100x: boolean | null; hit_100x_at: string | null;
       snap_mc: string | null; snap_kol: number | null;
       snap_smart: number | null; snap_intel: number | null;
       address: string; chain: string; name: string | null; symbol: string | null;
@@ -205,6 +218,12 @@ router.get("/pro/history", async (req, res) => {
         currentSmart:   call.snap_smart ?? call.called_smart_count ?? 0,
         currentIntel:   call.snap_intel ?? call.called_intel_score,
         lastSnapshotAt: call.snap_at ?? null,
+        // Milestone flags + timestamps
+        hit2x:    call.hit_2x    ?? false, hit2xAt:  call.hit_2x_at   ?? null,
+        hit3x:    call.hit_3x    ?? false, hit3xAt:  call.hit_3x_at   ?? null,
+        hit5x:    call.hit_5x    ?? false, hit5xAt:  call.hit_5x_at   ?? null,
+        hit10x:   call.hit_10x   ?? false, hit10xAt: call.hit_10x_at  ?? null,
+        hit100x:  call.hit_100x  ?? false, hit100xAt:call.hit_100x_at ?? null,
         // Security summary
         secMintRenounced:   call.sec_mint_renounced,
         secFreezeRenounced: call.sec_freeze_renounced,
@@ -236,6 +255,72 @@ router.get("/pro/history", async (req, res) => {
     res.json({ total: filtered.length, totalAll: results.length, tokens: filtered });
   } catch (err) {
     console.error("pro history error", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/pro/token/:tokenId ───────────────────────────────────────────────
+// Returns the pro call record for a single token, including milestone data.
+// Used by the token detail page to render the milestone tracker.
+
+router.get("/pro/token/:tokenId", async (req, res) => {
+  try {
+    const tokenId = parseInt(req.params.tokenId, 10);
+    if (isNaN(tokenId)) {
+      res.status(400).json({ error: "Invalid token ID" });
+      return;
+    }
+
+    const result = await db.execute(sql`
+      SELECT
+        pc.id,
+        pc.token_id,
+        pc.called_at,
+        pc.called_mc_usd,
+        pc.called_intel_score,
+        pc.called_kol_count,
+        pc.called_smart_count,
+        pc.ath_multiple,
+        pc.pro_score,
+        pc.quality_label,
+        pc.hit_2x,  pc.hit_2x_at,
+        pc.hit_3x,  pc.hit_3x_at,
+        pc.hit_5x,  pc.hit_5x_at,
+        pc.hit_10x, pc.hit_10x_at,
+        pc.hit_100x,pc.hit_100x_at,
+        pc.last_snapshot_at
+      FROM pro_calls pc
+      WHERE pc.token_id = ${tokenId}
+      LIMIT 1
+    `);
+
+    if (!result.rows.length) {
+      res.json({ proCall: null });
+      return;
+    }
+
+    const r = result.rows[0] as Record<string, unknown>;
+    res.json({
+      proCall: {
+        id:               Number(r.id),
+        calledAt:         r.called_at,
+        calledMcUsd:      r.called_mc_usd ? parseFloat(String(r.called_mc_usd)) : null,
+        calledIntelScore: r.called_intel_score != null ? Number(r.called_intel_score) : null,
+        calledKolCount:   Number(r.called_kol_count ?? 0),
+        calledSmartCount: Number(r.called_smart_count ?? 0),
+        athMultiple:      r.ath_multiple != null ? Number(r.ath_multiple) : null,
+        proScore:         r.pro_score != null ? Number(r.pro_score) : null,
+        qualityLabel:     r.quality_label ?? null,
+        lastSnapshotAt:   r.last_snapshot_at ?? null,
+        hit2x:    Boolean(r.hit_2x),    hit2xAt:  r.hit_2x_at   ?? null,
+        hit3x:    Boolean(r.hit_3x),    hit3xAt:  r.hit_3x_at   ?? null,
+        hit5x:    Boolean(r.hit_5x),    hit5xAt:  r.hit_5x_at   ?? null,
+        hit10x:   Boolean(r.hit_10x),   hit10xAt: r.hit_10x_at  ?? null,
+        hit100x:  Boolean(r.hit_100x),  hit100xAt:r.hit_100x_at ?? null,
+      },
+    });
+  } catch (err) {
+    console.error("pro token error", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });

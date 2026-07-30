@@ -55,6 +55,7 @@ interface ProToken {
 
 interface ProStats {
   total: number;
+  totalAllTime: number;
   winRate: number;
   x1Count: number;
   x2Count: number;
@@ -359,7 +360,7 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
 
 // ── Quality filter tab ────────────────────────────────────────────────────────
 
-type QualityFilter = "quality" | "very_good" | "good";
+type QualityFilter = "quality" | "very_good" | "good" | "all";
 
 function FilterTab({
   label, active, count, onClick,
@@ -437,11 +438,12 @@ export default function Caller() {
     staleTime:       20_000,
   });
 
-  const tokens      = historyData?.tokens ?? [];
-  // stats.total = quality tokens only (very_good + good) — the single source of truth
-  const totalCalled = stats?.total ?? 0;
-  const veryGoodCt  = stats?.veryGoodCount ?? 0;
-  const goodCt      = stats?.goodCount     ?? 0;
+  const tokens       = historyData?.tokens ?? [];
+  // stats.total = quality tokens only (very_good + good); totalAllTime = all ever called
+  const totalCalled  = stats?.total ?? 0;
+  const totalAllTime = stats?.totalAllTime ?? 0;
+  const veryGoodCt   = stats?.veryGoodCount ?? 0;
+  const goodCt       = stats?.goodCount     ?? 0;
 
   // Client-side sort on top of server sort (ensures stable ordering during transitions)
   const sorted = [...tokens].sort((a, b) => {
@@ -481,8 +483,15 @@ export default function Caller() {
           </p>
         </div>
         <div className="text-right">
-          <div className="text-[11px] font-black text-white">{totalCalled}</div>
-          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">quality</div>
+          <div className="flex items-baseline gap-1 justify-end">
+            <div className="text-[11px] font-black text-white">{totalCalled}</div>
+            {totalAllTime > totalCalled && (
+              <div className="text-[9px] text-[#484f58]">/ {totalAllTime}</div>
+            )}
+          </div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">
+            {totalAllTime > totalCalled ? "quality / all time" : "quality"}
+          </div>
         </div>
       </div>
 
@@ -519,6 +528,11 @@ export default function Caller() {
             label="✅ Good" active={qualityFilter === "good"}
             count={goodCt}
             onClick={() => setQF("good")}
+          />
+          <FilterTab
+            label="All Time" active={qualityFilter === "all"}
+            count={totalAllTime}
+            onClick={() => setQF("all")}
           />
         </div>
 

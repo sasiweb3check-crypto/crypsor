@@ -180,6 +180,24 @@ interface HistoryResponse {
   fetchedAt: string;
 }
 
+interface ProCallData {
+  id: number;
+  calledAt: string;
+  calledMcUsd: number | null;
+  calledIntelScore: number | null;
+  calledKolCount: number;
+  calledSmartCount: number;
+  athMultiple: number | null;
+  proScore: number | null;
+  qualityLabel: string | null;
+  lastSnapshotAt: string | null;
+  hit2x: boolean;  hit2xAt: string | null;
+  hit3x: boolean;  hit3xAt: string | null;
+  hit5x: boolean;  hit5xAt: string | null;
+  hit10x: boolean; hit10xAt: string | null;
+  hit100x: boolean;hit100xAt: string | null;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function gainColor(pct: number | null | undefined) {
@@ -210,6 +228,7 @@ function StatusBadge({ status }: { status?: string }) {
     watch:    "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20",
     revived:  "text-[#a78bfa] bg-[#a78bfa]/10 border-[#a78bfa]/20",
     archive:  "text-[#8b949e] bg-[#8b949e]/10 border-[#30363d]",
+    dumped:   "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20",
     migrated: "text-[#a78bfa] bg-[#a78bfa]/10 border-[#a78bfa]/20",
   };
   return (
@@ -419,6 +438,17 @@ export default function TokenDetailPage() {
     },
     enabled:  id != null && activeTab === "postmortem",
     staleTime: 2 * 60_000,
+  });
+
+  const { data: proCallData } = useQuery<{ proCall: ProCallData | null }>({
+    queryKey: ["token-pro-call", id],
+    queryFn:  async () => {
+      const r = await fetch(`${BASE}api/pro/token/${id}`);
+      if (!r.ok) throw new Error(`Pro call API error ${r.status}`);
+      return r.json();
+    },
+    enabled:  id != null,
+    staleTime: 5 * 60_000,
   });
 
   const handleRefresh = useCallback(async () => {
@@ -762,6 +792,90 @@ export default function TokenDetailPage() {
           </div>
         </div>
       )}
+
+      {/* ── Pro Caller Milestone Tracker ───────────────────────────────────── */}
+      {proCallData?.proCall && (() => {
+        const pc = proCallData.proCall;
+        const milestones = [
+          { label: "2×",   hit: pc.hit2x,   at: pc.hit2xAt,   color: "#22c55e" },
+          { label: "3×",   hit: pc.hit3x,   at: pc.hit3xAt,   color: "#22c55e" },
+          { label: "5×",   hit: pc.hit5x,   at: pc.hit5xAt,   color: "#f59e0b" },
+          { label: "10×",  hit: pc.hit10x,  at: pc.hit10xAt,  color: "#f59e0b" },
+          { label: "100×", hit: pc.hit100x, at: pc.hit100xAt, color: "#ef4444" },
+        ];
+        const qualityColor = pc.qualityLabel === "very_good" ? "#f59e0b"
+          : pc.qualityLabel === "good" ? "#3b82f6" : "#484f58";
+        return (
+          <div className="border border-[#21262d] bg-[#0d1117] p-4 space-y-3">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5" style={{ color: "#f59e0b" }} />
+                <span className="text-[10px] font-black uppercase tracking-widest text-white">Pro Call</span>
+                {pc.qualityLabel && (
+                  <span
+                    className="px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider"
+                    style={{ color: qualityColor, background: `${qualityColor}15`, border: `1px solid ${qualityColor}30` }}
+                  >
+                    {pc.qualityLabel === "very_good" ? "⭐ Very Good" : pc.qualityLabel === "good" ? "✅ Good" : pc.qualityLabel}
+                  </span>
+                )}
+                {pc.proScore != null && (
+                  <span className="text-[9px] font-bold" style={{ color: qualityColor }}>
+                    {pc.proScore.toFixed(0)} score
+                  </span>
+                )}
+              </div>
+              <div className="text-right">
+                <div className="text-[9px] text-[#484f58]">Called {formatTimeAgo(pc.calledAt)} ago</div>
+                {pc.calledMcUsd != null && (
+                  <div className="text-[9px] font-bold text-[#8b949e]">@ {formatMarketCap(String(pc.calledMcUsd))}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Milestone timeline */}
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[8px] text-[#484f58] uppercase tracking-widest mr-1">Milestones</span>
+              {milestones.map(m => (
+                <div
+                  key={m.label}
+                  className="flex flex-col items-center px-2 py-1.5 rounded-lg"
+                  style={{
+                    background: m.hit ? `${m.color}12` : "#161b22",
+                    border: `1px solid ${m.hit ? m.color + "40" : "#30363d"}`,
+                    minWidth: 44,
+                  }}
+                >
+                  <span
+                    className="text-[10px] font-black tabular-nums"
+                    style={{ color: m.hit ? m.color : "#30363d" }}
+                  >
+                    {m.label}
+                  </span>
+                  <span className="text-[7px] text-[#484f58] mt-0.5">
+                    {m.hit && m.at ? formatTimeAgo(m.at) : m.hit ? "✓" : "—"}
+                  </span>
+                </div>
+              ))}
+              {pc.athMultiple != null && (
+                <>
+                  <div className="w-px h-6 mx-1" style={{ background: "#21262d" }} />
+                  <div
+                    className="flex flex-col items-center px-2 py-1.5 rounded-lg"
+                    style={{ background: "#f59e0b12", border: "1px solid #f59e0b30", minWidth: 52 }}
+                  >
+                    <span className="text-[10px] font-black text-[#f59e0b]">
+                      {pc.athMultiple >= 2 ? `${pc.athMultiple.toFixed(1)}×` : `+${((pc.athMultiple - 1) * 100).toFixed(0)}%`}
+                    </span>
+                    <span className="text-[7px] text-[#484f58] mt-0.5">ATH</span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Tabs: Holders | Traders | Security */}
       <div>

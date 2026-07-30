@@ -10,11 +10,17 @@ const MC = {
   ACTIVE:         50_000,  // >= $50K  → active
   WATCH:          10_000,  // >= $10K  → watch
   ARCHIVE:         4_500,  // < $4.5K  → triggers archive (with hysteresis)
-  REVIVE_WATCH:    8_000,  // archived → revived (watch-level recovery)
-  REVIVE_ACTIVE:  20_000,  // archived → active directly (skips revived)
+  REVIVE_WATCH:    8_000,  // archived/dumped → revived (watch-level recovery)
+  REVIVE_ACTIVE:  20_000,  // archived/dumped → active directly (skips revived)
 } as const;
 
-type LifecycleStatus = "new" | "active" | "watch" | "archive" | "revived";
+// ── Dump detection thresholds ─────────────────────────────────────────────────
+// A token is "dumped" when it has had a meaningful run (ATH >= $10K) but has
+// since drawn down >75% from that ATH. This is smarter than the MC-floor archive.
+const DUMP_ATH_FLOOR   = 10_000; // ATH must have been at least $10K for dump to trigger
+const DUMP_DRAWDOWN    = 0.75;   // >75% decline from ATH → dumped
+
+type LifecycleStatus = "new" | "active" | "watch" | "archive" | "revived" | "dumped";
 
 // ── In-memory hysteresis: consecutive archive-eligible check counts ────────────
 // A token must be below MC.ARCHIVE for ARCHIVE_CONSECUTIVE_REQUIRED consecutive
@@ -23,7 +29,18 @@ type LifecycleStatus = "new" | "active" | "watch" | "archive" | "revived";
 const ARCHIVE_CONSECUTIVE_REQUIRED = 2;
 const archivePending = new Map<number, number>(); // tokenId → consecutive count
 
-function computeNextStatus(mc: number, current: string): LifecycleStatus | "pending_archive" {
+function computeNextStatus(
+  mc: number,
+  athMc: number,
+  current: string,
+): LifecycleStatus | "pending_archive" {
+  // ── Dumped tokens: check revival thresholds (same as archive) ─────────────
+  if (current === "dumped") {
+    if (mc >= MC.REVIVE_ACTIVE) return "active";
+    if (mc >= MC.REVIVE_WATCH)  return "revived";
+    return "dumped";
+  }
+
   // ── Archived tokens: check revival thresholds ──────────────────────────────
   if (current === "archive") {
     if (mc >= MC.REVIVE_ACTIVE) return "active";   // strong recovery → skip revived
@@ -31,7 +48,13 @@ function computeNextStatus(mc: number, current: string): LifecycleStatus | "pend
     return "archive";                               // still below revival floor
   }
 
-  // ── All other statuses: standard tier rules ────────────────────────────────
+  // ── Dump zone: >75% drawdown from a meaningful ATH ────────────────────────
+  // Only triggers when the token had a real run (ATH >= DUMP_ATH_FLOOR).
+  if (athMc >= DUMP_ATH_FLOOR && mc < athMc * (1 - DUMP_DRAWDOWN)) {
+    return "dumped";
+  }
+
+  // ── Standard tier rules ───────────────────────────────────────────────────
   if (mc >= MC.ACTIVE) return "active";
   if (mc >= MC.WATCH)  return "watch";
 
@@ -60,7 +83,9 @@ async function applyLifecycle(e: PriceUpdatedEvent): Promise<void> {
 
     if (!rows.length) return;
     const { status: prev, athMarketCapUsd } = rows[0];
-    const decision = computeNextStatus(mc, prev);
+    // Compute current ATH before decision so dump-detection can use it
+    const athMcCurrent = athMarketCapUsd ? parseFloat(athMarketCapUsd) : 0;
+    const decision = computeNextStatus(mc, athMcCurrent, prev);
 
     // ── Hysteresis gate for archive ───────────────────────────────────────────
     let next: LifecycleStatus;
@@ -69,8 +94,7 @@ async function applyLifecycle(e: PriceUpdatedEvent): Promise<void> {
       if (count < ARCHIVE_CONSECUTIVE_REQUIRED) {
         archivePending.set(e.tokenId, count);
         // Still accumulating — update ATH only, no status change
-        const athMc = athMarketCapUsd ? parseFloat(athMarketCapUsd) : 0;
-        const newAth = mc > athMc ? String(mc) : (athMarketCapUsd ?? String(mc));
+        const newAth = mc > athMcCurrent ? String(mc) : (athMarketCapUsd ?? String(mc));
         await db.update(tracked_tokens)
           .set({ athMarketCapUsd: newAth })
           .where(eq(tracked_tokens.id, e.tokenId));
@@ -86,8 +110,7 @@ async function applyLifecycle(e: PriceUpdatedEvent): Promise<void> {
       next = decision;
     }
 
-    const athMc  = athMarketCapUsd ? parseFloat(athMarketCapUsd) : 0;
-    const newAth = mc > athMc ? String(mc) : (athMarketCapUsd ?? String(mc));
+    const newAth = mc > athMcCurrent ? String(mc) : (athMarketCapUsd ?? String(mc));
 
     // ── Status transition ─────────────────────────────────────────────────────
     const statusChanged = next !== prev;
@@ -119,6 +142,7 @@ export function startLifecycleEngine() {
   });
   logger.info(
     `Lifecycle engine started — hysteresis: ${ARCHIVE_CONSECUTIVE_REQUIRED} consecutive checks to archive ` +
+    `| dump: >${DUMP_DRAWDOWN * 100}% drawdown from ATH>=$${(DUMP_ATH_FLOOR / 1000).toFixed(0)}K ` +
     `| revival: >=$${(MC.REVIVE_WATCH / 1000).toFixed(0)}K→revived, >=$${(MC.REVIVE_ACTIVE / 1000).toFixed(0)}K→active`,
   );
 }
