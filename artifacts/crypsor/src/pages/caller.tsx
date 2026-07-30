@@ -223,33 +223,49 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
           </div>
         </div>
 
-        {/* ATH from called MC */}
-        <div className="shrink-0 text-right">
-          <div className={cn(
-            "text-sm font-black tabular-nums leading-none",
-            (t.athMultiple ?? 1) >= 2 ? "text-[#22c55e]"
-            : (t.athMultiple ?? 1) >= 1.1 ? "text-[#f59e0b]"
-            : "text-[#484f58]"
-          )}>
-            {fmtMultiple(t.athMultiple)}
+        {/* GAIN + ATH from called MC — both shown side-by-side */}
+        <div className="shrink-0 flex items-center gap-2.5">
+          {/* Current gain */}
+          <div className="text-right">
+            <div className={cn(
+              "text-sm font-black tabular-nums leading-none",
+              t.gainSinceCall == null ? "text-[#484f58]"
+              : t.gainSinceCall > 0   ? "text-[#22c55e]"
+              : t.gainSinceCall < 0   ? "text-[#ef4444]"
+              : "text-[#8b949e]",
+            )}>
+              {t.gainSinceCall != null ? fmtGain(t.gainSinceCall) : "—"}
+            </div>
+            <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">Gain</div>
           </div>
-          <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">ATH</div>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-[#21262d]" />
+
+          {/* ATH multiple */}
+          <div className="text-right">
+            <div className={cn(
+              "text-sm font-black tabular-nums leading-none",
+              (t.athMultiple ?? 1) >= 2   ? "text-[#22c55e]"
+              : (t.athMultiple ?? 1) >= 1.1 ? "text-[#f59e0b]"
+              : "text-[#484f58]",
+            )}>
+              {fmtMultiple(t.athMultiple)}
+            </div>
+            <div className="text-[7px] text-[#30363d] uppercase tracking-widest mt-0.5">ATH</div>
+          </div>
         </div>
       </div>
 
       {/* Row 2: MC called → now + actions */}
       <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-1 text-[9px] font-mono min-w-0 flex-1">
+          <span className="text-[#484f58] text-[8px] uppercase tracking-widest mr-0.5">MC</span>
           <span className="text-[#484f58]">{t.calledMcUsd ? formatCompactUsd(t.calledMcUsd) : "—"}</span>
           <span className="text-[#30363d]">→</span>
           <span className={cn("font-bold", gainColor(t.gainSinceCall))}>
             {t.currentMcUsd ? formatCompactUsd(t.currentMcUsd) : "—"}
           </span>
-          {t.gainSinceCall != null && (
-            <span className={cn("text-[8px] ml-0.5", gainColor(t.gainSinceCall))}>
-              ({fmtGain(t.gainSinceCall)})
-            </span>
-          )}
         </div>
 
         {/* Action buttons */}

@@ -48,19 +48,24 @@ function deriveRunStatus(
 
 router.get("/pro/stats", async (_req, res) => {
   try {
+    // Only count calls where the token's current MC is still >= $5 000.
+    // Tokens that have since died (MC < 5K) are excluded from win-rate math
+    // so the rate reflects performance on tokens that actually had a fair run.
     const result = await db.execute(sql`
       SELECT
         COUNT(*)::int                                            AS total,
-        COUNT(CASE WHEN ath_multiple >= 2   THEN 1 END)::int    AS win,
-        COUNT(CASE WHEN ath_multiple >= 1.5 THEN 1 END)::int    AS x1,
-        COUNT(CASE WHEN ath_multiple >= 2   THEN 1 END)::int    AS x2,
-        COUNT(CASE WHEN ath_multiple >= 3   THEN 1 END)::int    AS x3,
-        COUNT(CASE WHEN ath_multiple >= 5   THEN 1 END)::int    AS x5,
-        COUNT(CASE WHEN ath_multiple >= 10  THEN 1 END)::int    AS x10,
-        COUNT(CASE WHEN ath_multiple >= 100 THEN 1 END)::int    AS x100,
-        COUNT(CASE WHEN ath_multiple >= 200 THEN 1 END)::int    AS x200,
-        ROUND(MAX(ath_multiple)::numeric, 2)                    AS best_ath
-      FROM pro_calls
+        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int AS win,
+        COUNT(CASE WHEN pc.ath_multiple >= 1.5 THEN 1 END)::int AS x1,
+        COUNT(CASE WHEN pc.ath_multiple >= 2   THEN 1 END)::int AS x2,
+        COUNT(CASE WHEN pc.ath_multiple >= 3   THEN 1 END)::int AS x3,
+        COUNT(CASE WHEN pc.ath_multiple >= 5   THEN 1 END)::int AS x5,
+        COUNT(CASE WHEN pc.ath_multiple >= 10  THEN 1 END)::int AS x10,
+        COUNT(CASE WHEN pc.ath_multiple >= 100 THEN 1 END)::int AS x100,
+        COUNT(CASE WHEN pc.ath_multiple >= 200 THEN 1 END)::int AS x200,
+        ROUND(MAX(pc.ath_multiple)::numeric, 2)                 AS best_ath
+      FROM pro_calls pc
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      WHERE CAST(NULLIF(t.market_cap_usd, '') AS NUMERIC) >= 5000
     `);
 
     const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
@@ -92,7 +97,7 @@ router.get("/pro/history", async (req, res) => {
     const sort  = (req.query.sort  as string) ?? "calledAt";
     const order = (req.query.order as string) ?? "desc";
 
-    // Load all pro_calls with latest snapshot data
+    // Load all pro_calls with latest snapshot data — only tokens with MC >= $5 000
     const callRows = await db.execute(sql`
       SELECT
         pc.id              AS pro_call_id,
@@ -111,6 +116,8 @@ router.get("/pro/history", async (req, res) => {
         snap.intel_score   AS snap_intel,
         snap.snapshot_at   AS snap_at
       FROM pro_calls pc
+      JOIN tracked_tokens tt ON tt.id = pc.token_id
+        AND CAST(NULLIF(tt.market_cap_usd, '') AS NUMERIC) >= 5000
       LEFT JOIN LATERAL (
         SELECT mc_usd, kol_count, smart_count, intel_score, snapshot_at
         FROM pro_snapshots
