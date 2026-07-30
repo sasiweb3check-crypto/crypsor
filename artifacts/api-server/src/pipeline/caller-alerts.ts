@@ -1,18 +1,16 @@
 /**
- * Caller Alerts — Quality-gated
+ * Caller Alerts
  *
- * Only tokens in the pro_calls pool with quality_label IN ('very_good', 'good')
- * (Pro Score ≥ 55) receive alerts.  All other tokens are silenced.
+ * Two alert types — no signal/postmortem label alerts at all:
  *
- * Two independent, DB-persisted (restart-safe) alert types:
+ *   1. New Call alert — fires exactly ONCE when a token first enters pro_calls
+ *      with quality_label = 'very_good'.  Persisted via lastAlertedLabel =
+ *      '__NEW_CALL__'.  Label changes after this point are ignored — no
+ *      duplicate call alerts, ever.
  *
- *   1. Signal-change alert — fires when the postmortem label (GOOD_SETUP /
- *      SURPRISE_SIGNAL / DUMP_WARNING) differs from the last-alerted label.
- *      Persisted in `lastAlertedLabel` — never re-fires the same label.
- *
- *   2. Achievement alert — fires once per milestone tier (2×/3×/5×/10×)
- *      when the token's ATH multiple crosses it.  Persisted in
- *      `athAlertMultiple` — each tier fires exactly once, ever.
+ *   2. Milestone alert — fires once each at 2×, 5×, 10× ATH from called MC,
+ *      for any quality token (very_good + good).  Persisted in
+ *      athAlertMultiple — each tier fires exactly once, ever.
  *
  * Cycle: every 5 minutes, 35 s after startup.
  */
@@ -22,14 +20,13 @@ import { tracked_tokens, settings } from "@workspace/db";
 import { sql, eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
-import {
-  derivePostmortemLabel, POSTMORTEM_META,
-  ACHIEVEMENT_TIERS, type PostmortemLabel,
-} from "../lib/postmortem";
 
 const log = logger.child({ module: "caller-alerts" });
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1_000;
+
+// Only 2×, 5×, 10× — no 3× noise
+const ALERT_MILESTONES = [2, 5, 10] as const;
 
 // ── Telegram helpers ──────────────────────────────────────────────────────────
 
@@ -94,11 +91,6 @@ function socialLines(socials: Socials): string[] {
   return lines;
 }
 
-function qualityBadge(label: string, score: number): string {
-  if (label === "very_good") return `⭐ Very Good \\(${Math.round(score)}\\)`;
-  return `✅ Good \\(${Math.round(score)}\\)`;
-}
-
 // ── Token type ────────────────────────────────────────────────────────────────
 
 interface QualityToken {
@@ -110,7 +102,6 @@ interface QualityToken {
   intelligenceScore: number | null;
   holderKolCount: number;
   holderSmartCount: number;
-  compositeFactors: string[] | null;
   lastAlertedLabel: string | null;
   athAlertMultiple: number;
   rawMetadata: unknown;
@@ -120,7 +111,6 @@ interface QualityToken {
   calledIntelScore: number | null;
   calledKolCount: number;
   calledSmartCount: number;
-  // ath_multiple from pro_calls — relative to called_mc_usd (correct base for gain alerts)
   athMultiple: number | null;
   proScore: number;
   qualityLabel: string;
@@ -128,22 +118,16 @@ interface QualityToken {
 
 // ── Message builders ──────────────────────────────────────────────────────────
 
-function buildSignalMessage(
-  t: QualityToken,
-  label: PostmortemLabel,
-): string {
-  const icon = { GOOD_SETUP: "🟢", SURPRISE_SIGNAL: "🟡", DUMP_WARNING: "🔴", NONE: "⚪" }[label];
-  const meta   = POSTMORTEM_META[label];
+function buildNewCallMessage(t: QualityToken): string {
   const name   = esc(t.name   ?? "Unknown");
   const symbol = esc(t.symbol ?? "?");
 
   const lines = [
-    `${icon} *${name}* \\(${symbol}\\) → *${esc(meta.label)}*`,
-    esc(meta.description),
+    `⭐ *${name}* \\(${symbol}\\) — *New Pro Call*`,
     ``,
-    `${qualityBadge(t.qualityLabel, t.proScore)} · Intel: *${Math.round(t.intelligenceScore ?? 0)}*`,
-    `KOL: ${t.holderKolCount} · Smart: ${t.holderSmartCount}`,
-    `MC at call: *${esc(fmtMc(t.calledMcUsd))}*`,
+    `Very Good · Score: *${Math.round(t.proScore)}*`,
+    `Intel: *${Math.round(t.calledIntelScore ?? t.intelligenceScore ?? 0)}* · KOL: ${t.calledKolCount} · Smart: ${t.calledSmartCount}`,
+    `Called MC: *${esc(fmtMc(t.calledMcUsd))}*`,
     ``,
     `\`${t.address}\``,
     ``,
@@ -156,43 +140,19 @@ function buildSignalMessage(
   return lines.join("\n");
 }
 
-function buildAchievementMessage(
-  t: QualityToken,
-  tier: number,
-): string {
+function buildMilestoneMessage(t: QualityToken, tier: number): string {
   const name   = esc(t.name   ?? "Unknown");
   const symbol = esc(t.symbol ?? "?");
   const athMc  = t.calledMcUsd ? parseFloat(t.calledMcUsd) * tier : null;
 
+  const tierEmoji: Record<number, string> = { 2: "🔥", 5: "🚀", 10: "💎" };
+  const emoji = tierEmoji[tier] ?? "🏆";
+
   const lines = [
-    `🏆 *${name}* \\(${symbol}\\) hit *${tier}×* from call\\!`,
+    `${emoji} *${name}* \\(${symbol}\\) hit *${tier}×* from call\\!`,
     ``,
-    `${qualityBadge(t.qualityLabel, t.proScore)}`,
-    `Called at: *${esc(fmtMc(t.calledMcUsd))}* → ATH est\\.: *${esc(fmtMc(athMc))}*`,
+    `Called: *${esc(fmtMc(t.calledMcUsd))}* → ATH est\\.: *${esc(fmtMc(athMc))}*`,
     `Intel: *${Math.round(t.calledIntelScore ?? t.intelligenceScore ?? 0)}* · KOL: ${t.calledKolCount} · Smart: ${t.calledSmartCount}`,
-    ``,
-    `\`${t.address}\``,
-    ``,
-    `🔗 [View on GMGN](${gmgnLink(t.chain, t.address)})`,
-    ...(() => {
-      const s = socialLines(extractSocials(t.rawMetadata));
-      return s.length ? ["", ...s] : [];
-    })(),
-  ];
-  return lines.join("\n");
-}
-
-function buildNewCallMessage(t: QualityToken): string {
-  const icon   = t.qualityLabel === "very_good" ? "⭐" : "✅";
-  const name   = esc(t.name   ?? "Unknown");
-  const symbol = esc(t.symbol ?? "?");
-
-  const lines = [
-    `${icon} *${name}* \\(${symbol}\\) — *New Pro Call*`,
-    ``,
-    `${qualityBadge(t.qualityLabel, t.proScore)}`,
-    `Intel: *${Math.round(t.calledIntelScore ?? 0)}* · KOL: ${t.calledKolCount} · Smart: ${t.calledSmartCount}`,
-    `Called MC: *${esc(fmtMc(t.calledMcUsd))}*`,
     ``,
     `\`${t.address}\``,
     ``,
@@ -214,9 +174,8 @@ async function checkAndAlert(): Promise<void> {
     return;
   }
 
-  // Fetch quality tokens (Very Good + Good) with their pro_calls data.
-  // Use pc.ath_multiple (relative to called_mc_usd) for milestone detection —
-  // NOT tracked_tokens.ath_gain_pct which is relative to original detection MC.
+  // Fetch quality tokens with their pro_calls data.
+  // ath_multiple is relative to called_mc_usd (correct base for milestone detection).
   const rows = await db.execute(sql`
     SELECT
       t.id,
@@ -227,7 +186,6 @@ async function checkAndAlert(): Promise<void> {
       t.intelligence_score    AS "intelligenceScore",
       t.holder_kol_count      AS "holderKolCount",
       t.holder_smart_count    AS "holderSmartCount",
-      t.composite_factors     AS "compositeFactors",
       t.last_alerted_label    AS "lastAlertedLabel",
       t.ath_alert_multiple    AS "athAlertMultiple",
       t.raw_metadata          AS "rawMetadata",
@@ -246,79 +204,68 @@ async function checkAndAlert(): Promise<void> {
 
   const tokens = rows.rows as QualityToken[];
 
-  let signalSent = 0;
-  let achievementSent = 0;
+  let newCallSent   = 0;
+  let milestoneSent = 0;
 
   for (const t of tokens) {
-    // ── 0. Initial "New Pro Call" alert — fires exactly once per token ───────
-    // Fires when lastAlertedLabel is null (token never alerted).
-    // Sets sentinel '__NEW_CALL__' so this never re-fires and signal/achievement
-    // alerts still work normally on subsequent cycles.
-    if (t.lastAlertedLabel === null) {
+    // ── Alert 1: New Call — very_good only, fires exactly once ──────────────
+    // lastAlertedLabel = null  → call alert not yet sent → fire now (very_good only)
+    // lastAlertedLabel = any   → already sent → skip entirely (no label-change alerts)
+    if (t.lastAlertedLabel === null && t.qualityLabel === "very_good") {
       try {
         await sendTelegram(creds, buildNewCallMessage(t));
         await db.update(tracked_tokens)
           .set({ lastAlertedLabel: "__NEW_CALL__", lastAlertedAt: new Date() })
           .where(eq(tracked_tokens.id, t.id));
-        signalSent++;
+        newCallSent++;
         log.info(
-          { tokenId: t.id, symbol: t.symbol, qualityLabel: t.qualityLabel, proScore: t.proScore },
+          { tokenId: t.id, symbol: t.symbol, proScore: t.proScore },
           "New pro call alert sent",
         );
         await new Promise(r => setTimeout(r, 300));
       } catch (err) {
         log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send new call alert");
       }
-      // Skip signal/achievement checks this cycle — handle next cycle
+      // Skip milestone check this cycle — handle next cycle
       continue;
     }
 
-    // ── 1. Signal (postmortem label) transition ──────────────────────────────
-    const currentLabel = derivePostmortemLabel(t.compositeFactors);
-    if (currentLabel !== "NONE" && currentLabel !== t.lastAlertedLabel) {
-      try {
-        await sendTelegram(creds, buildSignalMessage(t, currentLabel));
-        await db.update(tracked_tokens)
-          .set({ lastAlertedLabel: currentLabel, lastAlertedAt: new Date() })
-          .where(eq(tracked_tokens.id, t.id));
-        signalSent++;
-        log.info(
-          { tokenId: t.id, symbol: t.symbol, from: t.lastAlertedLabel, to: currentLabel, proScore: t.proScore },
-          "Quality signal alert sent",
-        );
-        await new Promise(r => setTimeout(r, 300));
-      } catch (err) {
-        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send signal alert");
-      }
+    // If call alert never sent for a 'good' token (or still null), mark sentinel
+    // silently so it doesn't keep re-evaluating and never sends a 'good' call alert.
+    if (t.lastAlertedLabel === null && t.qualityLabel === "good") {
+      await db.update(tracked_tokens)
+        .set({ lastAlertedLabel: "__NEW_CALL__" })
+        .where(eq(tracked_tokens.id, t.id))
+        .catch(() => {});
+      // Still process milestones below
     }
 
-    // ── 2. Achievement (ATH ×) milestone ────────────────────────────────────
-    // Use pro_calls.ath_multiple (relative to called_mc_usd) — correct base.
-    // tracked_tokens.ath_gain_pct uses original detection MC, not call MC.
+    // ── Alert 2: Milestones — 2×, 5×, 10×, fires once per tier ─────────────
     const athX     = t.athMultiple ?? 1;
-    const nextTier = [...ACHIEVEMENT_TIERS]
+    const nextTier = [...ALERT_MILESTONES]
       .filter(tier => tier > (t.athAlertMultiple ?? 0) && athX >= tier)
       .sort((a, b) => b - a)[0];
+
     if (nextTier) {
       try {
-        await sendTelegram(creds, buildAchievementMessage(t, nextTier));
+        await sendTelegram(creds, buildMilestoneMessage(t, nextTier));
         await db.update(tracked_tokens)
           .set({ athAlertMultiple: nextTier })
           .where(eq(tracked_tokens.id, t.id));
-        achievementSent++;
+        milestoneSent++;
         log.info(
-          { tokenId: t.id, symbol: t.symbol, tier: nextTier, athX, proScore: t.proScore },
-          "Quality achievement alert sent",
+          { tokenId: t.id, symbol: t.symbol, tier: nextTier, athX },
+          "Milestone alert sent",
         );
         await new Promise(r => setTimeout(r, 300));
       } catch (err) {
-        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send achievement alert");
+        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send milestone alert");
       }
     }
   }
 
-  if (signalSent > 0 || achievementSent > 0) {
-    log.info({ signalSent, achievementSent }, "Quality alerts cycle complete");
+  if (newCallSent > 0 || milestoneSent > 0) {
+    log.info({ newCallSent, milestoneSent }, "Alerts cycle complete");
   }
 }
 
@@ -331,5 +278,5 @@ export function startCallerAlerts(): void {
       .finally(() => setTimeout(loop, CHECK_INTERVAL_MS));
   };
   setTimeout(loop, 35_000);
-  log.info("Caller alerts ready (5 min cycle · quality-gated: very_good + good only)");
+  log.info("Caller alerts ready (5 min cycle · very_good new calls + 2×/5×/10× milestones)");
 }
