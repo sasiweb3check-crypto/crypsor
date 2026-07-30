@@ -117,6 +117,10 @@ router.get("/pro/history", async (req, res) => {
         t.market_cap_usd,
         t.liquidity_usd,
         t.raw_metadata,
+        -- live KOL/smart from tracked_tokens (most up-to-date; snapshots may be 0 if
+        -- taken before GMGN data arrived — tracked_tokens is always the current truth)
+        t.holder_kol_count   AS live_kol,
+        t.holder_smart_count AS live_smart,
         t.sec_is_honeypot,
         t.sec_mint_renounced,
         t.sec_freeze_renounced,
@@ -152,6 +156,7 @@ router.get("/pro/history", async (req, res) => {
       hit_100x: boolean | null; hit_100x_at: string | null;
       snap_mc: string | null; snap_kol: number | null;
       snap_smart: number | null; snap_intel: number | null;
+      live_kol: number | null; live_smart: number | null;
       address: string; chain: string; name: string | null; symbol: string | null;
       logo_uri: string | null; image_path: string | null;
       status: string; market_cap_usd: string | null;
@@ -219,8 +224,12 @@ router.get("/pro/history", async (req, res) => {
         runStatus,
         proScore,
         qualityLabel,
-        currentKol:     call.snap_kol   ?? call.called_kol_count ?? 0,
-        currentSmart:   call.snap_smart ?? call.called_smart_count ?? 0,
+        // Use the best available KOL/smart value across three sources.
+        // ?? only skips null/undefined — not 0 — so snapshots written before
+        // GMGN data arrived (kol_count = 0) would silently hide real called values.
+        // Taking the max ensures a non-zero value from any source wins.
+        currentKol:   Math.max(call.live_kol ?? 0, call.snap_kol ?? 0, call.called_kol_count ?? 0),
+        currentSmart: Math.max(call.live_smart ?? 0, call.snap_smart ?? 0, call.called_smart_count ?? 0),
         currentIntel:   call.snap_intel ?? call.called_intel_score,
         lastSnapshotAt: call.snap_at ?? null,
         // Milestone flags + timestamps
