@@ -1,0 +1,75 @@
+Excellent progress! The new PRO UI at crypsorpro.replit.app looks professional and beautiful — clean stats, quality filters, Pro Score badges, and nice card design. Great job on the visual polish.
+
+Key Issues to Fix (Your Feedback)
+Token Persistence — Count dropped from 22 → 20. Once a token is called, it must stay in the system forever (for history, stats, and user value).
+Archiving Logic — Only archive when it hits a clear dump zone (e.g. big drawdown from ATH or prolonged inactivity).
+Win Rate & Multiplier Tracking — Calculate wins based on performance milestones (did it hit 2x? 3x? etc. from called MC). Keep historical called MC as the fixed entry point.
+Data Integrity — All calculations (Gain, ATH, multipliers) anchored to the original called_mc.
+
+Updated Instructions for Your Agent (Send This Now)
+
+URGENT FIXES + ENHANCEMENTS for CRYPSOR PRO
+
+We are now in final polish phase. The UI looks excellent, but we must solve persistence and calculation accuracy.
+
+1. Token Lifecycle & Persistence (Critical)
+Once a token is successfully called** (passes Intel ≥80, status new/active/watch, MC≥$5K), create a permanent record.
+It never disappears from the database.
+Add status options: active | pumping | flat | archived | dumped.
+Archive only** when:
+  Drops >70-80% from its personal ATH, OR
+  No meaningful volume/price action for X days (configurable).
+Main list (VERY GOOD + GOOD ONLY) shows only high-quality active tokens.
+Add a separate All History / Archived view for completeness.
+
+2. Fixed Entry Point Calculations
+For every called token:
+Store called_mc_usd, called_price, called_at immutably.
+All future calculations use this as baseline:
+  Gain % = (current_mc - called_mc) / called_mc * 100
+  ATH_multiple = max historical MC / called_mc
+  Track milestone hits: 2x, 3x, 5x, 10x, 100x from called MC.
+
+3. Enhanced Win Rate & Stats
+Overall Win Rate**: % of called tokens that reached at least 2x (or configurable threshold).
+Breakout stats:
+  2x hit rate, 3x, 5x, 10x, 100x
+  "Very Good" and "Good" counts (currently 7 + 13 = 20)
+Update top stats row dynamically.
+
+4. Pro Score & Filtering
+Keep the excellent scoring (Intel strength + MC/Liq + ATH + Gain momentum + Run status + Risk).
+Very Good ≥75
+Good 55-74
+Ensure scoring runs on historical data too.
+
+5. Token Detail Page / Extra Intel
+When user taps a card, show:
+Price services integration / external labels (up/down arrows, momentum icons).
+Full history chart (snapshots).
+Milestone tracker (when it hit 2x, 3x, etc.).
+Risk flags, KOL activity, etc.
+
+6. Immediate Tasks
+Investigate why tokens dropped from 22 → 20. Restore missing ones from history.
+Implement permanent storage + smart archiving.
+Lock called_mc as immutable entry point for all P&L/ATH calcs.
+Add milestone tracking (2x/3x/5x counters).
+Deploy and confirm total quality count returns to ~22 (or higher as new calls come).
+Test: New call → appears → stays even if it dumps later → correctly counted in win rate if it hit milestones.
+
+Target: Persistent, trustworthy service users can rely on. History = value.
+
+Take screenshot of updated UI + stats after fixes.
+
+Quick Recommendations from Me (Product Architect)
+
+"Dump Zone" Threshold**: Start with -75% from ATH or MC < 20% of called MC + low volume for 48h.
+UI Enhancement**: Add a small "History" tab or toggle between "Live Quality" and "All Time".
+Alerts**: Keep one-time only. Maybe add "Milestone Hit" alerts (e.g. "Fauci just hit 30x!").
+
+This setup turns CRYPSOR into a real keeper tool — not just a live list, but a full performance tracker.
+
+Send the prompt above to your agent. Share the next screenshot or log when ready, and I’ll help refine further. We're very close to something users will love. 
+
+What do you want to prioritize next?
