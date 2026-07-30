@@ -1,10 +1,12 @@
 /**
  * Caller Routes
  *
- * GET /api/caller/tokens       — tokens currently qualifying (intel >= 90, KOL/Smart >= 1)
- * GET /api/caller/history      — all tokens that ever qualified, with performance + postmortem + socials
- * GET /api/caller/stats        — aggregate win-rate stats (2X/3X/5X counts from ATH gain)
- * POST /api/caller/telegram/test — send a test message
+ * GET  /api/caller/tokens           — tokens currently qualifying (intel >= 90, KOL/Smart >= 1)
+ * GET  /api/caller/history          — all tokens that ever qualified, with performance + postmortem + socials
+ * GET  /api/caller/stats            — aggregate win-rate stats (2X/3X/5X counts from ATH gain)
+ * POST /api/caller/kol-smart-sync   — backfill KOL/smart data in intel log + pro_calls + snapshots
+ * GET  /api/caller/kol-smart-status — live view of KOL/smart counts for high-score tokens
+ * POST /api/caller/telegram/test    — send a test message
  */
 
 import { Router } from "express";
@@ -241,6 +243,176 @@ router.get("/caller/history", async (req, res) => {
     res.json({ total: filtered.length, tokens: filtered });
   } catch (err) {
     console.error("caller history error", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── POST /api/caller/kol-smart-sync ──────────────────────────────────────────
+//
+// Root-cause fix for the KOL/Smart data gap:
+//
+// Timeline of the bug:
+//   1. New token detected → intelligence engine scores it immediately (KOL/smart = 0
+//      because GMGN holder scan hasn't run yet) → logs entry with kol = 0.
+//   2. GMGN data arrives → tracked_tokens.holder_kol_count updated to 3, 5, etc.
+//   3. Next intel cycle writes a NEW log entry with correct KOL/smart — but
+//      the pro-scanner picks the EARLIEST qualifying entry per token.
+//      If that earliest entry had kol = 0, the token never enters pro_calls.
+//
+// This endpoint:
+//   Step 1 — Updates token_intel_log entries (intel >= 80, kol = 0) where
+//             tracked_tokens now has kol/smart > 0. Backfills the counts.
+//   Step 2 — Updates pro_calls where called_kol/smart = 0 but tracked_tokens
+//             now has real data (fixes existing calls showing K0 S0).
+//   Step 3 — Updates latest pro_snapshots kol/smart = 0 entries (fixes
+//             currentKol / currentSmart shown in the frontend token rows).
+//   Step 4 — Runs the pro-scanner INSERT to register any tokens that now
+//             qualify after the log backfill.
+
+router.post("/caller/kol-smart-sync", async (_req, res) => {
+  try {
+    // ── Step 1: backfill token_intel_log ───────────────────────────────────
+    const logUpdate = await db.execute(sql`
+      UPDATE token_intel_log l
+      SET
+        holder_kol_count   = t.holder_kol_count,
+        holder_smart_count = t.holder_smart_count,
+        kol_smart_score    = LEAST(100.0, GREATEST(0.0, (
+          (t.holder_kol_count::float / NULLIF(t.holder_count, 0)) * 250.0 +
+          (t.holder_smart_count::float / NULLIF(t.holder_count, 0)) * 200.0
+        )::real))
+      FROM tracked_tokens t
+      WHERE l.token_id = t.id
+        AND (l.holder_kol_count IS NULL OR l.holder_kol_count = 0)
+        AND (l.holder_smart_count IS NULL OR l.holder_smart_count = 0)
+        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
+        AND l.intelligence_score >= 80
+    `);
+
+    // ── Step 2: backfill pro_calls.called_kol/smart ────────────────────────
+    const callsUpdate = await db.execute(sql`
+      UPDATE pro_calls pc
+      SET
+        called_kol_count     = t.holder_kol_count,
+        called_smart_count   = t.holder_smart_count,
+        called_kol_smart_score = LEAST(100.0, GREATEST(0.0, (
+          (t.holder_kol_count::float / NULLIF(t.holder_count, 0)) * 250.0 +
+          (t.holder_smart_count::float / NULLIF(t.holder_count, 0)) * 200.0
+        )::real))
+      FROM tracked_tokens t
+      WHERE pc.token_id = t.id
+        AND (pc.called_kol_count IS NULL OR pc.called_kol_count = 0)
+        AND (pc.called_smart_count IS NULL OR pc.called_smart_count = 0)
+        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
+    `);
+
+    // ── Step 3: backfill latest pro_snapshots kol/smart ───────────────────
+    const snapUpdate = await db.execute(sql`
+      UPDATE pro_snapshots ps
+      SET
+        kol_count   = t.holder_kol_count,
+        smart_count = t.holder_smart_count
+      FROM tracked_tokens t
+      JOIN pro_calls pc ON pc.token_id = t.id
+      WHERE ps.pro_call_id = pc.id
+        AND ps.id = (
+          SELECT id FROM pro_snapshots s2
+          WHERE s2.pro_call_id = pc.id
+          ORDER BY s2.snapshot_at DESC
+          LIMIT 1
+        )
+        AND (ps.kol_count IS NULL OR ps.kol_count = 0)
+        AND (ps.smart_count IS NULL OR ps.smart_count = 0)
+        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
+    `);
+
+    // ── Step 4: register newly qualifying tokens (pro-scanner pass) ────────
+    const MIN_INTEL = 80;
+    const MIN_MC    = 5_000;
+    const proInsert = await db.execute(sql`
+      INSERT INTO pro_calls (
+        token_id, called_at, called_mc_usd, called_intel_score,
+        called_kol_count, called_smart_count, called_kol_smart_score
+      )
+      SELECT DISTINCT ON (l.token_id)
+        l.token_id,
+        l.computed_at,
+        l.market_cap_usd,
+        l.intelligence_score,
+        l.holder_kol_count,
+        l.holder_smart_count,
+        l.kol_smart_score
+      FROM token_intel_log l
+      WHERE l.intelligence_score        >= ${MIN_INTEL}
+        AND (l.holder_kol_count >= 1 OR l.holder_smart_count >= 1)
+        AND l.market_cap_usd::numeric   >= ${MIN_MC}
+        AND l.status_after IN ('new', 'active', 'watch')
+        AND NOT EXISTS (
+          SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id
+        )
+      ORDER BY l.token_id, l.computed_at ASC
+      ON CONFLICT (token_id) DO NOTHING
+    `);
+
+    const logUpdated   = Number((logUpdate   as unknown as { rowCount?: number }).rowCount ?? 0);
+    const callsUpdated = Number((callsUpdate as unknown as { rowCount?: number }).rowCount ?? 0);
+    const snapsUpdated = Number((snapUpdate  as unknown as { rowCount?: number }).rowCount ?? 0);
+    const newCalls     = Number((proInsert   as unknown as { rowCount?: number }).rowCount ?? 0);
+
+    console.log(`[kol-smart-sync] log=${logUpdated} calls=${callsUpdated} snaps=${snapsUpdated} new=${newCalls}`);
+    res.json({
+      ok: true,
+      logEntriesBackfilled: logUpdated,
+      proCallsBackfilled:   callsUpdated,
+      snapshotsBackfilled:  snapsUpdated,
+      newProCallsAdded:     newCalls,
+    });
+  } catch (err) {
+    console.error("kol-smart-sync error", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/caller/kol-smart-status ─────────────────────────────────────────
+// Live view: shows high-score tokens with their current KOL/smart counts from
+// tracked_tokens vs what's stored in the latest intel log entry + pro_calls.
+// Use this to verify the sync worked and to monitor the live pipeline.
+
+router.get("/caller/kol-smart-status", async (_req, res) => {
+  try {
+    const rows = await db.execute(sql`
+      SELECT
+        t.id,
+        t.name,
+        t.symbol,
+        t.market_cap_usd,
+        t.intelligence_score,
+        t.holder_kol_count     AS live_kol,
+        t.holder_smart_count   AS live_smart,
+        t.holder_count,
+        pc.id IS NOT NULL      AS in_pro_calls,
+        pc.called_kol_count    AS pc_kol,
+        pc.called_smart_count  AS pc_smart,
+        latest_log.holder_kol_count   AS log_kol,
+        latest_log.holder_smart_count AS log_smart,
+        latest_log.computed_at        AS log_at
+      FROM tracked_tokens t
+      LEFT JOIN pro_calls pc ON pc.token_id = t.id
+      LEFT JOIN LATERAL (
+        SELECT holder_kol_count, holder_smart_count, computed_at
+        FROM token_intel_log
+        WHERE token_id = t.id
+        ORDER BY computed_at DESC
+        LIMIT 1
+      ) latest_log ON true
+      WHERE t.intelligence_score >= 70
+        AND t.market_cap_usd::numeric >= 1000
+      ORDER BY t.intelligence_score DESC
+      LIMIT 100
+    `);
+    res.json({ tokens: rows.rows, total: rows.rows.length });
+  } catch (err) {
+    console.error("kol-smart-status error", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });

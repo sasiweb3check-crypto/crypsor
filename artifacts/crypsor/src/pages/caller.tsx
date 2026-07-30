@@ -55,7 +55,6 @@ interface ProToken {
 
 interface ProStats {
   total: number;
-  totalAllTime: number;
   winRate: number;
   x1Count: number;
   x2Count: number;
@@ -445,13 +444,12 @@ export default function Caller() {
     staleTime:       20_000,
   });
 
-  const tokens       = historyData?.tokens ?? [];
-  // stats.total = quality tokens only (very_good + good); totalAllTime = all ever called
-  const totalCalled  = stats?.total ?? 0;
-  const totalAllTime = stats?.totalAllTime ?? 0;
-  const veryGoodCt   = stats?.veryGoodCount ?? 0;
-  const goodCt       = stats?.goodCount     ?? 0;
-  const recentCt     = stats?.recentCount   ?? 0;
+  const tokens      = historyData?.tokens ?? [];
+  // stats.total = quality tokens only (very_good + good)
+  const totalCalled = stats?.total ?? 0;
+  const veryGoodCt  = stats?.veryGoodCount ?? 0;
+  const goodCt      = stats?.goodCount     ?? 0;
+  const recentCt    = stats?.recentCount   ?? 0;
 
   // Client-side sort — "recent" tab always sorts by calledAt DESC
   const sorted = [...tokens].sort((a, b) => {
@@ -494,15 +492,8 @@ export default function Caller() {
           </p>
         </div>
         <div className="text-right">
-          <div className="flex items-baseline gap-1 justify-end">
-            <div className="text-[11px] font-black text-white">{totalCalled}</div>
-            {totalAllTime > totalCalled && (
-              <div className="text-[9px] text-[#484f58]">/ {totalAllTime}</div>
-            )}
-          </div>
-          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">
-            {totalAllTime > totalCalled ? "quality / all time" : "quality"}
-          </div>
+          <div className="text-[11px] font-black text-white">{totalCalled}</div>
+          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">quality</div>
         </div>
       </div>
 
