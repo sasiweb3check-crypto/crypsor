@@ -4,7 +4,7 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Crosshair, LogOut, Plus, Target, Wallet } from "lucide-react";
+import { Crosshair, EyeOff, LogOut, Plus, Target, Wallet } from "lucide-react";
 import { TraderCompanion } from "@/components/trader/companion";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -20,6 +20,12 @@ import {
   type TraderBook,
   type TraderPosition,
 } from "@/lib/trader-book";
+import {
+  isWatched,
+  loadWatchlist,
+  toggleWatch,
+  type WatchedToken,
+} from "@/lib/trader-watchlist";
 import {
   fetchRunnerFeed,
   RUNNER_FEED_KEY,
@@ -160,13 +166,13 @@ export default function TraderPage() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [book, setBook] = useState<TraderBook>(() => loadBook());
+  const [watchlist, setWatchlist] = useState<WatchedToken[]>(() => loadWatchlist());
   const [focusId, setFocusId] = useState<string | null>(null);
   const [stake, setStake] = useState(50);
   const [target, setTarget] = useState(3);
-  const [pickId, setPickId] = useState<number | null>(null);
   const [justEntered, setJustEntered] = useState(false);
   const [justExited, setJustExited] = useState<{ multiple: number; symbol: string } | null>(null);
-  const [tab, setTab] = useState<"open" | "closed" | "candidates">("open");
+  const [tab, setTab] = useState<"open" | "closed" | "candidates" | "watching">("open");
 
   const { data: feedData, isLoading } = useQuery({
     queryKey: RUNNER_FEED_KEY,
@@ -219,7 +225,6 @@ export default function TraderPage() {
     setJustExited(null);
     setFocusId(next.positions[0]?.id ?? null);
     setTab("open");
-    setPickId(null);
     window.setTimeout(() => setJustEntered(false), 14_000);
     toast({ title: `Entered ${safeSymbol(t.symbol, t.address)}`, description: `Target ${target}× · stake $${stake}` });
   }
@@ -248,7 +253,8 @@ export default function TraderPage() {
           Your book. His watch.
         </h1>
         <p className="text-[var(--cryp-mute)] text-[13px] md:text-[14px] mt-2 max-w-2xl">
-          Place entries, hunt 3×+, bank exits. Dex watches the tape — observation snaps, heating, and what not to do.
+          Dex is an <span className="text-[var(--cryp-mint)]">auto-watcher</span>, not an auto-trader —
+          you place entries/exits. Hit Watch and he’ll keep the emoji news rolling on those tokens.
         </p>
       </header>
 
@@ -256,6 +262,7 @@ export default function TraderPage() {
         ctx={{
           book,
           feed,
+          watchlist,
           focus,
           justEntered,
           justExited,
@@ -319,7 +326,7 @@ export default function TraderPage() {
             />
           </label>
           <p className="text-[11px] text-[var(--cryp-mute)] pb-2 max-w-sm">
-            Paper stakes only. Dex won't let the system ping ENTRY before 5 snaps — match that discipline.
+            Paper stakes only. Dex comments 24/7 on watched + heating tokens — he never clicks Enter for you.
           </p>
         </div>
       </div>
@@ -327,6 +334,7 @@ export default function TraderPage() {
       <div className="flex gap-2 flex-wrap">
         {([
           ["open", `Open (${openPos.length})`],
+          ["watching", `Watching (${watchlist.length})`],
           ["closed", `Closed (${closedPos.length})`],
           ["candidates", "Candidates"],
         ] as const).map(([id, label]) => (
@@ -358,7 +366,7 @@ export default function TraderPage() {
           )}
           {candidates.map(t => {
             const snaps = t.runner.signals.snapCount ?? 0;
-            const selected = pickId === t.id;
+            const watching = isWatched(watchlist, t.id);
             return (
               <article key={t.id} className="desk-card p-4 fade-up">
                 <div className="flex items-start gap-3">
@@ -380,13 +388,16 @@ export default function TraderPage() {
                       <span className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">
                         {t.runner.phase} · {t.velocity.toFixed(2)}× · {snaps}/5 snaps
                       </span>
+                      {watching && (
+                        <span className="text-[9px] font-bold text-[var(--cryp-mint)]">👀 Dex watching</span>
+                      )}
                     </div>
                     <div className="text-[11px] text-[var(--cryp-mute)] mt-1 truncate">
                       {truncateAddress(t.address)} · MC {formatCompactUsd(t.currentMcUsd)}
                     </div>
                     {(t.runner.blockers ?? []).length > 0 && (
                       <div className="text-[11px] text-[var(--cryp-warn)] mt-1">
-                        Dex: {t.runner.blockers[0]}
+                        🛑 Dex: {t.runner.blockers[0]}
                       </div>
                     )}
                     <div className="flex gap-2 mt-3">
@@ -403,13 +414,80 @@ export default function TraderPage() {
                         className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5"
                         style={{
                           border: "1px solid var(--cryp-line)",
-                          color: selected ? "var(--cryp-mint)" : "var(--cryp-mute)",
+                          color: watching ? "var(--cryp-mint)" : "var(--cryp-mute)",
+                          background: watching ? "rgba(61,154,139,0.12)" : "transparent",
                         }}
-                        onClick={() => setPickId(selected ? null : t.id)}
+                        onClick={() => {
+                          const next = toggleWatch(watchlist, {
+                            tokenId: t.id,
+                            address: t.address,
+                            symbol: safeSymbol(t.symbol, t.address) || "?",
+                          });
+                          setWatchlist(next);
+                          toast({
+                            title: watching ? `Unwatched ${safeSymbol(t.symbol, t.address)}` : `Dex watching ${safeSymbol(t.symbol, t.address)}`,
+                            description: watching ? "Removed from news board" : "Emoji news unlocked 📰",
+                          });
+                        }}
                       >
-                        <Crosshair className="w-3 h-3" /> Watch
+                        {watching ? <EyeOff className="w-3 h-3" /> : <Crosshair className="w-3 h-3" />}
+                        {watching ? "Unwatch" : "Watch"}
                       </button>
                     </div>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === "watching" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {watchlist.length === 0 && (
+            <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">
+              Nothing on Dex’s board yet. Open Candidates → Watch — he’ll keep the 📰 news flowing.
+            </div>
+          )}
+          {watchlist.map(w => {
+            const t = feed.find(x => x.id === w.tokenId);
+            return (
+              <article key={w.tokenId} className="desk-card p-4 fade-up">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-display text-[14px] font-bold">{w.symbol}</div>
+                    {t ? (
+                      <div className="text-[11px] text-[var(--cryp-mute)] mt-1">
+                        {t.runner.phase} · vel {t.velocity.toFixed(2)}× · {t.runner.signals.snapCount ?? 0}/5 snaps · MC {formatCompactUsd(t.currentMcUsd)}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-[var(--cryp-mute)] mt-1">Waiting for live tape…</div>
+                    )}
+                    {t?.runner.reasons?.[0] && (
+                      <div className="text-[12px] mt-2 text-[var(--cryp-text)]">
+                        📰 {t.runner.reasons[0]}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 shrink-0">
+                    {t && (
+                      <button
+                        type="button"
+                        className="text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5"
+                        style={{ background: "var(--cryp-teal)", color: "var(--cryp-ink)" }}
+                        onClick={() => handleEnter(t)}
+                      >
+                        Enter
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5 text-[var(--cryp-mute)]"
+                      style={{ border: "1px solid var(--cryp-line)" }}
+                      onClick={() => setWatchlist(toggleWatch(watchlist, w))}
+                    >
+                      Unwatch
+                    </button>
                   </div>
                 </div>
               </article>

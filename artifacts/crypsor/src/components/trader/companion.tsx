@@ -1,10 +1,12 @@
 /**
- * Dex — animated desk companion (watcher / observer / trader).
+ * Dex — animated watcher companion with live emoji news ticker.
+ * Not an auto-trader — he watches and comments; you place entries/exits.
  */
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   companionBanter,
+  companionNewsFeed,
   companionSpeak,
   type CompanionContext,
   type CompanionMood,
@@ -30,15 +32,18 @@ export function TraderCompanion({
   const [banter, setBanter] = useState<string | null>(null);
 
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 4_000);
+    const id = window.setInterval(() => setNow(Date.now()), 3_000);
     return () => window.clearInterval(id);
   }, []);
 
-  const line = companionSpeak({ ...ctx, now });
+  const fullCtx = { ...ctx, now };
+  const line = companionSpeak(fullCtx);
+  const feed = companionNewsFeed(fullCtx, 7);
   const color = MOOD_COLOR[line.mood];
+  const watchCount = ctx.watchlist?.length ?? 0;
 
   return (
-    <div className={cn("desk-card p-4 md:p-5 fade-up", className)}>
+    <div className={cn("desk-card p-4 md:p-5 fade-up overflow-hidden", className)}>
       <div className="flex items-start gap-3 md:gap-4">
         <button
           type="button"
@@ -66,7 +71,7 @@ export function TraderCompanion({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display text-[11px] font-bold tracking-[0.18em] uppercase" style={{ color }}>
-              {line.mood}
+              {line.emoji ?? ""} {line.mood}
             </span>
             {line.tip && (
               <span
@@ -76,9 +81,20 @@ export function TraderCompanion({
                 {line.tip}
               </span>
             )}
+            <span className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">
+              Auto-watch · not auto-trade
+            </span>
+            {watchCount > 0 && (
+              <span
+                className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                style={{ color: "var(--cryp-mint)", background: "rgba(61,154,139,0.16)" }}
+              >
+                👀 {watchCount} watched
+              </span>
+            )}
           </div>
           <p
-            key={`${line.mood}-${line.text.slice(0, 24)}-${Math.floor(now / 12_000)}`}
+            key={`${line.mood}-${line.text.slice(0, 28)}-${Math.floor(now / 8_000)}`}
             className="dex-bubble mt-2 text-[13px] md:text-[14px] leading-relaxed text-[var(--cryp-text)]"
           >
             {banter ?? line.text}
@@ -89,10 +105,36 @@ export function TraderCompanion({
               className="mt-2 text-[10px] tracking-widest uppercase text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]"
               onClick={() => setBanter(null)}
             >
-              Back to desk read
+              Back to live news
             </button>
           )}
         </div>
+      </div>
+
+      <div className="mt-4 pt-3" style={{ borderTop: "1px solid var(--cryp-line)" }}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="font-display text-[10px] font-bold tracking-[0.2em] uppercase text-[var(--cryp-teal)]">
+            📰 Live news
+          </span>
+          <span className="text-[10px] text-[var(--cryp-mute)]">
+            refreshes while you watch
+          </span>
+        </div>
+        <ul className="dex-news space-y-2 max-h-[180px] overflow-y-auto no-scrollbar">
+          {feed.map((n, i) => (
+            <li
+              key={`${n.at}-${i}-${n.text.slice(0, 20)}`}
+              className="dex-news-row text-[12px] leading-snug"
+              style={{
+                color: i === 0 ? "var(--cryp-text)" : "var(--cryp-mute)",
+                animationDelay: `${i * 0.04}s`,
+              }}
+            >
+              <span className="mr-1.5">{n.emoji ?? "•"}</span>
+              <span>{n.text}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
