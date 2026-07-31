@@ -6,6 +6,7 @@ import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { AppShell } from '@/components/layout';
 import CallsPage from '@/pages/calls';
+import CallDetailPage from '@/pages/call-detail';
 import Settings from '@/pages/settings';
 import OpsPage from '@/pages/ops';
 import NotFound from '@/pages/not-found';
@@ -39,6 +40,7 @@ function Router() {
     <AppShell>
       <Switch>
         <Route path="/" component={CallsPage} />
+        <Route path="/calls/:id" component={CallDetailPage} />
         <Route path="/ops" component={OpsPage} />
         <Route path="/settings" component={Settings} />
         {/* Legacy surfaces removed from product — redirect home */}
@@ -46,7 +48,7 @@ function Router() {
         <Route path="/trader" component={RedirectHome} />
         <Route path="/pro" component={RedirectHome} />
         <Route path="/caller" component={RedirectHome} />
-        <Route path="/tokens/:id" component={RedirectHome} />
+        <Route path="/tokens/:id" component={CallDetailPage} />
         <Route path="/dashboard" component={RedirectHome} />
         <Route path="/tokens" component={RedirectHome} />
         <Route path="/wallets" component={RedirectHome} />

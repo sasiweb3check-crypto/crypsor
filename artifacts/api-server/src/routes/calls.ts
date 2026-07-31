@@ -472,6 +472,25 @@ router.get("/calls/stats", async (_req, res) => {
   }
 });
 
+export type CallBuyer = {
+  walletId: number;
+  address: string;
+  label: string;
+  boughtAt: string | null;
+  winRate: number | null;
+  amount: string | null;
+  priceUsd: string | null;
+};
+
+export type CallSnap = {
+  at: string | null;
+  mcUsd: number | null;
+  athMultiple: number | null;
+  gainPct: number | null;
+  kol: number | null;
+  smart: number | null;
+};
+
 router.get("/calls/token/:tokenId", async (req, res) => {
   try {
     const tokenId = parseInt(req.params.tokenId, 10);
@@ -479,9 +498,95 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       res.status(400).json(apiFail("Invalid token id", "bad_id"));
       return;
     }
-    const { cards } = await loadCallCards(320);
-    const card = cards.find(c => c.id === tokenId) ?? null;
-    res.json(apiOk({ card }));
+
+    let card: CallCard | null = null;
+    try {
+      const pack = await loadCallCards(200);
+      card = pack.cards.find(c => c.id === tokenId) ?? null;
+    } catch {
+      const pack = await loadCallCardsLite(120);
+      card = pack.cards.find(c => c.id === tokenId) ?? null;
+    }
+
+    // Direct fetch if not in ranked window
+    if (!card) {
+      const pack = await loadCallCardsLite(200);
+      card = pack.cards.find(c => c.id === tokenId) ?? null;
+    }
+
+    // Buyers = YOUR sensor wallets in walletdatasource that bought this token
+    // (Helius scan → token_buys). Not all on-chain holders.
+    let buyers: CallBuyer[] = [];
+    try {
+      const buyRows = await db.execute(sql`
+        SELECT
+          w.id AS wallet_id,
+          w.address,
+          w.label,
+          tb.bought_at,
+          tb.amount,
+          tb.price_usd,
+          wp.win_rate
+        FROM token_buys tb
+        JOIN walletdatasource w ON w.id = tb.wallet_id
+        LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
+        WHERE tb.token_id = ${tokenId}
+        ORDER BY tb.bought_at DESC NULLS LAST
+        LIMIT 40
+      `);
+      buyers = (buyRows.rows as Array<Record<string, unknown>>).map(r => ({
+        walletId: Number(r.wallet_id),
+        address: String(r.address),
+        label: String(r.label ?? "wallet"),
+        boughtAt: toIsoUtc(r.bought_at),
+        winRate: r.win_rate != null ? Number(r.win_rate) : null,
+        amount: r.amount != null ? String(r.amount) : null,
+        priceUsd: r.price_usd != null ? String(r.price_usd) : null,
+      }));
+    } catch (err) {
+      console.warn("calls token buyers query failed", err);
+    }
+
+    let snaps: CallSnap[] = [];
+    try {
+      const snapRows = await db.execute(sql`
+        SELECT ps.snapshot_at, ps.mc_usd, ps.ath_multiple, ps.gain_pct,
+               ps.kol_count, ps.smart_count
+        FROM pro_snapshots ps
+        WHERE ps.token_id = ${tokenId}
+        ORDER BY ps.snapshot_at DESC NULLS LAST
+        LIMIT 24
+      `);
+      snaps = (snapRows.rows as Array<Record<string, unknown>>).map(r => ({
+        at: toIsoUtc(r.snapshot_at),
+        mcUsd: r.mc_usd != null ? parseFloat(String(r.mc_usd)) : null,
+        athMultiple: r.ath_multiple != null ? Number(r.ath_multiple) : null,
+        gainPct: r.gain_pct != null ? Number(r.gain_pct) : null,
+        kol: r.kol_count != null ? Number(r.kol_count) : null,
+        smart: r.smart_count != null ? Number(r.smart_count) : null,
+      })).reverse();
+    } catch {
+      snaps = [];
+    }
+
+    if (!card && buyers.length === 0) {
+      res.status(404).json(apiFail("Call not found", "not_found"));
+      return;
+    }
+
+    // Patch walletBuys from live buyer list when card exists
+    if (card && buyers.length > 0) {
+      card = { ...card, walletBuys: new Set(buyers.map(b => b.walletId)).size };
+    }
+
+    res.setHeader("Cache-Control", "private, max-age=6");
+    res.json(apiOk({
+      card,
+      buyers,
+      snaps,
+      walletBuysNote:
+        "Wallet buys = distinct wallets from YOUR tracked list (walletdatasource) that bought this token via Helius scan → token_buys. Not GMGN holders.",
+    }));
   } catch (err) {
     console.error("calls token error", err);
     res.status(500).json(apiFail("Internal server error", "calls_token"));

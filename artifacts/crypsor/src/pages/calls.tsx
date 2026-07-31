@@ -5,6 +5,7 @@
  */
 import { useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import {
   Copy, ExternalLink, Flame, Zap, Trophy, TrendingUp, ChevronDown, ChevronUp,
 } from "lucide-react";
@@ -84,6 +85,7 @@ function LiveBar({ now, peak }: { now: number; peak: number }) {
 
 function CallCardView({ c }: { c: CallCard }) {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [imgBroken, setImgBroken] = useState(false);
   const [open, setOpen] = useState(true);
   const imgSrc = safeImageUrl(c.logoUri, c.address, c.symbol);
@@ -106,8 +108,21 @@ function CallCardView({ c }: { c: CallCard }) {
     toast({ title: "Copied", description: truncateAddress(c.address) });
   };
 
+  const openDetail = () => setLocation(`/calls/${c.id}`);
+
   return (
-    <article className="call-card fade-up">
+    <article
+      className="call-card fade-up cursor-pointer transition-transform duration-200 active:scale-[0.99] hover:-translate-y-0.5"
+      onClick={openDetail}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDetail();
+        }
+      }}
+    >
       <div className="flex items-start gap-3">
         {!imgBroken ? (
           <img
@@ -214,7 +229,7 @@ function CallCardView({ c }: { c: CallCard }) {
         type="button"
         className="w-full flex items-center justify-between mt-4 pt-3 text-[10px] font-bold uppercase tracking-widest text-[var(--cryp-mute)]"
         style={{ borderTop: "1px solid var(--cryp-line)" }}
-        onClick={() => setOpen(o => !o)}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
       >
         Live metrics
         {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -263,7 +278,7 @@ function CallCardView({ c }: { c: CallCard }) {
           className="call-action"
           onClick={(e) => {
             e.stopPropagation();
-            const text = `$${sym} · ${c.athMultiple.toFixed(1)}× ATH · Call ${formatCompactUsd(c.calledMcUsd)} → Now ${formatCompactUsd(c.currentMcUsd)}\n${c.address}`;
+            const text = `$${sym} · ${athX.toFixed(1)}× ATH · Call ${formatCompactUsd(c.calledMcUsd)} → Now ${formatCompactUsd(c.currentMcUsd)}\n${c.address}`;
             void navigator.clipboard.writeText(text);
             toast({ title: "Copied call", description: `$${sym}` });
           }}
