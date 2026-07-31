@@ -22,7 +22,7 @@ import {
 interface Socials { twitter?: string; telegram?: string; website?: string; }
 type RunStatus   = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
 type QualityLabel = "very_good" | "good" | "below";
-type SortKey     = "proScore" | "calledAt" | "ath" | "gain" | "intel" | "calledMc";
+type SortKey     = "proScore" | "calledAt" | "ath" | "gain" | "intel" | "calledMc" | "survival";
 
 interface ProToken {
   id: number;
@@ -38,12 +38,16 @@ interface ProToken {
   calledKol: number;
   calledSmart: number;
   calledKolSmartScore: number | null;
+  calledHolderVelocity?: number | null;
   currentMcUsd: number | null;
   gainSinceCall: number | null;
   athMultiple: number | null;
   runStatus: RunStatus;
   proScore: number;
   qualityLabel: QualityLabel;
+  survivalScore?: number | null;
+  entryTier?: string | null;
+  scoreVersion?: string | null;
   currentKol: number;
   currentSmart: number;
   currentIntel: number | null;
@@ -64,6 +68,7 @@ interface ProStats {
   x3Count: number;
   x5Count: number;
   x10Count: number;
+  x10PlusCount?: number;
   x100Count: number;
   x200Count: number;
   bestAth: number | null;
@@ -71,6 +76,7 @@ interface ProStats {
   goodCount: number;
   qualityCount: number;
   recentCount: number;
+  avgSurvival?: number | null;
 }
 
 // ── Run-status badge ──────────────────────────────────────────────────────────
@@ -352,7 +358,9 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Age</div>
+          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">
+            Survive{t.survivalScore != null ? ` · ${Math.round(t.survivalScore)}` : ""}
+          </div>
           <div className="flex items-center justify-end gap-1">
             <span className="text-[9px] text-[#8b949e]">{formatTimeAgo(t.calledAt)}</span>
             <SecurityIcons
@@ -429,8 +437,8 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
 
 // ── Quality filter tab ────────────────────────────────────────────────────────
 
-// "recent" = quality tokens sorted by calledAt DESC (Recently Added section)
-type QualityFilter = "quality" | "very_good" | "good" | "recent";
+// ATH section filters: x5 (5–10×), x10 (10–20×), x10plus (≥20× "10× more")
+type QualityFilter = "quality" | "very_good" | "good" | "recent" | "x5" | "x10" | "x10plus" | "sections";
 
 function FilterTab({
   label, active, count, onClick,
@@ -466,8 +474,8 @@ export default function Caller() {
   const [, navigate] = useLocation();
   const [sortKey, setSortKey]         = useState<SortKey>("proScore");
   const [sortAsc, setSortAsc]         = useState(false);
-  // Default: quality filter (very_good + good). "all" tab removed — non-quality tokens are silenced.
-  const [qualityFilter, setQF]        = useState<QualityFilter>("quality");
+  // Default: three ATH sections (5× / 10× / 10×+)
+  const [qualityFilter, setQF]        = useState<QualityFilter>("sections");
 
   function setSort(key: SortKey) {
     if (key === sortKey) setSortAsc(v => !v);
@@ -479,14 +487,15 @@ export default function Caller() {
   const { data: stats } = useQuery<ProStats>({
     queryKey: ["proStats"],
     queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
-    // Server caches ~15s; poll less aggressively to keep Render free responsive.
-    refetchInterval: 60_000,
-    staleTime:       45_000,
+    refetchInterval: 30_000,
+    staleTime:       20_000,
     refetchOnWindowFocus: true,
   });
 
-  // "recent" = quality tokens from last 24 h, sorted by calledAt desc
-  const apiQuality = qualityFilter === "recent" ? "recent" : qualityFilter;
+  const isSections = qualityFilter === "sections";
+  const apiQuality = qualityFilter === "recent" ? "recent"
+    : isSections ? "quality"
+    : qualityFilter;
   const apiSort    = qualityFilter === "recent" ? "calledAt" : sortKey;
   const apiOrder   = qualityFilter === "recent" ? "desc" : (sortAsc ? "asc" : "desc");
 
@@ -495,19 +504,24 @@ export default function Caller() {
     queryFn:  () =>
       fetch(`${BASE_URL}/api/pro/history?quality=${apiQuality}&sort=${apiSort}&order=${apiOrder}&limit=150`)
         .then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime:       45_000,
+    refetchInterval: 30_000,
+    staleTime:       20_000,
     refetchOnWindowFocus: true,
     placeholderData: (prev) => prev,
   });
 
-  // Server already sorts/filters — keep order as returned.
   const sorted      = historyData?.tokens ?? [];
-  // stats.total = quality tokens only (very_good + good)
+  const sectionX5   = sorted.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10);
+  const sectionX10  = sorted.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20);
+  const sectionX10p = sorted.filter(t => (t.athMultiple ?? 0) >= 20);
+
   const totalCalled = stats?.total ?? 0;
   const veryGoodCt  = stats?.veryGoodCount ?? 0;
   const goodCt      = stats?.goodCount     ?? 0;
   const recentCt    = stats?.recentCount   ?? 0;
+  const x5Ct        = stats?.x5Count ?? sectionX5.length;
+  const x10Ct       = stats?.x10Count ?? sectionX10.length;
+  const x10PlusCt   = stats?.x10PlusCount ?? sectionX10p.length;
 
   const bestAth    = stats?.bestAth ?? null;
   const winRate    = stats?.winRate ?? 0;
@@ -527,11 +541,11 @@ export default function Caller() {
               className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider"
               style={{ background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b30" }}
             >
-              Very Good + Good
+              Score v2 · On-time
             </span>
           </div>
           <p className="text-[9px] text-[#484f58] mt-0.5">
-            Quality calls only — ranked by Pro Score
+            5× · 10× · 10×+ sections — Pro Score v2 + survival
           </p>
         </div>
         <div
@@ -549,13 +563,15 @@ export default function Caller() {
         <StatChip label="Very Good" value={veryGoodCt} accent="#f59e0b" />
         <StatChip label="Good" value={goodCt} accent="#3b82f6" />
         <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
-        <StatChip label="2×" value={stats?.x2Count ?? "—"} sub="ATH" />
-        <StatChip label="3×" value={stats?.x3Count ?? "—"} />
-        <StatChip label="5×" value={stats?.x5Count ?? "—"} />
-        <StatChip label="10×" value={stats?.x10Count ?? "—"} accent={stats?.x10Count ? "#f59e0b" : undefined} />
+        <StatChip label="5×" value={x5Ct} sub="band" accent="#22c55e" />
+        <StatChip label="10×" value={x10Ct} sub="band" accent="#3b82f6" />
+        <StatChip label="10×+" value={x10PlusCt} sub="≥20×" accent="#f59e0b" />
         <StatChip label="100×" value={stats?.x100Count ?? "—"} accent={stats?.x100Count ? "#ef4444" : undefined} />
         <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
         <StatChip label="Best ATH" value={bestAth != null ? `${bestAth.toFixed(1)}×` : "—"} accent="#f59e0b" large />
+        {stats?.avgSurvival != null && (
+          <StatChip label="Survive" value={Math.round(stats.avgSurvival)} accent="#06b6d4" />
+        )}
       </div>
 
       {/* ── Sticky filter + sort (mobile-friendly) ─────────────────────────── */}
@@ -568,6 +584,26 @@ export default function Caller() {
         }}
       >
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <FilterTab
+            label="Sections" active={qualityFilter === "sections"}
+            count={x5Ct + x10Ct + x10PlusCt}
+            onClick={() => setQF("sections")}
+          />
+          <FilterTab
+            label="5×" active={qualityFilter === "x5"}
+            count={x5Ct}
+            onClick={() => setQF("x5")}
+          />
+          <FilterTab
+            label="10×" active={qualityFilter === "x10"}
+            count={x10Ct}
+            onClick={() => setQF("x10")}
+          />
+          <FilterTab
+            label="10×+" active={qualityFilter === "x10plus"}
+            count={x10PlusCt}
+            onClick={() => setQF("x10plus")}
+          />
           <FilterTab
             label="Very Good" active={qualityFilter === "very_good"}
             count={veryGoodCt}
@@ -595,6 +631,7 @@ export default function Caller() {
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
             {([
               { key: "proScore" as SortKey, label: "Score" },
+              { key: "survival" as SortKey, label: "Survive" },
               { key: "calledAt" as SortKey, label: "Age" },
               { key: "ath"      as SortKey, label: "ATH" },
               { key: "gain"     as SortKey, label: "Gain" },
@@ -625,11 +662,11 @@ export default function Caller() {
         </div>
         <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
         <span className="text-[7px] text-[#30363d] whitespace-nowrap">
-          Intel · MC/Liq · ATH · Momentum · Run · Risk
+          Entry · HV · Smart · Survival · Risk · Momentum
         </span>
       </div>
 
-      {/* ── Token list ────────────────────────────────────────────────────── */}
+      {/* ── Token list / sections ──────────────────────────────────────────── */}
       {isLoading ? (
         <div className="flex flex-col gap-2">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -637,14 +674,48 @@ export default function Caller() {
               style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)" }} />
           ))}
         </div>
+      ) : isSections ? (
+        <div className="flex flex-col gap-5">
+          {([
+            { key: "x5", title: "5× Club", sub: "5× – 10× ATH from call", accent: "#22c55e", tokens: sectionX5 },
+            { key: "x10", title: "10× Club", sub: "10× – 20× ATH from call", accent: "#3b82f6", tokens: sectionX10 },
+            { key: "x10plus", title: "10×+ Runners", sub: "≥ 20× — well past 10×", accent: "#f59e0b", tokens: sectionX10p },
+          ] as const).map(sec => (
+            <section key={sec.key} className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest"
+                    style={{ background: `${sec.accent}18`, color: sec.accent, border: `1px solid ${sec.accent}40` }}
+                  >
+                    {sec.title}
+                  </span>
+                  <span className="text-[8px] text-[#484f58] truncate">{sec.sub}</span>
+                </div>
+                <span className="text-[10px] font-black tabular-nums" style={{ color: sec.accent }}>
+                  {sec.tokens.length}
+                </span>
+              </div>
+              {sec.tokens.length === 0 ? (
+                <div className="text-[9px] text-[#30363d] px-1 py-3">No tokens in this band yet</div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {sec.tokens.map(t => (
+                    <TokenRow key={t.id} t={t} onNavigate={() => navigate(`/tokens/${t.id}`)} />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
       ) : sorted.length === 0 ? (
         <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
           <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
           <div className="text-[10px] uppercase tracking-widest text-[#484f58]">
-            No {qualityFilter === "very_good" ? "Very Good" : qualityFilter === "good" ? "Good" : "quality"} tokens yet
+            No tokens in this filter yet
           </div>
           <div className="text-[9px] text-[#30363d]">
-            Tokens with Intel ≥ 80 + KOL/Smart + Pro Score ≥ 55 appear here
+            Event-driven intel → Pro Score v2 surfaces quality calls in seconds
           </div>
         </div>
       ) : (
@@ -657,11 +728,11 @@ export default function Caller() {
       )}
 
       {/* ── Footer ────────────────────────────────────────────────────────── */}
-      {sorted.length > 0 && (
+      {(isSections ? sectionX5.length + sectionX10.length + sectionX10p.length : sorted.length) > 0 && (
         <div className="flex items-center justify-center gap-2 pt-1">
           <Zap className="w-2.5 h-2.5 text-[#30363d]" />
           <span className="text-[8px] text-[#30363d] tracking-widest uppercase">
-            {sorted.length} shown · Pro Score updated every 5 min · ATH from called MC
+            Pro Score v2 · hot snapshots 30s · ATH from called MC
           </span>
         </div>
       )}

@@ -19,7 +19,14 @@ const log = rootLogger.child({ module: "job-queue" });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type QueueName = "discovery" | "metadata" | "holders" | "price" | "migration";
+export type QueueName =
+  | "discovery"
+  | "metadata"
+  | "holders"
+  | "price"
+  | "migration"
+  | "intel"
+  | "pro";
 
 export interface EnqueueOptions {
   /** Higher number = processed sooner. Default 0. */
@@ -55,6 +62,9 @@ const QUEUE_CONFIG: Record<QueueName, { concurrency: number; maxAttempts: number
   holders:   { concurrency: 2, maxAttempts: 2 }, // rate-limit GMGN
   price:     { concurrency: 5, maxAttempts: 2 },
   migration: { concurrency: 2, maxAttempts: 2 },
+  // Fast path for on-time Pro qualification (memecoin windows are minutes)
+  intel:     { concurrency: 3, maxAttempts: 2 },
+  pro:       { concurrency: 2, maxAttempts: 2 },
 };
 
 // ── PipelineQueue ─────────────────────────────────────────────────────────────

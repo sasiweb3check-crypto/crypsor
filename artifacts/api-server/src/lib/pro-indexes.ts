@@ -10,6 +10,13 @@ const STATEMENTS = [
      ON pro_calls (quality_label, called_at DESC)`,
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_called_at_idx
      ON pro_calls (called_at DESC)`,
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_ath_idx
+     ON pro_calls (ath_multiple DESC NULLS LAST)`,
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_survival_idx
+     ON pro_calls (survival_score DESC NULLS LAST)`,
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_hit5_qual_idx
+     ON pro_calls (quality_label, ath_multiple DESC)
+     WHERE quality_label IN ('good','very_good') AND ath_multiple >= 5`,
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_snapshots_call_snap_idx
      ON pro_snapshots (pro_call_id, snapshot_at DESC)`,
 ];

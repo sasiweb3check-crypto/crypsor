@@ -54,6 +54,21 @@ export interface HoldersUpdatedEvent {
   source:       "background" | "live";
 }
 
+/** Emitted when intelligence score is written for a token (batch or fast path). */
+export interface IntelScoredEvent {
+  tokenId: number;
+  tokenAddress: string;
+  intelligenceScore: number;
+  holderKolCount: number;
+  holderSmartCount: number;
+  marketCapUsd: string | null;
+  holderVelocityScore: number;
+  mcGrowthScore: number;
+  volumeIntensityScore: number;
+  status: string;
+  trigger: "first" | "score_change" | "status_change" | "fast_path";
+}
+
 /** Rich event for the live feed tape — emitted by monitor (buy/sell) and social-intel-service */
 export interface FeedItemEvent {
   id:   string;
@@ -107,6 +122,7 @@ type BusMap = {
   "projection:updated":    [ProjectionUpdatedEvent];
   "token:deleted":         [TokenDeletedEvent];
   "holders:updated":       [HoldersUpdatedEvent];
+  "intel:scored":          [IntelScoredEvent];
   "feed:item":             [FeedItemEvent];
 };
 
