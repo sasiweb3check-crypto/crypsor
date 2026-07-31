@@ -36,7 +36,6 @@ services:
     name: crypsor-web
     runtime: static
     plan: free
-    region: oregon
     buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter @workspace/crypsor run build
     staticPublishPath: artifacts/crypsor/dist/public
     routes:
