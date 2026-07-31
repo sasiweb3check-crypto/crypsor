@@ -43,6 +43,14 @@ export const pro_calls = pgTable("pro_calls", {
   proScore:         real("pro_score"),
   qualityLabel:     text("quality_label"), // 'very_good' | 'good' | 'below'
 
+  // ── Scanner label — qualification track (set by pro-scanner) ────────────
+  // 'very_strong' — met full criteria: intel ≥ 80 + KOL/Smart ≥ 1,
+  //                 OR intel ≥ 75 + KOL ≥ 2 (strong conviction lowers gate)
+  // 'strong'      — met intel-only criteria (≥ 80) but KOL data was absent at
+  //                 scan time due to GMGN delay. Upgrades to very_strong
+  //                 automatically once KOL/Smart data arrives.
+  scannerLabel:     text("scanner_label").default("very_strong"),
+
   // ── Surfaced tracking — when the token first became visible in Pro Intel ──
   // Set once the first time quality_label transitions out of 'below'/null to
   // 'good' or 'very_good'.  Null for tokens that qualified immediately at call

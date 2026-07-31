@@ -107,6 +107,7 @@ router.get("/pro/history", async (req, res) => {
         pc.hit_100x,pc.hit_100x_at,
         pc.surfaced_at,
         pc.surfaced_mc_usd,
+        pc.scanner_label,
         -- latest snapshot for MC/kol/intel
         ps.mc_usd          AS snap_mc,
         ps.kol_count       AS snap_kol,
@@ -158,6 +159,7 @@ router.get("/pro/history", async (req, res) => {
       hit_100x: boolean | null; hit_100x_at: string | null;
       surfaced_at: string | null;
       surfaced_mc_usd: string | null;
+      scanner_label: string | null;
       snap_mc: string | null; snap_kol: number | null;
       snap_smart: number | null; snap_intel: number | null;
       live_kol: number | null; live_smart: number | null;
@@ -248,6 +250,10 @@ router.get("/pro/history", async (req, res) => {
         // for historical records predating this field.
         surfacedAt:     call.surfaced_at ?? null,
         surfacedMcUsd:  call.surfaced_mc_usd ? parseFloat(call.surfaced_mc_usd) : null,
+        // Scanner label — qualification track
+        // 'very_strong': intel ≥ 80 + KOL/Smart, or intel ≥ 75 + KOL ≥ 2
+        // 'strong':      intel ≥ 80, KOL data absent at scan time (auto-upgrades)
+        scannerLabel:   (call.scanner_label ?? "very_strong") as "very_strong" | "strong",
         // Security summary
         secMintRenounced:   call.sec_mint_renounced,
         secFreezeRenounced: call.sec_freeze_renounced,
