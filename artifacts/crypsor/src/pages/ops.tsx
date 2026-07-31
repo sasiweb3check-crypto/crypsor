@@ -143,7 +143,20 @@ export default function OpsPage() {
     ok: boolean;
     latencyMs: number;
     note: string;
-    results: Array<{ name: string; ok: boolean; status: number; blocked?: boolean }>;
+    openApi?: {
+      configured: boolean;
+      ok: boolean;
+      status: number;
+      error?: string;
+      host: string;
+    };
+    scrape?: {
+      proxy: string;
+      okCount: number;
+      results: Array<{ name: string; ok: boolean; status: number; blocked?: boolean }>;
+    };
+    /** legacy shape */
+    results?: Array<{ name: string; ok: boolean; status: number; blocked?: boolean }>;
   }>({
     queryKey: ["opsGmgnCheck"],
     queryFn: () => fetch(`${BASE}/api/ops/gmgn-check`).then(r => {
@@ -154,6 +167,8 @@ export default function OpsPage() {
     refetchInterval: 120_000,
     retry: 0,
   });
+
+  const gmgnResults = gmgnCheck?.scrape?.results ?? gmgnCheck?.results ?? [];
 
   const events = logData?.events ?? [];
   const blockers = summary?.blockers ?? [];
@@ -242,11 +257,18 @@ export default function OpsPage() {
           </button>
         </div>
         {gmgnCheck?.note && (
-          <div className="text-[10px] text-[var(--cryp-mute)]">{gmgnCheck.note}</div>
+          <div className="text-[10px] text-[var(--cryp-mute)] leading-relaxed">{gmgnCheck.note}</div>
         )}
-        {gmgnCheck?.results && (
+        {gmgnCheck?.openApi && (
+          <div className="text-[10px] font-mono-num" style={{ color: gmgnCheck.openApi.ok ? "var(--cryp-gain)" : "var(--cryp-warn)" }}>
+            OpenAPI {gmgnCheck.openApi.host} · {gmgnCheck.openApi.configured
+              ? (gmgnCheck.openApi.ok ? "OK" : `fail ${gmgnCheck.openApi.error ?? gmgnCheck.openApi.status}`)
+              : "no GMGN_API_KEY"}
+          </div>
+        )}
+        {gmgnResults.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {gmgnCheck.results.map(r => (
+            {gmgnResults.map(r => (
               <span
                 key={r.name}
                 className="text-[9px] font-mono-num px-1.5 py-0.5"

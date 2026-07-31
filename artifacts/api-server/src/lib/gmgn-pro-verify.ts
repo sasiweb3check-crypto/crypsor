@@ -1,16 +1,18 @@
 /**
  * Live GMGN KOL / smart verify for Pro Caller qualify.
  *
- * Uses curl HTTP2 + browser headers (gmgnFetch) — no API key required.
- * SSOT counts prefer token_wallet_tags_stat; fall back to token_holder_stat.
- * Wallet lists from tagged token_holders (renowned / smart_degen) include
- * hold %, sold %, paper/diamond hands — used for conviction scoring + UI.
+ * Prefer Official OpenAPI (GMGN_API_KEY → openapi.gmgn.ai) — bypasses website
+ * Cloudflare. Falls back to gmgn.ai scrape (+ GMGN_PROXIES) when key missing/fails.
+ *
+ * OpenAPI path: token/info + token/security + 2× top_holders (KOL/smart).
+ * Scrape path: token_wallet_tags_stat / holder_stat / holders / link / token_stat.
  */
 
 import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { gmgnFetch, nextProxy, CHAIN_MAP } from "./gmgn-client";
+import { fetchOpenApiTokenBundle, hasGmgnOpenApiKey } from "./gmgn-openapi";
 import { logger } from "./logger";
 
 const log = logger.child({ module: "gmgn-pro-verify" });
@@ -58,6 +60,34 @@ export type TokenStatSnap = {
   sniperHoldRate: number | null;
   creatorHoldRate: number | null;
   creatorCreatedCount: number | null;
+  /** Extra OpenAPI quality signals */
+  freshWalletRate: number | null;
+  entrapmentPct: number | null;
+  sniperWallets: number | null;
+  bundlerWallets: number | null;
+  whaleWallets: number | null;
+  signalCount: number | null;
+  priceChange1m: number | null;
+  priceChange5m: number | null;
+  priceChange1h: number | null;
+  volume1h: number | null;
+  volume24h: number | null;
+  quoteSymbol: string | null;
+  exchange: string | null;
+};
+
+export type SecuritySnap = {
+  mintRenounced: boolean | null;
+  freezeRenounced: boolean | null;
+  isHoneypot: boolean | null;
+  top10HolderRate: number | null;
+  burnStatus: string | null;
+  canSell: boolean | null;
+  buyTax: number | null;
+  sellTax: number | null;
+  creatorClose: boolean | null;
+  creatorAddress: string | null;
+  ctoFlag: boolean | null;
 };
 
 export type GmgnProVerifyResult = {
@@ -74,6 +104,7 @@ export type GmgnProVerifyResult = {
   kolConviction: WalletConviction;
   smartConviction: WalletConviction;
   tokenStat: TokenStatSnap | null;
+  security: SecuritySnap | null;
   holderCount: number | null;
   liquidityUsd: number | null;
   socials: { twitter?: string; telegram?: string; website?: string };
@@ -119,7 +150,20 @@ function mapHolders(list: unknown[]): VerifiedWallet[] {
     const bal = num(raw.balance);
     const pct = raw.amount_percentage != null ? num(raw.amount_percentage) : null;
     const sellPct = raw.sell_amount_percentage != null ? num(raw.sell_amount_percentage) : null;
+    const buyTx = Math.round(num(raw.buy_tx_count_cur));
+    const sellTx = Math.round(num(raw.sell_tx_count_cur));
     const holding = bal > 0 || (pct != null && pct > 0);
+    const soldFully = !holding;
+    // OpenAPI rarely emits paper_hands/diamond_hands tags — infer from sell ratio
+    const taggedPaper = makerTags.includes("paper_hands") || labels.includes("paper_hands");
+    const taggedDiamond = makerTags.includes("diamond_hands") || labels.includes("diamond_hands");
+    const paperHands = taggedPaper
+      || soldFully
+      || (sellPct != null && sellPct >= 0.75);
+    const diamondHands = !paperHands && (
+      taggedDiamond
+      || (holding && buyTx >= 1 && (sellPct == null || sellPct <= 0.12) && sellTx <= buyTx)
+    );
     out.push({
       address,
       twitterName: raw.twitter_name ?? null,
@@ -130,14 +174,14 @@ function mapHolders(list: unknown[]): VerifiedWallet[] {
       balance: raw.balance != null ? String(raw.balance) : null,
       usdValue: raw.usd_value != null ? num(raw.usd_value) : null,
       holding,
-      soldFully: !holding,
+      soldFully,
       sellAmountPercentage: sellPct,
-      buyTxCount: Math.round(num(raw.buy_tx_count_cur)),
-      sellTxCount: Math.round(num(raw.sell_tx_count_cur)),
+      buyTxCount: buyTx,
+      sellTxCount: sellTx,
       realizedProfit: raw.realized_profit != null ? num(raw.realized_profit) : null,
       unrealizedProfit: raw.unrealized_profit != null ? num(raw.unrealized_profit) : null,
-      paperHands: makerTags.includes("paper_hands") || labels.includes("paper_hands"),
-      diamondHands: makerTags.includes("diamond_hands") || labels.includes("diamond_hands"),
+      paperHands,
+      diamondHands,
       startHoldingAt: raw.start_holding_at ?? null,
       endHoldingAt: raw.end_holding_at ?? null,
     });
@@ -182,8 +226,14 @@ function emptyConviction(): WalletConviction {
 }
 
 function unwrapList(data: unknown): unknown[] {
-  const root = data as { data?: { data?: { list?: unknown[] }; list?: unknown[] } };
-  return root?.data?.data?.list ?? root?.data?.list ?? [];
+  const root = data as {
+    data?: { data?: { list?: unknown[] }; list?: unknown[] } | unknown[];
+    list?: unknown[];
+  };
+  if (Array.isArray(root?.data)) return root.data;
+  if (Array.isArray(root?.list)) return root.list;
+  const inner = root?.data as { data?: { list?: unknown[] }; list?: unknown[] } | undefined;
+  return inner?.data?.list ?? inner?.list ?? [];
 }
 
 function unwrapData(data: unknown): Record<string, unknown> {
@@ -191,18 +241,108 @@ function unwrapData(data: unknown): Record<string, unknown> {
   return (root?.data && typeof root.data === "object" ? root.data : {}) as Record<string, unknown>;
 }
 
-/**
- * Live-fetch GMGN KOL + smart + token_stat for a token. Sticky proxy for the burst.
- */
-export async function verifyTokenKolSmart(
-  chain: string,
-  address: string,
-): Promise<GmgnProVerifyResult> {
-  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
-  const proxy = nextProxy();
-  const fetchedAt = new Date();
+function buildSocials(link: Record<string, unknown>): GmgnProVerifyResult["socials"] {
+  const socials: GmgnProVerifyResult["socials"] = {};
+  const tw = typeof link.twitter_username === "string" ? link.twitter_username.trim() : "";
+  const tg = typeof link.telegram === "string" ? link.telegram.trim() : "";
+  const web = typeof link.website === "string" ? link.website.trim() : "";
+  if (tw) {
+    socials.twitter = tw.startsWith("http")
+      ? tw
+      : tw.startsWith("i/communities/")
+        ? `https://x.com/${tw}`
+        : `https://x.com/${tw.replace(/^@/, "")}`;
+  }
+  if (tg) socials.telegram = tg.startsWith("http") ? tg : `https://t.me/${tg.replace(/^@/, "")}`;
+  if (web && web.startsWith("http")) socials.website = web;
+  return socials;
+}
 
-  const empty: GmgnProVerifyResult = {
+function tokenStatFromParts(
+  info: Record<string, unknown>,
+  tags: Record<string, unknown>,
+  stat: Record<string, unknown>,
+): TokenStatSnap {
+  const price = (info.price && typeof info.price === "object"
+    ? info.price
+    : {}) as Record<string, unknown>;
+  const pool = (info.pool && typeof info.pool === "object"
+    ? info.pool
+    : {}) as Record<string, unknown>;
+  const px = (k: string) => {
+    const cur = num(price.price);
+    const prev = num(price[k]);
+    if (cur <= 0 || prev <= 0) return null;
+    return (cur - prev) / prev;
+  };
+  return {
+    top10HolderRate: stat.top_10_holder_rate != null ? num(stat.top_10_holder_rate) : null,
+    bundlerPct: stat.top_bundler_trader_percentage != null
+      ? num(stat.top_bundler_trader_percentage) : null,
+    ratPct: stat.top_rat_trader_percentage != null
+      ? num(stat.top_rat_trader_percentage) : null,
+    botDegenRate: stat.bot_degen_rate != null ? num(stat.bot_degen_rate) : null,
+    sniperHoldRate: stat.top70_sniper_hold_rate != null
+      ? num(stat.top70_sniper_hold_rate) : null,
+    creatorHoldRate: stat.creator_hold_rate != null ? num(stat.creator_hold_rate) : null,
+    creatorCreatedCount: (info.creator_created_count ?? stat.creator_created_count) != null
+      ? Math.round(num(info.creator_created_count ?? stat.creator_created_count)) : null,
+    freshWalletRate: stat.fresh_wallet_rate != null ? num(stat.fresh_wallet_rate) : null,
+    entrapmentPct: stat.top_entrapment_trader_percentage != null
+      ? num(stat.top_entrapment_trader_percentage) : null,
+    sniperWallets: tags.sniper_wallets != null ? Math.round(num(tags.sniper_wallets)) : null,
+    bundlerWallets: tags.bundler_wallets != null ? Math.round(num(tags.bundler_wallets)) : null,
+    whaleWallets: tags.whale_wallets != null ? Math.round(num(tags.whale_wallets)) : null,
+    signalCount: stat.signal_count != null ? Math.round(num(stat.signal_count)) : null,
+    priceChange1m: px("price_1m"),
+    priceChange5m: px("price_5m"),
+    priceChange1h: px("price_1h"),
+    volume1h: price.volume_1h != null ? num(price.volume_1h) : null,
+    volume24h: price.volume_24h != null ? num(price.volume_24h) : null,
+    quoteSymbol: typeof pool.quote_symbol === "string" ? pool.quote_symbol : null,
+    exchange: typeof pool.exchange === "string" ? pool.exchange : null,
+  };
+}
+
+function tokenStatFromFlat(tstat: Record<string, unknown> | null): TokenStatSnap | null {
+  if (!tstat) return null;
+  return tokenStatFromParts({}, {}, tstat);
+}
+
+function securityFromOpenApi(
+  sec: Record<string, unknown>,
+  info: Record<string, unknown>,
+): SecuritySnap | null {
+  if (!sec || Object.keys(sec).length === 0) return null;
+  const dev = (info.dev && typeof info.dev === "object" ? info.dev : {}) as Record<string, unknown>;
+  const honeypotRaw = sec.is_honeypot ?? sec.honeypot;
+  let isHoneypot: boolean | null = null;
+  if (honeypotRaw === true || honeypotRaw === "yes" || honeypotRaw === 1) isHoneypot = true;
+  else if (honeypotRaw === false || honeypotRaw === "no" || honeypotRaw === 0) isHoneypot = false;
+
+  const creatorStatus = String(dev.creator_token_status ?? sec.creator_token_status ?? "");
+  return {
+    mintRenounced: typeof sec.renounced_mint === "boolean" ? sec.renounced_mint : null,
+    freezeRenounced: typeof sec.renounced_freeze_account === "boolean"
+      ? sec.renounced_freeze_account : null,
+    isHoneypot,
+    top10HolderRate: sec.top_10_holder_rate != null ? num(sec.top_10_holder_rate) : null,
+    burnStatus: typeof sec.burn_status === "string" ? sec.burn_status : null,
+    canSell: sec.can_not_sell === 1 || sec.can_not_sell === true
+      ? false
+      : (sec.can_sell === 1 || sec.can_sell === true ? true : null),
+    buyTax: sec.buy_tax != null ? num(sec.buy_tax) : null,
+    sellTax: sec.sell_tax != null ? num(sec.sell_tax) : null,
+    creatorClose: creatorStatus.includes("close") ? true
+      : creatorStatus.includes("hold") ? false : null,
+    creatorAddress: typeof (dev.creator_address ?? sec.creator_address) === "string"
+      ? String(dev.creator_address ?? sec.creator_address) : null,
+    ctoFlag: dev.cto_flag === 1 || dev.cto_flag === true,
+  };
+}
+
+function emptyVerify(fetchedAt: Date): GmgnProVerifyResult {
+  return {
     ok: false,
     kolCount: 0,
     smartCount: 0,
@@ -215,6 +355,7 @@ export async function verifyTokenKolSmart(
     kolConviction: emptyConviction(),
     smartConviction: emptyConviction(),
     tokenStat: null,
+    security: null,
     holderCount: null,
     liquidityUsd: null,
     socials: {},
@@ -222,8 +363,111 @@ export async function verifyTokenKolSmart(
     source: "failed",
     fetchedAt,
   };
+}
+
+/** Official OpenAPI path — no gmgn.ai Cloudflare scrape. */
+async function verifyViaOpenApi(
+  chain: string,
+  address: string,
+  fetchedAt: Date,
+): Promise<GmgnProVerifyResult | null> {
+  if (!hasGmgnOpenApiKey()) return null;
+
+  const bundle = await fetchOpenApiTokenBundle(chain, address, 40);
+  const { info: infoRes, security: secRes, kolHolders: kolRes, smartHolders: smartRes } = bundle;
+
+  if (!infoRes.ok && !kolRes.ok && !smartRes.ok) {
+    log.warn(
+      {
+        address: address.slice(0, 8),
+        infoErr: (infoRes.data as { error?: string })?.error,
+        status: infoRes.status,
+      },
+      "GMGN OpenAPI pro-verify failed — will try scrape fallback",
+    );
+    return null;
+  }
+
+  const info = unwrapData(infoRes.data);
+  const tags = (info.wallet_tags_stat && typeof info.wallet_tags_stat === "object"
+    ? info.wallet_tags_stat
+    : {}) as Record<string, unknown>;
+  const stat = (info.stat && typeof info.stat === "object" ? info.stat : {}) as Record<string, unknown>;
+  const link = (info.link && typeof info.link === "object" ? info.link : {}) as Record<string, unknown>;
+  const sec = secRes.ok ? unwrapData(secRes.data) : {};
+
+  const tagsKol = Math.round(num(tags.renowned_wallets));
+  const tagsSmart = Math.round(num(tags.smart_wallets));
+  const holderStatKol = tagsKol;
+  const holderStatSmart = tagsSmart;
+
+  const kolWallets = kolRes.ok ? mapHolders(unwrapList(kolRes.data)) : [];
+  const smartWallets = smartRes.ok ? mapHolders(unwrapList(smartRes.data)) : [];
+  const kolConviction = computeConviction(kolWallets);
+  const smartConviction = computeConviction(smartWallets);
+
+  const liquidityUsd = info.liquidity != null ? num(info.liquidity) : null;
+  const holderCount = info.holder_count != null ? Math.round(num(info.holder_count)) : null;
+  const tokenStat = tokenStatFromParts(info, tags, stat);
+  const security = securityFromOpenApi(sec, info);
+
+  const result: GmgnProVerifyResult = {
+    ok: true,
+    kolCount: Math.max(tagsKol, 0),
+    smartCount: Math.max(tagsSmart, 0),
+    holderStatKol,
+    holderStatSmart,
+    tagsKol,
+    tagsSmart,
+    holdingKol: kolConviction.holding,
+    holdingSmart: smartConviction.holding,
+    kolConviction,
+    smartConviction,
+    tokenStat,
+    security,
+    holderCount,
+    liquidityUsd: liquidityUsd != null && liquidityUsd > 0 ? liquidityUsd : null,
+    socials: buildSocials(link),
+    wallets: { kol: kolWallets, smart: smartWallets },
+    source: "gmgn_live",
+    fetchedAt,
+  };
+
+  log.info(
+    {
+      address: address.slice(0, 8),
+      via: "openapi",
+      kol: result.kolCount,
+      smart: result.smartCount,
+      holdingKol: result.holdingKol,
+      holdingSmart: result.holdingSmart,
+      smartHoldRate: Math.round(smartConviction.holdRate * 100),
+      top10: tokenStat.top10HolderRate,
+      bundler: tokenStat.bundlerPct,
+      mintOk: security?.mintRenounced,
+    },
+    "GMGN pro-verify ok",
+  );
+  return result;
+}
+
+/**
+ * Live-fetch GMGN KOL + smart + token_stat for a token.
+ * OpenAPI-first when GMGN_API_KEY is set; scrape + sticky proxy as fallback.
+ */
+export async function verifyTokenKolSmart(
+  chain: string,
+  address: string,
+): Promise<GmgnProVerifyResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  const fetchedAt = new Date();
+  const empty = emptyVerify(fetchedAt);
 
   try {
+    const open = await verifyViaOpenApi(c, address, fetchedAt);
+    if (open?.ok) return open;
+
+    const proxy = nextProxy();
     const [statRes, tagsRes, infoRes, kolRes, smartRes, linkRes, tokenStatRes] = await Promise.all([
       gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`, proxy),
       gmgnFetch(`https://gmgn.ai/api/v1/token_wallet_tags_stat/${c}/${address}`, proxy),
@@ -268,35 +512,6 @@ export async function verifyTokenKolSmart(
     const holderCount = info.holder_count != null ? Math.round(num(info.holder_count)) : null;
 
     const link = linkRes.ok ? unwrapData(linkRes.data) : {};
-    const socials: GmgnProVerifyResult["socials"] = {};
-    const tw = typeof link.twitter_username === "string" ? link.twitter_username.trim() : "";
-    const tg = typeof link.telegram === "string" ? link.telegram.trim() : "";
-    const web = typeof link.website === "string" ? link.website.trim() : "";
-    if (tw) {
-      socials.twitter = tw.startsWith("http")
-        ? tw
-        : tw.startsWith("i/communities/")
-          ? `https://x.com/${tw}`
-          : `https://x.com/${tw.replace(/^@/, "")}`;
-    }
-    if (tg) socials.telegram = tg.startsWith("http") ? tg : `https://t.me/${tg.replace(/^@/, "")}`;
-    if (web && web.startsWith("http")) socials.website = web;
-
-    const tokenStat: TokenStatSnap | null = tstat
-      ? {
-          top10HolderRate: tstat.top_10_holder_rate != null ? num(tstat.top_10_holder_rate) : null,
-          bundlerPct: tstat.top_bundler_trader_percentage != null
-            ? num(tstat.top_bundler_trader_percentage) : null,
-          ratPct: tstat.top_rat_trader_percentage != null
-            ? num(tstat.top_rat_trader_percentage) : null,
-          botDegenRate: tstat.bot_degen_rate != null ? num(tstat.bot_degen_rate) : null,
-          sniperHoldRate: tstat.top70_sniper_hold_rate != null
-            ? num(tstat.top70_sniper_hold_rate) : null,
-          creatorHoldRate: tstat.creator_hold_rate != null ? num(tstat.creator_hold_rate) : null,
-          creatorCreatedCount: tstat.creator_created_count != null
-            ? Math.round(num(tstat.creator_created_count)) : null,
-        }
-      : null;
 
     const result: GmgnProVerifyResult = {
       ok: true,
@@ -310,10 +525,11 @@ export async function verifyTokenKolSmart(
       holdingSmart: smartConviction.holding,
       kolConviction,
       smartConviction,
-      tokenStat,
+      tokenStat: tokenStatFromFlat(tstat),
+      security: null,
       holderCount,
       liquidityUsd: liquidityUsd != null && liquidityUsd > 0 ? liquidityUsd : null,
-      socials,
+      socials: buildSocials(link),
       wallets: { kol: kolWallets, smart: smartWallets },
       source: "gmgn_live",
       fetchedAt,
@@ -322,6 +538,7 @@ export async function verifyTokenKolSmart(
     log.info(
       {
         address: address.slice(0, 8),
+        via: "scrape",
         kol: result.kolCount,
         smart: result.smartCount,
         holdingKol: result.holdingKol,
@@ -365,13 +582,14 @@ export async function applyVerifyToTrackedToken(
       telegram: verify.socials.telegram ?? base.telegram,
       website: verify.socials.website ?? base.website,
       gmgnTokenStat: verify.tokenStat,
+      gmgnSecurity: verify.security,
       gmgnConviction: {
         kol: verify.kolConviction,
         smart: verify.smartConviction,
         fetchedAt: verify.fetchedAt.toISOString(),
       },
     };
-  } else if (verify.tokenStat || verify.smartConviction.total > 0) {
+  } else if (verify.tokenStat || verify.security || verify.smartConviction.total > 0) {
     const existing = await db
       .select({ rawMetadata: tracked_tokens.rawMetadata })
       .from(tracked_tokens)
@@ -384,6 +602,7 @@ export async function applyVerifyToTrackedToken(
     rawPatch = {
       ...base,
       gmgnTokenStat: verify.tokenStat,
+      gmgnSecurity: verify.security,
       gmgnConviction: {
         kol: verify.kolConviction,
         smart: verify.smartConviction,
@@ -392,6 +611,9 @@ export async function applyVerifyToTrackedToken(
     };
   }
 
+  const sec = verify.security;
+  const top10 = sec?.top10HolderRate ?? verify.tokenStat?.top10HolderRate ?? null;
+
   await db
     .update(tracked_tokens)
     .set({
@@ -399,9 +621,21 @@ export async function applyVerifyToTrackedToken(
       holderSmartCount: verify.smartCount,
       ...(verify.holderCount != null ? { holderCount: verify.holderCount } : {}),
       ...(verify.liquidityUsd != null ? { liquidityUsd: String(verify.liquidityUsd) } : {}),
-      ...(verify.tokenStat?.top10HolderRate != null
-        ? { secTop10HolderRate: verify.tokenStat.top10HolderRate }
-        : {}),
+      ...(top10 != null ? { secTop10HolderRate: top10 } : {}),
+      ...(sec?.mintRenounced != null ? { secMintRenounced: sec.mintRenounced } : {}),
+      ...(sec?.freezeRenounced != null ? { secFreezeRenounced: sec.freezeRenounced } : {}),
+      ...(sec?.isHoneypot != null ? { secIsHoneypot: sec.isHoneypot } : {}),
+      ...(sec?.creatorClose != null ? { secCreatorClose: sec.creatorClose } : {}),
+      ...(sec?.creatorAddress ? { secCreatorAddress: sec.creatorAddress } : {}),
+      ...(sec?.ctoFlag != null ? { secCtoFlag: sec.ctoFlag } : {}),
+      ...(sec?.buyTax != null ? { secBuyTax: sec.buyTax } : {}),
+      ...(sec?.sellTax != null ? { secSellTax: sec.sellTax } : {}),
+      ...(verify.tokenStat?.ratPct != null ? { secRatTraderAmtRate: verify.tokenStat.ratPct } : {}),
+      ...(verify.tokenStat?.sniperWallets != null
+        ? { secSniperCount: verify.tokenStat.sniperWallets } : {}),
+      ...(verify.tokenStat?.creatorCreatedCount != null
+        ? { secCreatorCreatedCount: verify.tokenStat.creatorCreatedCount } : {}),
+      ...(sec || verify.tokenStat ? { secFetchedAt: verify.fetchedAt } : {}),
       ...(rawPatch ? { rawMetadata: rawPatch } : {}),
       lastHoldersUpdatedAt: verify.fetchedAt,
     })
@@ -419,9 +653,46 @@ export function walletsPayload(verify: GmgnProVerifyResult): Record<string, unkn
       smart: verify.smartConviction,
     },
     tokenStat: verify.tokenStat,
+    security: verify.security,
     holding: { kol: verify.holdingKol, smart: verify.holdingSmart },
     kol: verify.wallets.kol.slice(0, 40),
     smart: verify.wallets.smart.slice(0, 40),
+  };
+}
+
+/** Quality risk fields stored on verified_wallets.tokenStat for scoring. */
+export function qualitySignalsFromPayload(raw: unknown): {
+  bundlerPct: number | null;
+  sniperHoldRate: number | null;
+  freshWalletRate: number | null;
+  botDegenRate: number | null;
+  entrapmentPct: number | null;
+  ratPct: number | null;
+} {
+  const empty = {
+    bundlerPct: null as number | null,
+    sniperHoldRate: null as number | null,
+    freshWalletRate: null as number | null,
+    botDegenRate: null as number | null,
+    entrapmentPct: null as number | null,
+    ratPct: null as number | null,
+  };
+  if (!raw || typeof raw !== "object") return empty;
+  const ts = (raw as { tokenStat?: Record<string, unknown> }).tokenStat;
+  if (!ts || typeof ts !== "object") return empty;
+  const n = (k: string) => {
+    const v = ts[k];
+    if (v == null) return null;
+    const x = typeof v === "number" ? v : parseFloat(String(v));
+    return Number.isFinite(x) ? x : null;
+  };
+  return {
+    bundlerPct: n("bundlerPct"),
+    sniperHoldRate: n("sniperHoldRate"),
+    freshWalletRate: n("freshWalletRate"),
+    botDegenRate: n("botDegenRate"),
+    entrapmentPct: n("entrapmentPct"),
+    ratPct: n("ratPct"),
   };
 }
 
