@@ -1,14 +1,12 @@
 /**
- * Pro Snapshots
+ * Pro Snapshots — momentum-based
  *
- * Hot path (every 30s): pro calls younger than 6h — memecoin survival window
- * Full path (every 2 min): all pro_calls
+ * Tickers still run on a short schedule, but rows are written only when MC
+ * moves (or sparse heartbeats). Low-MC flats are not force-sampled hourly.
  *
- * Each cycle:
- *   • Writes enriched pro_snapshots (survival, pro score, age, run status)
- *   • Updates ath_multiple + milestones
- *   • Recomputes Pro Score v2 + survival_score
- *   • Surfaces quality tokens immediately (COALESCE surfaced_at)
+ * Each write:
+ *   • pro_snapshots row + ATH / milestones
+ *   • Pro Score v2 + Runner Score / phase (entry product)
  */
 
 import { db } from "@workspace/db";
@@ -17,10 +15,15 @@ import { logger } from "../lib/logger";
 import { computeProScore, deriveRunStatus } from "../lib/pro-scoring";
 import { convictionFromPayload, qualitySignalsFromPayload } from "../lib/gmgn-pro-verify";
 import { invalidateProCaches } from "../lib/pro-cache";
+import {
+  computeRunnerScore,
+  shouldWriteMomentumSnap,
+  type RunnerPhase,
+} from "../lib/runner-score";
 
 const log = logger.child({ module: "pro-snapshots" });
 
-const HOT_INTERVAL_MS  = 30_000;
+const HOT_INTERVAL_MS  = 20_000;
 const FULL_INTERVAL_MS = 2 * 60_000;
 const STARTUP_DELAY_MS = 20_000;
 
@@ -56,6 +59,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         pc.called_volume_intensity,
         pc.verified_wallets,
         pc.hit_2x,   pc.hit_3x,   pc.hit_5x,   pc.hit_10x,   pc.hit_100x,
+        pc.last_snapshot_at,
+        pc.last_snap_mc_usd,
+        pc.runner_phase              AS prev_runner_phase,
         t.market_cap_usd             AS current_mc,
         t.ath_market_cap_usd         AS ath_mc_usd,
         t.holder_kol_count           AS kol_count,
@@ -89,6 +95,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       verified_wallets: unknown;
       hit_2x: boolean | null; hit_3x: boolean | null; hit_5x: boolean | null;
       hit_10x: boolean | null; hit_100x: boolean | null;
+      last_snapshot_at: string | Date | null;
+      last_snap_mc_usd: string | null;
+      prev_runner_phase: string | null;
       current_mc: string | null; ath_mc_usd: string | null; kol_count: number | null;
       smart_count: number | null; intel_score: number | null;
       holder_velocity_score: number | null;
@@ -105,6 +114,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
     };
 
     let snapCount = 0;
+    let skippedFlat = 0;
     let qualityChanged = false;
     for (const r of rows.rows as Row[]) {
       const calledMc  = parseFloat(r.called_mc_usd ?? "0") || 0;
@@ -118,6 +128,25 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       const ageHours = r.called_at
         ? (Date.now() - new Date(r.called_at).getTime()) / 3_600_000
         : 0;
+      const ageMinutes = ageHours * 60;
+      const lastSnapMc = parseFloat(r.last_snap_mc_usd ?? "") || calledMc || currentMc;
+      const mcDeltaPct = lastSnapMc > 0
+        ? Math.abs(currentMc - lastSnapMc) / lastSnapMc
+        : 1;
+      const lastSnapAgeSec = r.last_snapshot_at
+        ? (Date.now() - new Date(r.last_snapshot_at).getTime()) / 1000
+        : null;
+      const prevPhase = (r.prev_runner_phase as RunnerPhase | null) ?? "radar";
+      if (!shouldWriteMomentumSnap({
+        lastSnapAgeSec,
+        mcDeltaPct,
+        ageMinutes,
+        phase: prevPhase,
+        mode,
+      })) {
+        skippedFlat++;
+        continue;
+      }
 
       const runStatus = deriveRunStatus(currentMc || null, calledMc || null, newAth);
 
@@ -256,16 +285,41 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
         : sql``;
 
+      const velocity = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
+      const runner = computeRunnerScore({
+        calledIntelScore: r.called_intel_score,
+        calledSmartCount: r.called_smart_count ?? 0,
+        calledKolCount: r.called_kol_count ?? 0,
+        calledMcUsd: calledMc || null,
+        currentMcUsd: currentMc || null,
+        athMultiple: newAth,
+        gainPct,
+        ageMinutes,
+        velocity,
+        snapDeltaPct: lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null,
+        liveSmart: r.smart_count ?? 0,
+        liveKol: r.kol_count ?? 0,
+        secIsHoneypot: r.sec_is_honeypot,
+        secMintRenounced: r.sec_mint_renounced,
+        secFreezeRenounced: r.sec_freeze_renounced,
+        holderVelocityScore: r.holder_velocity_score,
+        volumeIntensityScore: r.volume_intensity_score,
+        smartHoldRate: conviction?.smart.holdRate ?? null,
+      });
+
       await db.execute(sql`
         UPDATE pro_calls
         SET
           ath_multiple     = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
           last_snapshot_at = NOW(),
+          last_snap_mc_usd = ${String(currentMc || 0)},
           pro_score        = ${proScore},
           survival_score   = ${survivalScore},
           last_survival_at = NOW(),
           entry_tier       = ${entryTier},
           score_version    = 'v2',
+          runner_score     = ${runner.score},
+          runner_phase     = ${runner.phase},
           quality_label    = CASE
             WHEN ${r.sec_is_honeypot === true} THEN 'below'
             WHEN surfaced_at IS NOT NULL THEN
@@ -291,7 +345,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       await invalidateProCaches();
     }
 
-    log.info({ snapCount, mode }, "Pro snapshots written");
+    log.info({ snapCount, skippedFlat, mode }, "Pro snapshots written (momentum)");
   } catch (err) {
     log.error({ err, mode }, "Pro snapshots error");
   }
@@ -312,6 +366,6 @@ export function startProSnapshots(): void {
 
   log.info(
     { hotMs: HOT_INTERVAL_MS, fullMs: FULL_INTERVAL_MS, delayMs: STARTUP_DELAY_MS },
-    "Pro snapshots scheduled (hot 30s <6h / full 2m + survival v2)",
+    "Pro snapshots scheduled (momentum writes / hot tick 20s <6h)",
   );
 }

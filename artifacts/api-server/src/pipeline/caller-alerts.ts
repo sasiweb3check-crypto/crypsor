@@ -1,13 +1,11 @@
 /**
- * Pro Caller Alerts — confidence-gated (paid-tier precision)
+ * Runner Entry Alerts — momentum-confirmed entries (MC-agnostic)
  *
- * 1. First Call alert — ONLY when entry Confidence clears hard gates
- *    (cluster smart+KOL, intel≥90, MC $5–15K, mint renounced, fresh, not chasing).
- *    Desk can still list every surfaced call; Telegram is the scarce signal.
+ * 1. ENTRY ping — when Runner phase hits `entry` (velocity / structure),
+ *    soft tagged presence (smart OR KOL), mint preferred. No $5–15K gate.
+ * 2. Milestone alerts — 2× / 5× / 10× / 20× after an ENTRY ping.
  *
- * 2. Milestone alerts — 2× / 5× / 10× / 20× for calls that received a first alert.
- *
- * Backtest: Rule D ≈ 55% 2× / 30% 5× vs desk ~31% / 10%.
+ * Radar / Heating stay on the desk — never silent, just not Telegram ENTRY.
  */
 
 import { db } from "@workspace/db";
@@ -17,14 +15,12 @@ import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
 import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
-import {
-  computeConfidence,
-  convictionFieldsFromVerified,
-} from "../lib/pro-confidence";
+import { computeRunnerScore, type RunnerScoreResult } from "../lib/runner-score";
+import { convictionFieldsFromVerified } from "../lib/pro-confidence";
 
 const log = logger.child({ module: "caller-alerts" });
 
-const CHECK_INTERVAL_MS = 30_000;
+const CHECK_INTERVAL_MS = 20_000;
 const STARTUP_DELAY_MS = 20_000;
 const ALERT_MILESTONES = [2, 5, 10, 20] as const;
 
@@ -50,7 +46,6 @@ async function sendTelegram(
 ): Promise<void> {
   const chat_id = /^-?\d+$/.test(creds.chatId) ? Number(creds.chatId) : creds.chatId;
   const url = `https://api.telegram.org/bot${creds.botToken}/sendMessage`;
-  const MAX_ATTEMPTS = 3;
   const t0 = Date.now();
 
   const doFetch = async (body: Record<string, unknown>): Promise<Response> => {
@@ -76,7 +71,6 @@ async function sendTelegram(
       disable_web_page_preview: true,
     });
     if (!resp.ok) {
-      // MarkdownV2 is brittle — retry as plain text so alerts still deliver
       const plain = text.replace(/\\([_*[\]()~`>#+=|{}.!\-\\])/g, "$1");
       resp = await doFetch({ chat_id, text: plain, disable_web_page_preview: true });
     }
@@ -91,62 +85,42 @@ async function sendTelegram(
     opsLog("telegram", "info", "Telegram send OK", { attempt }, latencyMs);
     healthMonitor.ok("caller-alerts", latencyMs);
   } catch (err) {
-    const cause = err instanceof Error && "cause" in err && err.cause
-      ? String((err as Error & { cause?: unknown }).cause)
-      : "";
     const msg = err instanceof Error ? err.message : String(err);
     const transient =
       msg.includes("fetch failed") ||
       msg.includes("Abort") ||
-      msg.includes("abort") ||
       msg.includes("ECONN") ||
-      msg.includes("ETIMEDOUT") ||
-      msg.includes("socket") ||
-      cause.includes("ECONN") ||
-      cause.includes("UND_ERR");
-    if (transient && attempt < MAX_ATTEMPTS - 1) {
-      const delay = 800 * (attempt + 1) + Math.floor(Math.random() * 400);
-      await new Promise(r => setTimeout(r, delay));
+      msg.includes("ETIMEDOUT");
+    if (transient && attempt < 2) {
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
       return sendTelegram(creds, text, attempt + 1);
     }
-    const latencyMs = Date.now() - t0;
-    const full = cause ? `${msg} (${cause.slice(0, 120)})` : msg;
-    opsLog("telegram", "error", full.slice(0, 240), { attempt, latencyMs }, latencyMs);
-    healthMonitor.error("caller-alerts", full);
-    throw err instanceof Error ? err : new Error(full);
+    throw err;
   }
 }
 
+function esc(s: string): string {
+  return s.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");
+}
 
-function fmtMc(usd: string | number | null | undefined): string {
-  const n = typeof usd === "string" ? parseFloat(usd) : (usd ?? 0);
-  if (!n || !isFinite(n)) return "—";
+function fmtMc(v: string | null | undefined): string {
+  const n = parseFloat(v ?? "0");
+  if (!Number.isFinite(n) || n <= 0) return "?";
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
-}
-
-function fmtPct(n: number | null | undefined): string {
-  if (n == null || !isFinite(n)) return "—";
-  const sign = n >= 0 ? "+" : "";
-  return `${sign}${n.toFixed(0)}%`;
-}
-
-function esc(s: string): string {
-  return s.replace(/[_*[\]()~`>#+=|{}.!\-\\]/g, "\\$&");
+  return `$${Math.round(n)}`;
 }
 
 function gmgnLink(chain: string, address: string): string {
-  return chain === "solana" || chain === "sol"
-    ? `https://gmgn\\.ai/sol/token/${address}`
-    : `https://dexscreener\\.com/${esc(chain)}/${address}`;
+  const map: Record<string, string> = { solana: "sol", eth: "eth", base: "base", bsc: "bsc" };
+  return `https://gmgn.ai/${map[chain] ?? "sol"}/token/${address}`;
 }
 
 function socialBlock(socials: Socials): string[] {
   const out: string[] = [];
-  if (socials.twitter) out.push(`🐦 ${esc(socials.twitter)}`);
-  if (socials.telegram) out.push(`✈️ ${esc(socials.telegram)}`);
-  if (socials.website) out.push(`🌐 ${esc(socials.website)}`);
+  if (socials.twitter) out.push(`𝕏 ${esc(socials.twitter)}`);
+  if (socials.telegram) out.push(`TG ${esc(socials.telegram)}`);
+  if (socials.website) out.push(`Web ${esc(socials.website)}`);
   return out;
 }
 
@@ -169,7 +143,9 @@ interface ProAlertToken {
   proScore: number | null;
   survivalScore: number | null;
   qualityLabel: string;
-  entryTier: string | null;
+  runnerScore: number | null;
+  runnerPhase: string | null;
+  runnerAlertSentAt: string | Date | null;
   callAlertSentAt: string | Date | null;
   milestoneAlertsSent: string | null;
   currentMc: string | null;
@@ -177,6 +153,7 @@ interface ProAlertToken {
   liveSmart: number;
   liveIntel: number | null;
   liveHv: number | null;
+  volumeIntensity: number | null;
   liquidityUsd: string | null;
   holderCount: number | null;
   secMint: boolean | null;
@@ -191,55 +168,51 @@ function parseSentTiers(raw: string | null | undefined): Set<number> {
   );
 }
 
-function ageMinutes(calledAt: string | Date): number {
-  const t = calledAt instanceof Date ? calledAt.getTime() : new Date(calledAt).getTime();
-  if (!Number.isFinite(t)) return 9999;
-  return (Date.now() - t) / 60_000;
-}
-
-function gainPct(calledMc: string | null, currentMc: string | null): number | null {
-  const a = parseFloat(calledMc ?? "0") || 0;
-  const b = parseFloat(currentMc ?? "0") || 0;
-  if (a <= 0 || b <= 0) return null;
-  return ((b - a) / a) * 100;
-}
-
-function evaluateConfidence(t: ProAlertToken) {
+function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
+  const calledMc = parseFloat(t.calledMcUsd ?? "0") || 0;
+  const currentMc = parseFloat(t.currentMc ?? "0") || 0;
+  const velocity = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
+  const gainPct = calledMc > 0 && currentMc > 0 ? ((currentMc - calledMc) / calledMc) * 100 : 0;
+  const calledAt = t.calledAt instanceof Date ? t.calledAt.getTime() : new Date(t.calledAt).getTime();
+  const ageMinutes = Number.isFinite(calledAt) ? (Date.now() - calledAt) / 60_000 : 9999;
   const vw = convictionFieldsFromVerified(t.verifiedWallets);
-  return computeConfidence({
+
+  return computeRunnerScore({
     calledIntelScore: t.calledIntel,
     calledSmartCount: t.calledSmart,
     calledKolCount: t.calledKol,
-    calledMcUsd: parseFloat(t.calledMcUsd ?? "0") || null,
-    calledHolderVelocity: t.calledHv,
-    smartHoldRate: vw.smartHoldRate,
-    diamondHands: vw.diamondHands,
-    paperHands: vw.paperHands,
-    top10HolderRate: vw.top10HolderRate,
-    bundlerPct: vw.bundlerPct,
+    calledMcUsd: calledMc || null,
+    currentMcUsd: currentMc || null,
+    athMultiple: t.athMultiple ?? velocity,
+    gainPct,
+    ageMinutes,
+    velocity,
+    snapDeltaPct: null,
+    liveSmart: t.liveSmart,
+    liveKol: t.liveKol,
     secIsHoneypot: t.secHoneypot,
     secMintRenounced: t.secMint,
     secFreezeRenounced: t.secFreeze,
-    ageMinutes: ageMinutes(t.calledAt),
-    gainSinceCallPct: gainPct(t.calledMcUsd, t.currentMc),
+    holderVelocityScore: t.liveHv ?? t.calledHv,
+    volumeIntensityScore: t.volumeIntensity,
+    smartHoldRate: vw.smartHoldRate,
   });
 }
 
-function buildFirstCallMessage(t: ProAlertToken, conf: ReturnType<typeof computeConfidence>): string {
+function buildEntryMessage(t: ProAlertToken, runner: RunnerScoreResult): string {
   const name = esc(t.name ?? "Unknown");
   const symbol = esc(t.symbol ?? "?");
   const socials = extractSocials(t.rawMetadata);
-  const why = conf.reasons.slice(0, 4).map(r => `• ${esc(r)}`);
+  const why = runner.reasons.slice(0, 4).map(r => `• ${esc(r)}`);
   const lines = [
-    `🎯 *HIGH CONFIDENCE ENTRY* — *${name}* \\(${symbol}\\)`,
+    `🚀 *RUNNER ENTRY* — *${name}* \\(${symbol}\\)`,
     ``,
-    `Confidence *${conf.score}* · Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}*`,
-    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}* · cluster *${t.calledSmart} smart / ${t.calledKol} KOL*`,
-    `Intel *${Math.round(t.calledIntel ?? 0)}* · HV *${Math.round(t.calledHv ?? 0)}*`,
+    `Phase *${esc(runner.label)}* · Score *${runner.score}* · Vel *${esc(String(runner.signals.velocity))}×*`,
+    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}* · Now: *${esc(fmtMc(t.currentMc))}* · Gain *${Math.round(runner.signals.gainPct)}%*`,
+    `Size *${esc(runner.sizeLabel)}* · Tagged smart *${t.calledSmart}* / KOL *${t.calledKol}*`,
     t.secMint === true ? `✅ Mint renounced` : null,
-    t.liquidityUsd ? `Liq: *${esc(fmtMc(t.liquidityUsd))}*` : null,
     ``,
-    `*Why this alert*`,
+    `*Why this entry*`,
     ...why,
     ``,
     `\`${t.address}\``,
@@ -258,21 +231,12 @@ function buildMilestoneMessage(t: ProAlertToken, tier: number): string {
   const called = parseFloat(t.calledMcUsd ?? "0") || 0;
   const current = parseFloat(t.currentMc ?? "0") || 0;
   const athX = t.athMultiple ?? (called > 0 ? current / called : 1);
-  const gain = called > 0 ? ((current - called) / called) * 100 : null;
-  const athMc = called > 0 ? called * athX : null;
   const emoji: Record<number, string> = { 2: "🔥", 5: "🚀", 10: "💎", 20: "👑" };
   const socials = extractSocials(t.rawMetadata);
-  const kolDelta = t.liveKol - t.calledKol;
-  const smartDelta = t.liveSmart - t.calledSmart;
-
   const lines = [
     `${emoji[tier] ?? "🏆"} *${name}* \\(${symbol}\\) hit *${tier}×*`,
     ``,
-    `Entry *${esc(fmtMc(t.calledMcUsd))}* → Now *${esc(fmtMc(t.currentMc))}* \\(${esc(fmtPct(gain))}\\)`,
-    `ATH *${esc(athX.toFixed(1))}×* \\(~${esc(fmtMc(athMc))}\\)`,
-    `Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}* · HV *${Math.round(t.liveHv ?? t.calledHv ?? 0)}*`,
-    `KOL ${t.calledKol}→${t.liveKol}${kolDelta !== 0 ? ` \\(${kolDelta >= 0 ? "+" : ""}${kolDelta}\\)` : ""} · Smart ${t.calledSmart}→${t.liveSmart}${smartDelta !== 0 ? ` \\(${smartDelta >= 0 ? "+" : ""}${smartDelta}\\)` : ""}`,
-    ``,
+    `ATH *${athX.toFixed(1)}×* · Now *${esc(fmtMc(t.currentMc))}* · Entry *${esc(fmtMc(t.calledMcUsd))}*`,
     `\`${t.address}\``,
     `🔗 [GMGN](${gmgnLink(t.chain, t.address)})`,
     ...(() => {
@@ -287,17 +251,15 @@ async function checkAndAlert(): Promise<void> {
   const t0 = Date.now();
   const creds = await getTelegramCreds();
   if (!creds) {
-    // Log at most once per 10 minutes — avoid flooding the ops ring
     const last = (checkAndAlert as { _lastNoTg?: number })._lastNoTg ?? 0;
     if (Date.now() - last > 600_000) {
       (checkAndAlert as { _lastNoTg?: number })._lastNoTg = Date.now();
-      opsLog("blocker", "warn", "Telegram not configured — Pro alerts skipped");
+      opsLog("blocker", "warn", "Telegram not configured — Runner alerts skipped");
     }
     healthMonitor.ok("caller-alerts");
     return;
   }
 
-  // Candidates: fresh surfaced calls not yet alerted, OR already-alerted for milestones
   const rows = await db.execute(sql`
     SELECT
       pc.id                    AS "proCallId",
@@ -318,7 +280,9 @@ async function checkAndAlert(): Promise<void> {
       pc.pro_score             AS "proScore",
       pc.survival_score        AS "survivalScore",
       pc.quality_label         AS "qualityLabel",
-      pc.entry_tier            AS "entryTier",
+      pc.runner_score          AS "runnerScore",
+      pc.runner_phase          AS "runnerPhase",
+      pc.runner_alert_sent_at  AS "runnerAlertSentAt",
       pc.call_alert_sent_at    AS "callAlertSentAt",
       pc.milestone_alerts_sent AS "milestoneAlertsSent",
       t.market_cap_usd         AS "currentMc",
@@ -326,6 +290,7 @@ async function checkAndAlert(): Promise<void> {
       COALESCE(t.holder_smart_count, 0) AS "liveSmart",
       t.intelligence_score     AS "liveIntel",
       t.holder_velocity_score  AS "liveHv",
+      t.volume_intensity_score AS "volumeIntensity",
       t.liquidity_usd          AS "liquidityUsd",
       t.holder_count           AS "holderCount",
       t.sec_mint_renounced     AS "secMint",
@@ -336,20 +301,22 @@ async function checkAndAlert(): Promise<void> {
     WHERE pc.surfaced_at IS NOT NULL
       AND pc.quality_label IN ('very_good', 'good')
       AND (
-        (pc.call_alert_sent_at IS NULL AND pc.called_at >= NOW() - INTERVAL '2 hours')
-        OR (pc.call_alert_sent_at IS NOT NULL AND COALESCE(pc.ath_multiple, 1) >= 2)
+        (pc.runner_alert_sent_at IS NULL AND pc.called_at >= NOW() - INTERVAL '3 hours')
+        OR (
+          (pc.runner_alert_sent_at IS NOT NULL OR pc.call_alert_sent_at IS NOT NULL)
+          AND COALESCE(pc.ath_multiple, 1) >= 2
+        )
       )
     ORDER BY
-      (pc.call_alert_sent_at IS NULL) DESC,
+      (pc.runner_alert_sent_at IS NULL) DESC,
       pc.called_at DESC
     LIMIT 200
   `);
 
   const tokens = rows.rows as unknown as ProAlertToken[];
-  let firstCallSent = 0;
+  let entrySent = 0;
   let milestoneSent = 0;
-  let skippedLowConf = 0;
-  // Cap sends per cycle — backlog of 30+ pending was causing TypeError: fetch failed
+  let skipped = 0;
   const MAX_SENDS_PER_CYCLE = 8;
   let sends = 0;
 
@@ -358,50 +325,51 @@ async function checkAndAlert(): Promise<void> {
       opsLog("telegram", "warn", `Alert cap ${MAX_SENDS_PER_CYCLE}/cycle — remain queued`);
       break;
     }
-    // ── 1. High-confidence entry alert only ────────────────────────────────
-    if (!t.callAlertSentAt) {
-      const conf = evaluateConfidence(t);
-      if (!conf.alertEligible) {
-        skippedLowConf++;
-        // Fresh calls stay in the 2h query window and retry each cycle until
-        // gates pass or they age out — never spam Telegram for desk-only rows.
+
+    const alreadyEntry = Boolean(t.runnerAlertSentAt || t.callAlertSentAt);
+
+    if (!alreadyEntry) {
+      const runner = evaluateRunner(t);
+      // Persist live phase even when not alerting
+      await db.execute(sql`
+        UPDATE pro_calls
+        SET runner_score = ${runner.score},
+            runner_phase = ${runner.phase}
+        WHERE id = ${t.proCallId}
+      `);
+
+      if (!runner.alertEligible) {
+        skipped++;
         continue;
       }
       try {
-        await sendTelegram(creds, buildFirstCallMessage(t, conf));
+        await sendTelegram(creds, buildEntryMessage(t, runner));
         await db.execute(sql`
           UPDATE pro_calls
-          SET call_alert_sent_at = NOW()
-          WHERE id = ${t.proCallId} AND call_alert_sent_at IS NULL
+          SET runner_alert_sent_at = NOW(),
+              call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
+              runner_score = ${runner.score},
+              runner_phase = ${runner.phase}
+          WHERE id = ${t.proCallId} AND runner_alert_sent_at IS NULL
         `);
-        firstCallSent++;
+        entrySent++;
         sends++;
         log.info(
-          {
-            proCallId: t.proCallId,
-            symbol: t.symbol,
-            confidence: conf.score,
-            reasons: conf.reasons,
-            proScore: t.proScore,
-          },
-          "High-confidence entry alert sent",
+          { proCallId: t.proCallId, symbol: t.symbol, runner: runner.score, phase: runner.phase },
+          "Runner ENTRY alert sent",
         );
-        opsLog("telegram", "info", `Confidence alert · ${t.symbol ?? t.address.slice(0, 6)} · ${conf.score}`, {
-          confidence: conf.score,
-          smart: t.calledSmart,
-          kol: t.calledKol,
-          intel: t.calledIntel,
+        opsLog("telegram", "info", `Runner ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+          velocity: runner.signals.velocity,
+          phase: runner.phase,
         });
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
-        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "First-call alert failed");
-        opsLog("telegram", "error", `First-call failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
+        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "Runner ENTRY alert failed");
+        opsLog("telegram", "error", `ENTRY failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
       }
-      // Milestones next cycle so first-call stands alone
       continue;
     }
 
-    // ── 2. Milestone alerts — fire every newly crossed tier ────────────────
     const athX = t.athMultiple ?? 1;
     const already = parseSentTiers(t.milestoneAlertsSent);
     const due = ALERT_MILESTONES.filter(tier => athX >= tier && !already.has(tier));
@@ -418,23 +386,18 @@ async function checkAndAlert(): Promise<void> {
         `);
         milestoneSent++;
         sends++;
-        log.info(
-          { proCallId: t.proCallId, symbol: t.symbol, tier, athX },
-          "Pro milestone alert sent",
-        );
         opsLog("telegram", "info", `Milestone ${tier}× · ${t.symbol ?? "?"}`, { athX });
         if (sends >= MAX_SENDS_PER_CYCLE) break;
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
         log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");
-        opsLog("telegram", "error", `Milestone ${tier}× failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 140)}`);
-        break; // don't mark further tiers if Telegram is failing
+        break;
       }
     }
   }
 
-  if (firstCallSent > 0 || milestoneSent > 0 || skippedLowConf > 0) {
-    log.info({ firstCallSent, milestoneSent, skippedLowConf }, "Pro alerts cycle complete");
+  if (entrySent > 0 || milestoneSent > 0 || skipped > 0) {
+    log.info({ entrySent, milestoneSent, skipped }, "Runner alerts cycle complete");
   }
   healthMonitor.ok("caller-alerts", Date.now() - t0);
 }
@@ -443,7 +406,7 @@ export function startCallerAlerts(): void {
   const loop = () => {
     checkAndAlert()
       .catch(err => {
-        log.warn({ err }, "Pro alerts check failed");
+        log.warn({ err }, "Runner alerts check failed");
         opsLog("telegram", "error", `Alerts loop: ${String(err).slice(0, 180)}`);
         healthMonitor.error("caller-alerts", err);
       })
@@ -452,7 +415,7 @@ export function startCallerAlerts(): void {
   setTimeout(loop, STARTUP_DELAY_MS);
   log.info(
     { intervalMs: CHECK_INTERVAL_MS, milestones: ALERT_MILESTONES },
-    "Pro alerts ready (confidence entry + 2×/5×/10×/20× milestones)",
+    "Runner alerts ready (ENTRY momentum + milestones)",
   );
-  opsLog("telegram", "info", "Pro alerts loop started");
+  opsLog("telegram", "info", "Runner alerts loop started");
 }

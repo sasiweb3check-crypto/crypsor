@@ -50,6 +50,15 @@ export const pro_calls = pgTable(
     // Comma-separated tiers already alerted, e.g. "2,5,10"
     milestoneAlertsSent: text("milestone_alerts_sent").default(""),
 
+    // ── Runner Entry product (momentum-based) ────────────────────────────────
+    runnerScore:      real("runner_score"),
+    // radar | heating | entry | fading | dead
+    runnerPhase:      text("runner_phase"),
+    // First ENTRY-phase Telegram ping (MC-agnostic runner product)
+    runnerAlertSentAt: timestamp("runner_alert_sent_at", { withTimezone: true }),
+    // Last snap MC — for momentum delta without joining snapshots
+    lastSnapMcUsd:    text("last_snap_mc_usd"),
+
     // ── Running ATH tracker (updated by snapshot worker) ────────────────────
     athMultiple:      real("ath_multiple").default(1), // max(current_mc / called_mc) ever seen
     lastSnapshotAt:   timestamp("last_snapshot_at"),

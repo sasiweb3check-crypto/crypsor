@@ -1,16 +1,14 @@
 /**
- * Pro Scanner — strict precision mode (win-rate first)
+ * Pro Scanner — Runner radar intake
  *
- * intel:scored → live GMGN verify (required) → INSERT freeze → score → surface
- * only high-conviction calls.
+ * intel:scored → live GMGN verify → INSERT freeze → score → surface
  *
- * Gates (must all pass):
- *   • Live GMGN verify OK — no intel_log / tracked-wallet shortcut
- *   • Holding smart ≥ 1 (preferred) or tags smart ≥ 1
- *   • Entry MC $5K–$40K · liq ≥ $8K when known · !honeypot
- *   • Banned mints/symbols (USD1, cbBTC, stables) rejected
- *   • Track C (K0∧S0) never qualifies
- * Surface / alerts: very_good only (≥75), or score≥68 with smart≥1 ∧ HV≥80
+ * Gates:
+ *   • Live GMGN verify OK
+ *   • Tagged presence: smart OR KOL ≥ 1 (soft — momentum confirms later)
+ *   • Entry MC $5K–$150K · liq when known · !honeypot
+ *   • Banned mints/symbols rejected
+ * Surface: very_good / good sticky desk; ENTRY alerts are momentum-based
  */
 
 import { db } from "@workspace/db";
@@ -77,15 +75,12 @@ function gateTrack(
   smart: number,
   smartHoldRate: number | null,
 ): "very_strong" | null {
-  // smart=0 never qualifies (0% win among surfaced)
-  if (smart < 1) return null;
-  // Outcome-tuned: smart=1 with holdRate<50% wins ~12% — reject when known.
-  if (smart === 1 && smartHoldRate != null && smartHoldRate < 0.5) return null;
-  // Prefer smart≥2 (best cohort ~36% 2×); smart=1 with solid hold still OK.
-  if (intel >= MIN_INTEL && (smart >= 2 || (smart >= 1 && (smartHoldRate == null || smartHoldRate >= 0.5)))) {
-    return "very_strong";
-  }
-  if (intel >= 85 && smart >= 1 && kol >= 1) return "very_strong";
+  // Soft tagged presence: smart OR KOL — bots dump; we only need a radar tag.
+  if (smart < 1 && kol < 1) return null;
+  // Weak single-smart hold still allowed (Runner momentum confirms later).
+  if (intel >= MIN_INTEL) return "very_strong";
+  if (intel >= 75 && (smart >= 1 || kol >= 1)) return "very_strong";
+  void smartHoldRate;
   return null;
 }
 
@@ -105,17 +100,17 @@ function shouldSurface(opts: {
   qualityLabel: string;
   score: number;
   smart: number;
+  kol: number;
   hv: number | null;
   honeypot: boolean | null;
   calledMc: number;
 }): boolean {
   if (opts.honeypot === true) return false;
   if (opts.calledMc < MIN_MC || opts.calledMc > MAX_MC) return false;
-  if (opts.smart < 1) return false;
-  // Elite scores always surface once smart≥1 at call
+  // Soft: smart OR KOL present
+  if (opts.smart < 1 && opts.kol < 1) return false;
   if (opts.qualityLabel === "very_good" || opts.score >= SURFACE_VERY_GOOD) return true;
-  // Soft good: prefer HV≥80, but missing HV must not hard-block (common on fresh calls)
-  if (opts.score >= SURFACE_GOOD_STRICT && opts.smart >= 1) {
+  if (opts.score >= SURFACE_GOOD_STRICT) {
     if (opts.hv == null || opts.hv >= 70) return true;
   }
   return false;
@@ -473,7 +468,7 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
           OR pc.quality_label IS NULL
           OR pc.surfaced_at IS NULL
           OR (pc.quality_label = 'below' AND pc.pro_score >= ${SURFACE_GOOD_STRICT}
-              AND COALESCE(pc.called_smart_count, 0) >= 1
+              AND (COALESCE(pc.called_smart_count, 0) >= 1 OR COALESCE(pc.called_kol_count, 0) >= 1)
               AND pc.called_at >= NOW() - INTERVAL '3 days')
         )
         ${tokenId ? sql`AND pc.token_id = ${tokenId}` : sql``}
@@ -571,6 +566,8 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         const effectiveScore = Math.max(result.score, prevScore ?? 0);
 
         const alreadySurfaced = r.surfaced_at != null;
+        const kol = Number(r.called_kol_count ?? 0);
+        const taggedOk = smart >= 1 || kol >= 1;
         let qualityLabel: "very_good" | "good" | "below" = ban.banned
           ? "below"
           : result.qualityLabel;
@@ -582,9 +579,9 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
           } else {
             qualityLabel = "good";
           }
-        } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_VERY_GOOD) {
+        } else if (!ban.banned && taggedOk && effectiveScore >= SURFACE_VERY_GOOD) {
           qualityLabel = "very_good";
-        } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_GOOD_STRICT) {
+        } else if (!ban.banned && taggedOk && effectiveScore >= SURFACE_GOOD_STRICT) {
           if (qualityLabel === "below") qualityLabel = "good";
         }
 
@@ -594,6 +591,7 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
             qualityLabel,
             score: effectiveScore,
             smart,
+            kol,
             hv,
             honeypot: r.sec_is_honeypot as boolean | null,
             calledMc,

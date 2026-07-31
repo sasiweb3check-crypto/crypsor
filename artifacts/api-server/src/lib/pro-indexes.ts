@@ -15,6 +15,10 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_wallets text`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS call_alert_sent_at timestamptz`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS milestone_alerts_sent text DEFAULT ''`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS runner_score real`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS runner_phase text`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS runner_alert_sent_at timestamptz`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS last_snap_mc_usd text`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS holder_count integer`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS mc_growth_score real`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS volume_intensity_score real`,
@@ -41,6 +45,10 @@ const STATEMENTS = [
      WHERE quality_label IN ('good','very_good') AND ath_multiple >= 5`,
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_snapshots_call_snap_idx
      ON pro_snapshots (pro_call_id, snapshot_at DESC)`,
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_runner_phase_idx
+     ON pro_calls (runner_phase, runner_score DESC NULLS LAST)`,
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS pro_calls_runner_alert_idx
+     ON pro_calls (runner_alert_sent_at DESC NULLS LAST)`,
 ];
 
 /** One-shot demote / ignore USD1, cbBTC, absurd MC, Track-C (smart=0) junk. */
@@ -72,7 +80,7 @@ async function quarantineBadMcOutcomes(): Promise<void> {
            OR UPPER(COALESCE(t.symbol, '')) = ANY($2::text[])
            OR COALESCE(NULLIF(pc.called_mc_usd, '')::numeric, 0) > $3
            OR COALESCE(NULLIF(pc.called_mc_usd, '')::numeric, 0) > $4
-           OR COALESCE(pc.called_smart_count, 0) < 1
+           OR (COALESCE(pc.called_smart_count, 0) < 1 AND COALESCE(pc.called_kol_count, 0) < 1)
            OR COALESCE(NULLIF(t.market_cap_usd, '')::numeric, 0) > $5
            OR t.sec_is_honeypot IS TRUE
          )`,
@@ -89,7 +97,7 @@ async function quarantineBadMcOutcomes(): Promise<void> {
            END
        WHERE surfaced_at IS NOT NULL
          AND quality_label = 'below'
-         AND COALESCE(called_smart_count, 0) >= 1
+         AND (COALESCE(called_smart_count, 0) >= 1 OR COALESCE(called_kol_count, 0) >= 1)
          AND COALESCE(NULLIF(called_mc_usd, '')::numeric, 0) <= $1
          AND COALESCE(NULLIF(called_mc_usd, '')::numeric, 0) >= 5000`,
       [MAX_PRO_ENTRY_MC_USD],
