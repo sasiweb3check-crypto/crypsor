@@ -49,9 +49,9 @@ export function formatCompactUsd(val: number | string | null | undefined): strin
   if (val === null || val === undefined) return '—';
   const n = typeof val === 'string' ? parseFloat(val) : val;
   if (isNaN(n) || n === 0) return '—';
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K`;
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000)     return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)         return `$${(n / 1_000).toFixed(1)}K`;
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(n);
 }
 

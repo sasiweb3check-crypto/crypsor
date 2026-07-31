@@ -88,8 +88,10 @@ function CallCardView({ c }: { c: CallCard }) {
   const [open, setOpen] = useState(true);
   const imgSrc = safeImageUrl(c.logoUri, c.address, c.symbol);
   const sym = safeSymbol(c.symbol, c.address) || "?";
-  const athBadge = c.athMultiple >= 2
-    ? `${c.athMultiple >= 10 ? Math.round(c.athMultiple) : c.athMultiple.toFixed(1)}x ATH`
+  const athX = Number.isFinite(c.athMultiple) ? c.athMultiple : 1;
+  const nowX = Number.isFinite(c.nowMultiple) ? c.nowMultiple : 1;
+  const athBadge = athX >= 2
+    ? `${athX >= 10 ? Math.round(athX) : athX.toFixed(1)}x ATH`
     : null;
 
   const walletLabel = c.walletBuys > 0
@@ -220,7 +222,7 @@ function CallCardView({ c }: { c: CallCard }) {
 
       {open && (
         <div className="pb-1">
-          <LiveBar now={c.nowMultiple} peak={Math.max(c.athMultiple, c.nowMultiple)} />
+          <LiveBar now={nowX} peak={Math.max(athX, nowX)} />
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-[var(--cryp-mute)]">
             {c.avgWalletWinRate != null && (
               <span>Buyer WR {(c.avgWalletWinRate * 100).toFixed(0)}%</span>
@@ -283,12 +285,15 @@ export default function CallsPage() {
     placeholderData: keepPreviousData,
   });
 
-  const { data, isLoading, isFetching } = useQuery({
+  const {
+    data, isLoading, isFetching, isError, error, refetch,
+  } = useQuery({
     queryKey: CALLS_FEED_KEY(mode),
     queryFn: () => fetchCallsFeed(mode, mode === "best" ? 8 : 40),
     refetchInterval: 12_000,
     staleTime: 6_000,
     placeholderData: keepPreviousData,
+    retry: 4,
   });
 
   const cards = data?.cards ?? [];
@@ -378,14 +383,32 @@ export default function CallsPage() {
       )}
 
       <div className="space-y-3">
-        {isLoading && cards.length === 0 && (
+        {isError && cards.length === 0 && (
+          <div className="call-card text-center py-8 space-y-3">
+            <div className="text-[13px] text-[var(--cryp-loss)]">
+              Couldn’t load calls
+            </div>
+            <div className="text-[11px] text-[var(--cryp-mute)] px-4">
+              {error instanceof Error ? error.message : "API waking up or timed out"}
+              {" — "}tap retry (Render free tier may take ~30s on first wake)
+            </div>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="call-action mx-auto"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {isLoading && cards.length === 0 && !isError && (
           <>
             {[0, 1, 2].map(i => (
               <div key={i} className="call-card shimmer-card h-44" />
             ))}
           </>
         )}
-        {!isLoading && cards.length === 0 && (
+        {!isLoading && !isError && cards.length === 0 && (
           <div className="call-card text-center py-12 text-[12px] text-[var(--cryp-mute)] uppercase tracking-widest">
             No quality calls yet — scanning wallets
           </div>

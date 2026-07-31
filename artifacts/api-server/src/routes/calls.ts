@@ -73,7 +73,7 @@ export type CallCard = {
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v3:${limit}`;
+  const cacheKey = `calls:feed:v4:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -83,6 +83,8 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
   `);
   const universe = Number((universeRow.rows[0] as { n?: number })?.n ?? 0);
 
+  // Keep this query light — heavy LATERAL (regex notional + win_rate joins)
+  // was timing out on cold DB and left the Best Calls cards empty.
   const rows = await db.execute(sql`
     SELECT
       pc.token_id,
@@ -110,23 +112,16 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.token_created_at,
       t.first_detected_at,
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
-      buys.buy_notional AS buy_notional,
+      NULL::float8 AS buy_notional,
       buys.avg_win_rate AS avg_win_rate
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     LEFT JOIN LATERAL (
       SELECT
         COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys,
-        SUM(
-          CASE
-            WHEN tb.price_usd ~ '^[0-9.]+$' AND tb.amount ~ '^[0-9.]+$'
-            THEN (tb.price_usd::float8 * tb.amount::float8)
-            ELSE 0
-          END
-        ) AS buy_notional,
         AVG(wp.win_rate) FILTER (WHERE wp.win_rate IS NOT NULL) AS avg_win_rate
       FROM token_buys tb
-      JOIN walletdatasource w ON w.id = tb.wallet_id
+      LEFT JOIN walletdatasource w ON w.id = tb.wallet_id
       LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
       WHERE tb.token_id = pc.token_id
     ) buys ON TRUE
@@ -137,7 +132,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
         OR COALESCE(buys.wallet_buys, 0) >= 2
       )
     ORDER BY pc.called_at DESC NULLS LAST
-    LIMIT 320
+    LIMIT 200
   `);
 
   const cards: CallCard[] = (rows.rows as Array<Record<string, unknown>>).map(r => {
@@ -250,11 +245,130 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
   return payload;
 }
 
+/** Ultra-light fallback when buy-join path times out — cards still load. */
+async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
+  const universeRow = await db.execute(sql`
+    SELECT COUNT(*)::int AS n FROM tracked_tokens
+    WHERE COALESCE(status, '') NOT IN ('ignored', 'archive')
+  `);
+  const universe = Number((universeRow.rows[0] as { n?: number })?.n ?? 0);
+  const rows = await db.execute(sql`
+    SELECT
+      pc.token_id, pc.called_at, pc.called_mc_usd,
+      pc.called_kol_count, pc.called_smart_count,
+      pc.ath_multiple, pc.pro_score, pc.quality_label,
+      pc.hit_2x, pc.hit_5x, pc.hit_10x, pc.surfaced_at,
+      t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+      t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
+      t.raw_metadata, t.holder_count,
+      t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
+      t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
+      t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
+      t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      0::int AS wallet_buys, NULL::float8 AS buy_notional, NULL::float8 AS avg_win_rate
+    FROM pro_calls pc
+    JOIN tracked_tokens t ON t.id = pc.token_id
+    WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+      AND (pc.surfaced_at IS NOT NULL OR pc.quality_label IN ('very_good', 'good'))
+    ORDER BY pc.called_at DESC NULLS LAST
+    LIMIT ${Math.min(limit, 120)}
+  `);
+
+  // Reuse mapper by temporarily assigning rows shape — call through loadCallCards path
+  // by inlining a thin wrap: map with walletBuys=0
+  const cards: CallCard[] = (rows.rows as Array<Record<string, unknown>>).map(r => {
+    const calledMc = r.called_mc_usd != null ? parseFloat(String(r.called_mc_usd)) : null;
+    const currentMc = r.market_cap_usd != null ? parseFloat(String(r.market_cap_usd)) || null : null;
+    const athMultiple = Number(r.ath_multiple ?? 1) || 1;
+    const athMcRaw = r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) : null;
+    const athMc = athMcRaw && athMcRaw > 0
+      ? athMcRaw
+      : (calledMc && athMultiple > 1 ? calledMc * athMultiple : currentMc);
+    const nowMultiple = calledMc && currentMc && calledMc > 0
+      ? Math.round((currentMc / calledMc) * 100) / 100
+      : 1;
+    const ctoFlag = r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag);
+    const creatorClose = r.sec_creator_close == null ? null : Boolean(r.sec_creator_close);
+    const creatorCreatedCount = r.sec_creator_created_count != null
+      ? Number(r.sec_creator_created_count) : null;
+    const q = computeCallQuality({
+      walletBuys: 0,
+      calledKol: Number(r.called_kol_count ?? 0),
+      calledSmart: Number(r.called_smart_count ?? 0),
+      liveKol: Number(r.live_kol ?? 0),
+      liveSmart: Number(r.live_smart ?? 0),
+      holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+      holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+      avgWalletWinRate: null,
+      proScore: Number(r.pro_score ?? 0),
+      qualityLabel: String(r.quality_label ?? ""),
+      athMultiple,
+      honeypot: r.sec_is_honeypot as boolean | null,
+      ctoFlag,
+      creatorClose,
+      creatorCreatedCount,
+    });
+    const ageSrc = r.token_created_at ?? r.first_detected_at;
+    const firstSeen = ageSrc ? new Date(String(ageSrc)).getTime() : null;
+    return {
+      id: Number(r.token_id),
+      address: String(r.address),
+      chain: String(r.chain ?? "solana"),
+      name: (r.name as string | null) ?? null,
+      symbol: (r.symbol as string | null) ?? null,
+      logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+      calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+      calledMcUsd: calledMc,
+      currentMcUsd: currentMc,
+      athMcUsd: athMc,
+      gainPct: calledMc && currentMc && calledMc > 0
+        ? ((currentMc - calledMc) / calledMc) * 100 : null,
+      nowMultiple,
+      athMultiple: Math.round(athMultiple * 100) / 100,
+      walletBuys: 0,
+      buyVolumeHintUsd: null,
+      calledKol: Number(r.called_kol_count ?? 0),
+      calledSmart: Number(r.called_smart_count ?? 0),
+      liveKol: Number(r.live_kol ?? 0),
+      liveSmart: Number(r.live_smart ?? 0),
+      holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+      avgWalletWinRate: null,
+      holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+      proScore: Number(r.pro_score ?? 0),
+      qualityLabel: String(r.quality_label ?? "—"),
+      callScore: q.score,
+      callLabel: q.label,
+      reasons: q.reasons,
+      hit2x: Boolean(r.hit_2x) || athMultiple >= 2,
+      hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
+      hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
+      volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+      tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
+        ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000)) : null,
+      ctoFlag,
+      creatorClose,
+      creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
+      creatorCreatedCount,
+      socials: extractSocials(r.raw_metadata),
+    };
+  });
+  cards.sort((a, b) => b.callScore - a.callScore);
+  return { cards: cards.slice(0, limit), universe };
+}
+
 router.get("/calls/feed", async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "40"), 10) || 40, 1), 80);
     const mode = String(req.query.mode ?? "latest"); // latest | best | hot
-    const { cards, universe } = await loadCallCards(Math.max(limit, 80));
+
+    let pack: { cards: CallCard[]; universe: number };
+    try {
+      pack = await loadCallCards(Math.max(limit, 80));
+    } catch (primaryErr) {
+      console.error("calls feed primary failed — lite fallback", primaryErr);
+      pack = await loadCallCardsLite(Math.max(limit, 80));
+    }
+    const { cards, universe } = pack;
 
     let out = cards;
     if (mode === "best") {
