@@ -128,10 +128,11 @@ router.get("/wallet-intel/:address", async (req, res) => {
       hit2x: r.hit_2x != null ? Boolean(r.hit_2x) : null,
     }));
 
-    // If no crypsor events yet, try to judge from latest holder snapshots (live preview)
+    // Live preview from JSONB holder lists — only on refresh (expensive scan).
+    // Fast DB path must stay snappy so the UI does not black-wait.
     let liveJudgment: ReturnType<typeof judgeHolder> | null = null;
     let liveTokenHint: { tokenId: number; symbol: string | null } | null = null;
-    if (!ir || events.length === 0) {
+    if (refresh && (!ir || events.length === 0)) {
       try {
         const snap = await db.execute(sql`
           SELECT t.id AS token_id, t.symbol, ths.holders_data
@@ -153,7 +154,6 @@ router.get("/wallet-intel/:address", async (req, res) => {
               tokenId: Number(srow.token_id),
               symbol: srow.symbol != null ? String(srow.symbol) : null,
             };
-            // Kick background so it gets stored
             const { enqueueWalletIntel } = await import("../pipeline/wallet-intel");
             enqueueWalletIntel(Number(srow.token_id));
           }

@@ -13,11 +13,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
   const onWallet = location.startsWith("/wallet");
 
+  // Wake API early (Render free cold start) so Calls / Wallet don't black-wait
   useEffect(() => {
     void qc.prefetchQuery({
       queryKey: OPS_PING_KEY,
       queryFn: fetchOpsPing,
       staleTime: 15_000,
+    });
+    // Prefetch feed in parallel so Best Calls paints sooner after wake
+    void qc.prefetchQuery({
+      queryKey: ["calls-feed", "best"],
+      queryFn: () =>
+        import("@/lib/calls-api").then(m => m.fetchCallsFeed("best", 8)),
+      staleTime: 6_000,
     });
   }, [qc]);
 
