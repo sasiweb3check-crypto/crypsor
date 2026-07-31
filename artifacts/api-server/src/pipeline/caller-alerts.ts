@@ -44,48 +44,77 @@ async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } 
 async function sendTelegram(
   creds: { botToken: string; chatId: string },
   text: string,
+  attempt = 0,
 ): Promise<void> {
   const chat_id = /^-?\d+$/.test(creds.chatId) ? Number(creds.chatId) : creds.chatId;
   const url = `https://api.telegram.org/bot${creds.botToken}/sendMessage`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
+  const MAX_ATTEMPTS = 3;
   const t0 = Date.now();
+
+  const doFetch = async (body: Record<string, unknown>): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      return await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   try {
-    let resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id,
-        text,
-        parse_mode: "MarkdownV2",
-        disable_web_page_preview: false,
-      }),
-      signal: controller.signal,
+    let resp = await doFetch({
+      chat_id,
+      text,
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: true,
     });
     if (!resp.ok) {
       // MarkdownV2 is brittle — retry as plain text so alerts still deliver
       const plain = text.replace(/\\([_*[\]()~`>#+=|{}.!\-\\])/g, "$1");
-      resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id, text: plain, disable_web_page_preview: false }),
-        signal: controller.signal,
-      });
+      resp = await doFetch({ chat_id, text: plain, disable_web_page_preview: true });
     }
     const latencyMs = Date.now() - t0;
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       const err = `Telegram ${resp.status}: ${body.slice(0, 300)}`;
-      opsLog("telegram", "error", err, { latencyMs }, latencyMs);
+      opsLog("telegram", "error", err, { latencyMs, attempt }, latencyMs);
       healthMonitor.error("caller-alerts", err);
       throw new Error(err);
     }
-    opsLog("telegram", "info", "Telegram send OK", undefined, latencyMs);
+    opsLog("telegram", "info", "Telegram send OK", { attempt }, latencyMs);
     healthMonitor.ok("caller-alerts", latencyMs);
-  } finally {
-    clearTimeout(timer);
+  } catch (err) {
+    const cause = err instanceof Error && "cause" in err && err.cause
+      ? String((err as Error & { cause?: unknown }).cause)
+      : "";
+    const msg = err instanceof Error ? err.message : String(err);
+    const transient =
+      msg.includes("fetch failed") ||
+      msg.includes("Abort") ||
+      msg.includes("abort") ||
+      msg.includes("ECONN") ||
+      msg.includes("ETIMEDOUT") ||
+      msg.includes("socket") ||
+      cause.includes("ECONN") ||
+      cause.includes("UND_ERR");
+    if (transient && attempt < MAX_ATTEMPTS - 1) {
+      const delay = 800 * (attempt + 1) + Math.floor(Math.random() * 400);
+      await new Promise(r => setTimeout(r, delay));
+      return sendTelegram(creds, text, attempt + 1);
+    }
+    const latencyMs = Date.now() - t0;
+    const full = cause ? `${msg} (${cause.slice(0, 120)})` : msg;
+    opsLog("telegram", "error", full.slice(0, 240), { attempt, latencyMs }, latencyMs);
+    healthMonitor.error("caller-alerts", full);
+    throw err instanceof Error ? err : new Error(full);
   }
 }
+
 
 function fmtMc(usd: string | number | null | undefined): string {
   const n = typeof usd === "string" ? parseFloat(usd) : (usd ?? 0);
@@ -271,15 +300,24 @@ async function checkAndAlert(): Promise<void> {
         pc.call_alert_sent_at IS NULL
         OR COALESCE(pc.ath_multiple, 1) >= 2
       )
-    ORDER BY pc.called_at DESC
+    ORDER BY
+      (pc.call_alert_sent_at IS NULL) DESC,
+      pc.called_at DESC
     LIMIT 200
   `);
 
   const tokens = rows.rows as unknown as ProAlertToken[];
   let firstCallSent = 0;
   let milestoneSent = 0;
+  // Cap sends per cycle — backlog of 30+ pending was causing TypeError: fetch failed
+  const MAX_SENDS_PER_CYCLE = 8;
+  let sends = 0;
 
   for (const t of tokens) {
+    if (sends >= MAX_SENDS_PER_CYCLE) {
+      opsLog("telegram", "warn", `Alert cap ${MAX_SENDS_PER_CYCLE}/cycle — ${tokens.length - firstCallSent} remain`);
+      break;
+    }
     // ── 1. First Pro call alert ────────────────────────────────────────────
     if (!t.callAlertSentAt) {
       try {
@@ -290,6 +328,7 @@ async function checkAndAlert(): Promise<void> {
           WHERE id = ${t.proCallId} AND call_alert_sent_at IS NULL
         `);
         firstCallSent++;
+        sends++;
         log.info(
           { proCallId: t.proCallId, symbol: t.symbol, quality: t.qualityLabel, proScore: t.proScore },
           "Pro first-call alert sent",
@@ -323,11 +362,13 @@ async function checkAndAlert(): Promise<void> {
           WHERE id = ${t.proCallId}
         `);
         milestoneSent++;
+        sends++;
         log.info(
           { proCallId: t.proCallId, symbol: t.symbol, tier, athX },
           "Pro milestone alert sent",
         );
         opsLog("telegram", "info", `Milestone ${tier}× · ${t.symbol ?? "?"}`, { athX });
+        if (sends >= MAX_SENDS_PER_CYCLE) break;
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
         log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");

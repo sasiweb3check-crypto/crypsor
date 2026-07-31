@@ -202,6 +202,28 @@ async function fetchEvmTxs(address: string, chain: string): Promise<{ txs: Ether
 
 const lastSigByWallet = new Map<number, string>();
 
+function enrichTokenAsync(tokenId: number, chain: string, address: string): void {
+  fetchDexScreener(chain, address).then(dex => {
+    if (!dex) return;
+    return db.update(tracked_tokens).set({
+      ...(dex.name         ? { name: dex.name } : {}),
+      ...(dex.symbol       ? { symbol: dex.symbol } : {}),
+      ...(dex.logoUri      ? { logoUri: dex.logoUri } : {}),
+      ...(dex.priceUsd     ? {
+        detectedPriceUsd: dex.priceUsd,
+        currentPriceUsd: dex.priceUsd,
+        athPriceUsd: dex.priceUsd,
+        priceUpdatedAt: new Date(),
+      } : {}),
+      ...(dex.marketCapUsd ? { marketCapUsd: dex.marketCapUsd } : {}),
+      ...(dex.fdvUsd       ? { fdvUsd: dex.fdvUsd } : {}),
+      ...(dex.liquidityUsd ? { liquidityUsd: dex.liquidityUsd } : {}),
+      ...(dex.volume24hUsd ? { volume24hUsd: dex.volume24hUsd } : {}),
+      ...(dex.tokenCreatedAt ? { tokenCreatedAt: dex.tokenCreatedAt } : {}),
+    }).where(eq(tracked_tokens.id, tokenId));
+  }).catch(() => {});
+}
+
 async function upsertToken(address: string, chain: string, meta: {
   name?: string | null; symbol?: string | null; logoUri?: string | null; priceUsd?: string | null;
 }): Promise<number> {
@@ -213,48 +235,37 @@ async function upsertToken(address: string, chain: string, meta: {
 
   if (existing.length > 0) {
     const { id, marketCapUsd } = existing[0];
-    // Back-fill missing metadata asynchronously
-    if (!marketCapUsd) {
-      fetchDexScreener(chain, address).then(dex => {
-        if (!dex) return;
-        return db.update(tracked_tokens).set({
-          ...(dex.name        ? { name:        dex.name }        : {}),
-          ...(dex.symbol      ? { symbol:      dex.symbol }      : {}),
-          ...(dex.logoUri     ? { logoUri:     dex.logoUri }     : {}),
-          ...(dex.priceUsd    ? { currentPriceUsd: dex.priceUsd, priceUpdatedAt: new Date() } : {}),
-          ...(dex.marketCapUsd ? { marketCapUsd: dex.marketCapUsd } : {}),
-          ...(dex.fdvUsd      ? { fdvUsd:      dex.fdvUsd }      : {}),
-        }).where(eq(tracked_tokens.id, id));
-      }).catch(() => {});
-    }
+    // Back-fill missing metadata asynchronously — never block the scan loop
+    if (!marketCapUsd) enrichTokenAsync(id, chain, address);
     return id;
   }
 
-  // New token — fetch full metadata immediately
-  const dex = await fetchDexScreener(chain, address);
+  // Insert immediately. Dex enrichment is async so cold-start / many new mints
+  // cannot hang the wallet scan (previously awaited DexScreener 12s×3 each).
   const [row] = await db.insert(tracked_tokens).values({
     address, chain,
-    name:             dex?.name        ?? meta.name        ?? null,
-    symbol:           dex?.symbol      ?? meta.symbol      ?? null,
-    logoUri:          dex?.logoUri     ?? meta.logoUri     ?? null,
-    detectedPriceUsd: dex?.priceUsd    ?? meta.priceUsd    ?? null,
-    currentPriceUsd:  dex?.priceUsd    ?? meta.priceUsd    ?? null,
-    athPriceUsd:      dex?.priceUsd    ?? meta.priceUsd    ?? null,
-    marketCapUsd:     dex?.marketCapUsd ?? null,
-    fdvUsd:           dex?.fdvUsd       ?? null,
-    liquidityUsd:     dex?.liquidityUsd ?? null,
-    volume24hUsd:     dex?.volume24hUsd ?? null,
-    tokenCreatedAt:   dex?.tokenCreatedAt ?? null,
-    priceUpdatedAt:   dex?.priceUsd ? new Date() : null,
+    name:             meta.name        ?? null,
+    symbol:           meta.symbol      ?? null,
+    logoUri:          meta.logoUri     ?? null,
+    detectedPriceUsd: meta.priceUsd    ?? null,
+    currentPriceUsd:  meta.priceUsd    ?? null,
+    athPriceUsd:      meta.priceUsd    ?? null,
+    marketCapUsd:     null,
+    fdvUsd:           null,
+    liquidityUsd:     null,
+    volume24hUsd:     null,
+    tokenCreatedAt:   null,
+    priceUpdatedAt:   meta.priceUsd ? new Date() : null,
     status:           "new",
     lastBuyAt:        new Date(),
   })
   .onConflictDoUpdate({
     target: [tracked_tokens.address, tracked_tokens.chain],
-    set: { name: dex?.name ?? meta.name ?? null, symbol: dex?.symbol ?? meta.symbol ?? null },
+    set: { name: meta.name ?? null, symbol: meta.symbol ?? null, lastBuyAt: new Date() },
   })
   .returning({ id: tracked_tokens.id });
 
+  enrichTokenAsync(row.id, chain, address);
   return row.id;
 }
 
@@ -297,9 +308,19 @@ async function scanSolanaWallet(
 
   monitorStatus.heliusLastError = null;
   const lastKnown = lastSigByWallet.get(wallet.id);
+  const coldStart = !lastKnown;
+  // After process restart, seed cursor and only process a small newest window
+  // so we do not re-walk 100 txs × N wallets and hang the scan cycle.
+  if (coldStart && txs[0]) {
+    lastSigByWallet.set(wallet.id, txs[0].signature);
+  }
+  let walked = 0;
+  const maxWalk = coldStart ? 12 : 100;
 
   for (const tx of txs) {
-    if (lastKnown && tx.signature === lastKnown) break;
+    if (!coldStart && lastKnown && tx.signature === lastKnown) break;
+    if (walked >= maxWalk) break;
+    walked++;
     if (!tx.tokenTransfers?.length) continue;
 
     const received = tx.tokenTransfers.filter(
@@ -307,15 +328,12 @@ async function scanSolanaWallet(
     );
 
     for (const transfer of received) {
-      const dex = await fetchDexScreener("solana", transfer.mint);
-      const tokenId = await upsertToken(transfer.mint, "solana", {
-        priceUsd: dex?.priceUsd, name: dex?.name,
-        symbol: dex?.symbol, logoUri: dex?.logoUri,
-      });
+      // No Dex await here — upsert enriches async; metadata-service also listens.
+      const tokenId = await upsertToken(transfer.mint, "solana", {});
       const boughtAt = tx.timestamp ? new Date(tx.timestamp * 1000) : new Date();
       const recorded = await recordBuy({
         walletId: wallet.id, tokenId,
-        priceUsd: dex?.priceUsd ?? null,
+        priceUsd: null,
         amount: transfer.tokenAmount != null ? String(transfer.tokenAmount) : null,
         txHash: tx.signature, boughtAt,
       });
@@ -324,11 +342,10 @@ async function scanSolanaWallet(
         opsLog("wallet_buy", "info", `Buy · ${wallet.label || wallet.address.slice(0, 6)}`, {
           mint: transfer.mint.slice(0, 8),
           walletId: wallet.id,
-          symbol: dex?.symbol ?? null,
         });
         eventBus.emit("token:bought", {
           tokenId, tokenAddress: transfer.mint, chain: "solana",
-          walletId: wallet.id, priceUsd: dex?.priceUsd ?? null,
+          walletId: wallet.id, priceUsd: null,
           amount: transfer.tokenAmount != null ? String(transfer.tokenAmount) : null,
           txHash: tx.signature, boughtAt,
         });
@@ -359,10 +376,9 @@ async function scanSolanaWallet(
         if (dup.length) continue;
       }
 
-      const dex = await fetchDexScreener("solana", transfer.mint).catch(() => null);
       await db.insert(token_sells).values({
         walletId: wallet.id, tokenId,
-        priceUsd: dex?.priceUsd ?? null,
+        priceUsd: null,
         amount:   transfer.tokenAmount != null ? String(transfer.tokenAmount) : null,
         txHash:   tx.signature ?? null,
         soldAt,
@@ -374,7 +390,7 @@ async function scanSolanaWallet(
 
       eventBus.emit("token:sold", {
         tokenId, tokenAddress: transfer.mint, chain: "solana",
-        walletId: wallet.id, priceUsd: dex?.priceUsd ?? null,
+        walletId: wallet.id, priceUsd: null,
         amount: transfer.tokenAmount != null ? String(transfer.tokenAmount) : null,
         txHash: tx.signature ?? null, soldAt,
       });
@@ -431,12 +447,18 @@ async function getHeliusKey(): Promise<string | null> {
 }
 
 export async function runScan(): Promise<void> {
+  monitorStatus.pipeline = {
+    queueSize: pipelineQueue.totalWaiting(),
+    services: healthMonitor.getAll(),
+  };
   const [allWallets, heliusKey] = await Promise.all([
     db.select().from(walletdatasource),
     getHeliusKey(),
   ]);
   monitorStatus.walletsTracked = allWallets.length;
   monitorStatus.heliusConfigured = !!heliusKey;
+  // Heartbeat so Ops does not look "blank" while a long cycle runs
+  monitorStatus.lastScanAt = monitorStatus.lastScanAt ?? new Date().toISOString();
   if (!allWallets.length) return;
 
   const results: WalletScanResult[] = [];
