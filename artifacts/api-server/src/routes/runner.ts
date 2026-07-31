@@ -155,6 +155,10 @@ async function loadRunnerFeed(limit: number): Promise<{ tokens: RunnerCard[]; to
       ? (Date.now() - new Date(String(call.called_at)).getTime()) / 60_000
       : 9999;
     const vw = convictionFieldsFromVerified(call.verified_wallets);
+    const prevPhase = call.runner_phase != null
+      ? String(call.runner_phase) as RunnerPhase
+      : null;
+    const prevScore = call.runner_score != null ? Number(call.runner_score) : null;
     const runner = computeRunnerScore({
       calledIntelScore: call.called_intel_score != null ? Number(call.called_intel_score) : null,
       calledSmartCount: Number(call.called_smart_count ?? 0),
@@ -174,6 +178,8 @@ async function loadRunnerFeed(limit: number): Promise<{ tokens: RunnerCard[]; to
       holderVelocityScore: call.holder_velocity_score != null ? Number(call.holder_velocity_score) : null,
       volumeIntensityScore: call.volume_intensity_score != null ? Number(call.volume_intensity_score) : null,
       smartHoldRate: vw.smartHoldRate,
+      prevPhase,
+      prevScore,
     });
 
     return {
@@ -355,7 +361,8 @@ router.get("/runner/token/:tokenId", async (req, res) => {
     const snaps = await db.execute(sql`
       SELECT snapshot_at, mc_usd, ath_multiple, gain_pct, kol_count, smart_count,
              intel_score, pro_score, run_status, holder_velocity_score,
-             volume_intensity_score
+             volume_intensity_score,
+             runner_score, runner_phase, velocity, phase_changed
       FROM pro_snapshots
       WHERE token_id = ${tokenId}
       ORDER BY snapshot_at ASC
@@ -372,6 +379,10 @@ router.get("/runner/token/:tokenId", async (req, res) => {
       intel: s.intel_score != null ? Number(s.intel_score) : null,
       proScore: s.pro_score != null ? Number(s.pro_score) : null,
       runStatus: s.run_status != null ? String(s.run_status) : null,
+      runnerScore: s.runner_score != null ? Number(s.runner_score) : null,
+      runnerPhase: s.runner_phase != null ? String(s.runner_phase) : null,
+      velocity: s.velocity != null ? Number(s.velocity) : null,
+      phaseChanged: Number(s.phase_changed ?? 0) === 1,
     }));
 
     res.json(apiOk({

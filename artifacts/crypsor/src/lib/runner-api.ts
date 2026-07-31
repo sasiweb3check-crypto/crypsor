@@ -129,6 +129,15 @@ export function fetchRunnerToken(id: number) {
       mcUsd: number | null;
       athMultiple: number | null;
       gainPct: number | null;
+      kol?: number;
+      smart?: number;
+      intel?: number | null;
+      proScore?: number | null;
+      runStatus?: string | null;
+      runnerScore?: number | null;
+      runnerPhase?: string | null;
+      velocity?: number | null;
+      phaseChanged?: boolean;
     }>;
   }>(`api/runner/token/${id}`);
 }

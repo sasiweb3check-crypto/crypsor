@@ -15,7 +15,12 @@ import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
 import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
-import { computeRunnerScore, type RunnerScoreResult } from "../lib/runner-score";
+import {
+  buildRunnerTransition,
+  computeRunnerScore,
+  type RunnerPhase,
+  type RunnerScoreResult,
+} from "../lib/runner-score";
 import { convictionFieldsFromVerified } from "../lib/pro-confidence";
 
 const log = logger.child({ module: "caller-alerts" });
@@ -148,6 +153,7 @@ interface ProAlertToken {
   runnerAlertSentAt: string | Date | null;
   callAlertSentAt: string | Date | null;
   milestoneAlertsSent: string | null;
+  lastSnapMcUsd: string | null;
   currentMc: string | null;
   liveKol: number;
   liveSmart: number;
@@ -176,6 +182,10 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
   const calledAt = t.calledAt instanceof Date ? t.calledAt.getTime() : new Date(t.calledAt).getTime();
   const ageMinutes = Number.isFinite(calledAt) ? (Date.now() - calledAt) / 60_000 : 9999;
   const vw = convictionFieldsFromVerified(t.verifiedWallets);
+  const lastSnapMc = parseFloat(t.lastSnapMcUsd ?? "") || calledMc || currentMc;
+  const snapDeltaPct = lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null;
+  const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
+  const prevScore = t.runnerScore != null ? Number(t.runnerScore) : null;
 
   return computeRunnerScore({
     calledIntelScore: t.calledIntel,
@@ -187,7 +197,7 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
     gainPct,
     ageMinutes,
     velocity,
-    snapDeltaPct: null,
+    snapDeltaPct,
     liveSmart: t.liveSmart,
     liveKol: t.liveKol,
     secIsHoneypot: t.secHoneypot,
@@ -196,7 +206,81 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
     holderVelocityScore: t.liveHv ?? t.calledHv,
     volumeIntensityScore: t.volumeIntensity,
     smartHoldRate: vw.smartHoldRate,
+    prevPhase,
+    prevScore,
   });
+}
+
+/** Persist phase flip on the tape so alert-path transitions aren't lost before the next snap tick. */
+async function carryPhaseTransitionSnap(
+  t: ProAlertToken,
+  runner: RunnerScoreResult,
+  prevPhase: RunnerPhase,
+): Promise<void> {
+  if (!runner.phaseChanged) return;
+  const calledMc = parseFloat(t.calledMcUsd ?? "0") || 0;
+  const currentMc = parseFloat(t.currentMc ?? "0") || 0;
+  const gainPct = calledMc > 0 && currentMc > 0 ? ((currentMc - calledMc) / calledMc) * 100 : 0;
+  const multiple = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
+  const calledAt = t.calledAt instanceof Date ? t.calledAt.getTime() : new Date(t.calledAt).getTime();
+  const ageHours = Number.isFinite(calledAt) ? (Date.now() - calledAt) / 3_600_000 : 0;
+
+  await db.execute(sql`
+    INSERT INTO pro_snapshots (
+      pro_call_id, token_id, mc_usd, kol_count, smart_count, intel_score, ath_multiple,
+      pro_score, quality_label, gain_pct, holder_velocity_score, age_hours,
+      holder_count, volume_intensity_score, liquidity_usd,
+      kol_delta, smart_delta,
+      runner_score, runner_phase, velocity, phase_changed
+    )
+    VALUES (
+      ${t.proCallId}, ${t.tokenId},
+      ${t.currentMc ?? null},
+      ${t.liveKol}, ${t.liveSmart},
+      ${t.liveIntel ?? t.calledIntel}, ${multiple},
+      ${t.proScore ?? runner.score}, ${t.qualityLabel}, ${gainPct},
+      ${t.liveHv ?? t.calledHv}, ${ageHours},
+      ${t.holderCount},
+      ${t.volumeIntensity},
+      ${t.liquidityUsd},
+      ${(t.liveKol ?? 0) - (t.calledKol ?? 0)},
+      ${(t.liveSmart ?? 0) - (t.calledSmart ?? 0)},
+      ${runner.score}, ${runner.phase}, ${runner.signals.velocity}, 1
+    )
+  `);
+
+  const transition = buildRunnerTransition(prevPhase, runner, {
+    mcUsd: currentMc || null,
+    calledMcUsd: calledMc || null,
+    athMultiple: t.athMultiple ?? multiple,
+    smart: t.liveSmart,
+    kol: t.liveKol,
+    intel: t.calledIntel,
+  });
+  if (transition) {
+    opsLog(
+      "runner",
+      transition.to === "dead" ? "warn" : "info",
+      `${t.symbol ?? "?"} · ${transition.from}→${transition.to} · MC $${Math.round(transition.mcUsd ?? 0)} · vel ${transition.velocity}× · score ${transition.score}`,
+      {
+        proCallId: t.proCallId,
+        tokenId: t.tokenId,
+        source: "alerts",
+        from: transition.from,
+        to: transition.to,
+        score: transition.score,
+        mcUsd: transition.mcUsd,
+        velocity: transition.velocity,
+        gainPct: transition.gainPct,
+        athMultiple: transition.athMultiple,
+        smart: transition.smart,
+        kol: transition.kol,
+        intel: transition.intel,
+        reasons: transition.reasons,
+        blockers: transition.blockers,
+      },
+    );
+  }
 }
 
 function buildEntryMessage(t: ProAlertToken, runner: RunnerScoreResult): string {
@@ -285,6 +369,7 @@ async function checkAndAlert(): Promise<void> {
       pc.runner_alert_sent_at  AS "runnerAlertSentAt",
       pc.call_alert_sent_at    AS "callAlertSentAt",
       pc.milestone_alerts_sent AS "milestoneAlertsSent",
+      pc.last_snap_mc_usd      AS "lastSnapMcUsd",
       t.market_cap_usd         AS "currentMc",
       COALESCE(t.holder_kol_count, 0)   AS "liveKol",
       COALESCE(t.holder_smart_count, 0) AS "liveSmart",
@@ -329,8 +414,23 @@ async function checkAndAlert(): Promise<void> {
     const alreadyEntry = Boolean(t.runnerAlertSentAt || t.callAlertSentAt);
 
     if (!alreadyEntry) {
+      const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
       const runner = evaluateRunner(t);
-      // Persist live phase even when not alerting
+      // Carry label change onto the snapshot tape before overwriting pro_calls
+      if (runner.phaseChanged) {
+        try {
+          await carryPhaseTransitionSnap(t, runner, prevPhase);
+          await db.execute(sql`
+            UPDATE pro_calls
+            SET last_snapshot_at = NOW(),
+                last_snap_mc_usd = ${String(parseFloat(t.currentMc ?? "0") || 0)}
+            WHERE id = ${t.proCallId}
+          `);
+        } catch (err) {
+          log.warn({ err, proCallId: t.proCallId }, "Runner transition snap failed");
+        }
+      }
+      // Persist sticky phase even when not alerting
       await db.execute(sql`
         UPDATE pro_calls
         SET runner_score = ${runner.score},

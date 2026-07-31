@@ -7,6 +7,7 @@
  *   • Tagged smart/KOL: soft boost if anyone is still holding (OR, not AND)
  *   • Momentum (MC velocity / snapshot deltas) decides ENTRY alerts
  *   • No hard $5–15K MC gate — MC is a size label only
+ *   • Phase labels are sticky (hysteresis) so snap noise doesn't thrash the desk
  */
 
 export type RunnerPhase = "radar" | "heating" | "entry" | "fading" | "dead";
@@ -25,7 +26,7 @@ export interface RunnerScoreInput {
   ageMinutes: number;
   /** MC velocity vs entry over recent window (current/entry). */
   velocity: number;
-  /** Absolute MC change % since previous snapshot (0–1+). */
+  /** Signed MC change % since previous snapshot. */
   snapDeltaPct: number | null;
   /** Live tagged counts (totals or holding — best available). */
   liveSmart: number;
@@ -36,11 +37,19 @@ export interface RunnerScoreInput {
   holderVelocityScore?: number | null;
   volumeIntensityScore?: number | null;
   smartHoldRate?: number | null;
+  /** Previous persisted phase — enables hysteresis. */
+  prevPhase?: RunnerPhase | null;
+  /** Previous runner score — EMA smooth. */
+  prevScore?: number | null;
 }
 
 export interface RunnerScoreResult {
   score: number;
   phase: RunnerPhase;
+  /** Instantaneous phase before hysteresis. */
+  rawPhase: RunnerPhase;
+  /** True when stabilized phase differs from prevPhase. */
+  phaseChanged: boolean;
   /** Paid Telegram ENTRY ping. */
   alertEligible: boolean;
   label: string;
@@ -57,6 +66,23 @@ export interface RunnerScoreResult {
   };
 }
 
+/** Factors to persist / log alongside a phase transition. */
+export type RunnerTransitionContext = {
+  from: RunnerPhase;
+  to: RunnerPhase;
+  score: number;
+  mcUsd: number | null;
+  calledMcUsd: number | null;
+  velocity: number;
+  gainPct: number;
+  athMultiple: number;
+  smart: number;
+  kol: number;
+  intel: number | null;
+  reasons: string[];
+  blockers: string[];
+};
+
 function clamp(v: number, lo = 0, hi = 100) {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -70,6 +96,14 @@ function sizeLabel(mc: number | null): RunnerScoreResult["sizeLabel"] {
   return "whale";
 }
 
+function phaseLabel(phase: RunnerPhase): string {
+  return phase === "entry" ? "Entry" :
+    phase === "heating" ? "Heating" :
+    phase === "fading" ? "Fading" :
+    phase === "dead" ? "Dead" :
+    "Radar";
+}
+
 /** Soft tagged-wallet gate: anyone (smart OR KOL) holding / tagged is enough. */
 export function hasTaggedPresence(smart: number, kol: number): boolean {
   return smart >= 1 || kol >= 1;
@@ -77,7 +111,8 @@ export function hasTaggedPresence(smart: number, kol: number): boolean {
 
 /**
  * Whether to write a new snapshot (momentum-based, not fixed hourly spam).
- * Moving MC → frequent; flat → sparse. Low-MC tokens aren't forced into 1h dumps.
+ * Moving MC → frequent; flat → sparse. Phase changes always force a write
+ * (caller should pass force=true when phaseChanged).
  */
 export function shouldWriteMomentumSnap(opts: {
   lastSnapAgeSec: number | null;
@@ -85,15 +120,25 @@ export function shouldWriteMomentumSnap(opts: {
   ageMinutes: number;
   phase: RunnerPhase;
   mode: "hot" | "full";
+  /** Always write when phase/label changes so the tape carries the event. */
+  force?: boolean;
+  /** Meaningful score move vs last persisted score. */
+  scoreDelta?: number | null;
 }): boolean {
-  const { lastSnapAgeSec, mcDeltaPct, ageMinutes, phase, mode } = opts;
+  const { lastSnapAgeSec, mcDeltaPct, ageMinutes, phase, mode, force, scoreDelta } = opts;
+  if (force) return true;
   if (lastSnapAgeSec == null) return true;
 
   const moving = mcDeltaPct >= 0.025; // ≥2.5% MC move
   const minGap = moving ? 12 : phase === "heating" || phase === "entry" ? 20 : 40;
-  if (lastSnapAgeSec < minGap) return false;
+  if (lastSnapAgeSec < minGap) {
+    // Still allow a write on large score jumps after min gap for heating/entry
+    if (lastSnapAgeSec >= 12 && scoreDelta != null && Math.abs(scoreDelta) >= 8) return true;
+    return false;
+  }
 
   if (moving) return true;
+  if (scoreDelta != null && Math.abs(scoreDelta) >= 6) return true;
 
   // Flat tape — sparse heartbeats by age
   if (ageMinutes < 20) return lastSnapAgeSec >= 35;
@@ -102,14 +147,84 @@ export function shouldWriteMomentumSnap(opts: {
   return lastSnapAgeSec >= 300;
 }
 
+/**
+ * Sticky phase machine — prevent one noisy tick from flipping ENTRY ↔ Radar.
+ * Promotions are cautious; demotions step through fading; dead needs real damage.
+ */
+export function stabilizeRunnerPhase(
+  prev: RunnerPhase | null | undefined,
+  raw: RunnerPhase,
+  ctx: { velocity: number; gainPct: number; athMultiple: number },
+): RunnerPhase {
+  const p: RunnerPhase = prev ?? "radar";
+  const { velocity: vel, gainPct: gain, athMultiple: ath } = ctx;
+
+  // Hard death — immediate
+  if (raw === "dead" || ath < 0.55 || (gain < -45 && vel < 0.9)) return "dead";
+
+  if (p === "dead") {
+    // Revive only on clear recovery (don't flicker)
+    if (vel >= 1.28 && gain > -8) return "heating";
+    return "dead";
+  }
+
+  if (p === "entry") {
+    if (raw === "entry") return "entry";
+    // Hold ENTRY while still running; soft dip → fading, not radar
+    if (vel >= 1.18 || (ath >= 1.4 && gain >= 10)) return "entry";
+    if (raw === "fading" || vel < 1.08) return "fading";
+    return "entry";
+  }
+
+  if (p === "fading") {
+    // Reclaim entry only with strong velocity
+    if (raw === "entry" && vel >= 1.32) return "entry";
+    if ((raw === "heating" || raw === "entry") && vel >= 1.18) return "heating";
+    return "fading";
+  }
+
+  if (p === "heating") {
+    if (raw === "entry") return "entry";
+    if (raw === "fading" && vel < 1.06) return "fading";
+    // Don't drop heating→radar on a flat tick if still slightly green
+    if (raw === "radar" && vel < 1.06 && gain < 5) return "radar";
+    return "heating";
+  }
+
+  // radar — promote carefully; strong breakout can skip to entry
+  if (raw === "entry" && vel >= 1.45) return "entry";
+  if (raw === "entry" || raw === "heating") return "heating";
+  return "radar";
+}
+
+function deriveRawPhase(opts: {
+  ath: number;
+  gain: number;
+  vel: number;
+  delta: number | null;
+}): RunnerPhase {
+  const { ath, gain, vel, delta } = opts;
+  if (ath < 0.55 || (gain < -45 && vel < 0.9)) return "dead";
+  if (vel >= 1.35 || (vel >= 1.2 && gain >= 25) || (ath >= 1.5 && gain >= 20)) return "entry";
+  if (vel >= 1.12 || gain >= 12 || (delta != null && delta >= 0.05)) return "heating";
+  if (ath >= 1.3 && (vel < 1.05 || gain < 5)) return "fading";
+  if (ath >= 1.5 && vel < 1.0 && gain < (ath - 1) * 100 * 0.3) {
+    return gain < -25 ? "dead" : "fading";
+  }
+  return "radar";
+}
+
 export function computeRunnerScore(inp: RunnerScoreInput): RunnerScoreResult {
   const reasons: string[] = [];
   const blockers: string[] = [];
 
   if (inp.secIsHoneypot === true) {
+    const prev = inp.prevPhase ?? null;
     return {
       score: 0,
       phase: "dead",
+      rawPhase: "dead",
+      phaseChanged: prev != null && prev !== "dead",
       alertEligible: false,
       label: "Honeypot",
       reasons,
@@ -220,29 +335,29 @@ export function computeRunnerScore(inp: RunnerScoreInput): RunnerScoreResult {
 
   score = clamp(Math.round(score));
 
-  // ── Phase machine ────────────────────────────────────────────────────────
-  let phase: RunnerPhase = "radar";
-  if (ath < 0.55 || (gain < -45 && vel < 0.9)) {
-    phase = "dead";
-  } else if (vel >= 1.35 || (vel >= 1.2 && gain >= 25) || (ath >= 1.5 && gain >= 20)) {
-    phase = "entry";
-  } else if (vel >= 1.12 || gain >= 12 || (delta != null && delta >= 0.05)) {
-    phase = "heating";
-  } else if (ath >= 1.3 && (vel < 1.05 || gain < 5)) {
-    phase = "fading";
+  // EMA smooth vs previous persisted score — dampens snap noise
+  if (inp.prevScore != null && Number.isFinite(inp.prevScore)) {
+    score = clamp(Math.round(0.62 * score + 0.38 * inp.prevScore));
   }
 
-  // Printed then cooled hard
-  if (phase !== "dead" && ath >= 1.5 && vel < 1.0 && gain < (ath - 1) * 100 * 0.3) {
-    phase = gain < -25 ? "dead" : "fading";
+  const rawPhase = deriveRawPhase({ ath, gain, vel, delta });
+  const phase = stabilizeRunnerPhase(inp.prevPhase, rawPhase, {
+    velocity: vel,
+    gainPct: gain,
+    athMultiple: ath,
+  });
+  const phaseChanged = (inp.prevPhase ?? "radar") !== phase;
+
+  if (phaseChanged) {
+    reasons.unshift(`${phaseLabel(inp.prevPhase ?? "radar")}→${phaseLabel(phase)}`);
   }
 
   const alertEligible =
     phase === "entry"
     && score >= 62
     && freshnessOk
-    && (mintOk || intel >= 85) // mint preferred; high intel can still ping
-    && (taggedOk || vel >= 1.6); // prefer tagged; strong velocity alone OK
+    && (mintOk || intel >= 85)
+    && (taggedOk || vel >= 1.6);
 
   if (!freshnessOk && phase === "entry") blockers.push("stale (>3h)");
   if (!alertEligible && phase === "entry") {
@@ -250,18 +365,13 @@ export function computeRunnerScore(inp: RunnerScoreInput): RunnerScoreResult {
     if (!taggedOk && vel < 1.6) blockers.push("need tagged or stronger velocity");
   }
 
-  const label =
-    phase === "entry" ? "Entry" :
-    phase === "heating" ? "Heating" :
-    phase === "fading" ? "Fading" :
-    phase === "dead" ? "Dead" :
-    "Radar";
-
   return {
     score,
     phase,
+    rawPhase,
+    phaseChanged,
     alertEligible,
-    label,
+    label: phaseLabel(phase),
     reasons: reasons.slice(0, 6),
     blockers: blockers.slice(0, 4),
     sizeLabel: sizeLabel(inp.currentMcUsd ?? inp.calledMcUsd),
@@ -272,5 +382,36 @@ export function computeRunnerScore(inp: RunnerScoreInput): RunnerScoreResult {
       mintOk,
       freshnessOk,
     },
+  };
+}
+
+/** Build a transition payload for ops/logging when phase changes. */
+export function buildRunnerTransition(
+  prev: RunnerPhase | null | undefined,
+  runner: RunnerScoreResult,
+  factors: {
+    mcUsd: number | null;
+    calledMcUsd: number | null;
+    athMultiple: number;
+    smart: number;
+    kol: number;
+    intel: number | null;
+  },
+): RunnerTransitionContext | null {
+  if (!runner.phaseChanged) return null;
+  return {
+    from: prev ?? "radar",
+    to: runner.phase,
+    score: runner.score,
+    mcUsd: factors.mcUsd,
+    calledMcUsd: factors.calledMcUsd,
+    velocity: runner.signals.velocity,
+    gainPct: runner.signals.gainPct,
+    athMultiple: factors.athMultiple,
+    smart: factors.smart,
+    kol: factors.kol,
+    intel: factors.intel,
+    reasons: runner.reasons,
+    blockers: runner.blockers,
   };
 }

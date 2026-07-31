@@ -25,6 +25,10 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS liquidity_usd text`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS kol_delta integer DEFAULT 0`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS smart_delta integer DEFAULT 0`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS runner_score real`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS runner_phase text`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS velocity real`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS phase_changed integer DEFAULT 0`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */

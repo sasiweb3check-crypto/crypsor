@@ -49,6 +49,14 @@ export const pro_snapshots = pgTable(
     // Deltas vs call freeze (positive = more KOL/smart arrived after call)
     kolDelta:             integer("kol_delta").default(0),
     smartDelta:           integer("smart_delta").default(0),
+
+    // ── Runner Entry tape (score/phase carried with every momentum snap) ─────
+    runnerScore:          real("runner_score"),
+    runnerPhase:          text("runner_phase"),
+    /** currentMc / calledMc at this snap */
+    velocity:             real("velocity"),
+    /** 1 when stabilized phase changed vs previous snap */
+    phaseChanged:         integer("phase_changed").default(0),
   },
   (t) => [
     index("pro_snapshots_call_snap_idx").on(t.proCallId, t.snapshotAt),

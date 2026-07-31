@@ -16,10 +16,12 @@ import { computeProScore, deriveRunStatus } from "../lib/pro-scoring";
 import { convictionFromPayload, qualitySignalsFromPayload } from "../lib/gmgn-pro-verify";
 import { invalidateProCaches } from "../lib/pro-cache";
 import {
+  buildRunnerTransition,
   computeRunnerScore,
   shouldWriteMomentumSnap,
   type RunnerPhase,
 } from "../lib/runner-score";
+import { opsLog } from "../lib/ops-log";
 
 const log = logger.child({ module: "pro-snapshots" });
 
@@ -62,7 +64,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         pc.last_snapshot_at,
         pc.last_snap_mc_usd,
         pc.runner_phase              AS prev_runner_phase,
+        pc.runner_score              AS prev_runner_score,
         t.market_cap_usd             AS current_mc,
+        t.symbol,
         t.ath_market_cap_usd         AS ath_mc_usd,
         t.holder_kol_count           AS kol_count,
         t.holder_smart_count         AS smart_count,
@@ -98,6 +102,8 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       last_snapshot_at: string | Date | null;
       last_snap_mc_usd: string | null;
       prev_runner_phase: string | null;
+      prev_runner_score: number | null;
+      symbol: string | null;
       current_mc: string | null; ath_mc_usd: string | null; kol_count: number | null;
       smart_count: number | null; intel_score: number | null;
       holder_velocity_score: number | null;
@@ -115,6 +121,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
 
     let snapCount = 0;
     let skippedFlat = 0;
+    let phaseTransitions = 0;
     let qualityChanged = false;
     for (const r of rows.rows as Row[]) {
       const calledMc  = parseFloat(r.called_mc_usd ?? "0") || 0;
@@ -130,19 +137,47 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         : 0;
       const ageMinutes = ageHours * 60;
       const lastSnapMc = parseFloat(r.last_snap_mc_usd ?? "") || calledMc || currentMc;
-      const mcDeltaPct = lastSnapMc > 0
-        ? Math.abs(currentMc - lastSnapMc) / lastSnapMc
-        : 1;
+      const signedDelta = lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null;
+      const mcDeltaPct = signedDelta != null ? Math.abs(signedDelta) : 1;
       const lastSnapAgeSec = r.last_snapshot_at
         ? (Date.now() - new Date(r.last_snapshot_at).getTime()) / 1000
         : null;
       const prevPhase = (r.prev_runner_phase as RunnerPhase | null) ?? "radar";
+      const prevScore = r.prev_runner_score != null ? Number(r.prev_runner_score) : null;
+      const velocity = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
+
+      // Score first (cheap) so phase changes can force a snap write with full factors
+      const runnerPreview = computeRunnerScore({
+        calledIntelScore: r.called_intel_score,
+        calledSmartCount: r.called_smart_count ?? 0,
+        calledKolCount: r.called_kol_count ?? 0,
+        calledMcUsd: calledMc || null,
+        currentMcUsd: currentMc || null,
+        athMultiple: newAth,
+        gainPct,
+        ageMinutes,
+        velocity,
+        snapDeltaPct: signedDelta,
+        liveSmart: r.smart_count ?? 0,
+        liveKol: r.kol_count ?? 0,
+        secIsHoneypot: r.sec_is_honeypot,
+        secMintRenounced: r.sec_mint_renounced,
+        secFreezeRenounced: r.sec_freeze_renounced,
+        holderVelocityScore: r.holder_velocity_score,
+        volumeIntensityScore: r.volume_intensity_score,
+        prevPhase,
+        prevScore,
+      });
+
+      const scoreDelta = prevScore != null ? runnerPreview.score - prevScore : null;
       if (!shouldWriteMomentumSnap({
         lastSnapAgeSec,
         mcDeltaPct,
         ageMinutes,
-        phase: prevPhase,
+        phase: runnerPreview.phase,
         mode,
+        force: runnerPreview.phaseChanged,
+        scoreDelta,
       })) {
         skippedFlat++;
         continue;
@@ -242,13 +277,38 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         }
       }
 
+      // Recompute with conviction hold-rate now that verified wallets are parsed
+      const runner = computeRunnerScore({
+        calledIntelScore: r.called_intel_score,
+        calledSmartCount: r.called_smart_count ?? 0,
+        calledKolCount: r.called_kol_count ?? 0,
+        calledMcUsd: calledMc || null,
+        currentMcUsd: currentMc || null,
+        athMultiple: newAth,
+        gainPct,
+        ageMinutes,
+        velocity,
+        snapDeltaPct: signedDelta,
+        liveSmart: r.smart_count ?? 0,
+        liveKol: r.kol_count ?? 0,
+        secIsHoneypot: r.sec_is_honeypot,
+        secMintRenounced: r.sec_mint_renounced,
+        secFreezeRenounced: r.sec_freeze_renounced,
+        holderVelocityScore: r.holder_velocity_score,
+        volumeIntensityScore: r.volume_intensity_score,
+        smartHoldRate: conviction?.smart.holdRate ?? null,
+        prevPhase,
+        prevScore,
+      });
+
       await db.execute(sql`
         INSERT INTO pro_snapshots (
           pro_call_id, token_id, mc_usd, kol_count, smart_count, intel_score, ath_multiple,
           survival_score, pro_score, quality_label, gain_pct, run_status,
           holder_velocity_score, age_hours,
           holder_count, mc_growth_score, volume_intensity_score, liquidity_usd,
-          kol_delta, smart_delta
+          kol_delta, smart_delta,
+          runner_score, runner_phase, velocity, phase_changed
         )
         VALUES (
           ${r.pro_call_id}, ${r.token_id},
@@ -261,7 +321,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           ${r.mc_growth_score ?? null},
           ${r.volume_intensity_score ?? null},
           ${r.liquidity_usd ?? null},
-          ${kolDelta}, ${smartDelta}
+          ${kolDelta}, ${smartDelta},
+          ${runner.score}, ${runner.phase}, ${runner.signals.velocity},
+          ${runner.phaseChanged ? 1 : 0}
         )
       `);
 
@@ -272,11 +334,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         nextQuality = "below";
       } else if (r.prev_quality === "very_good" || r.prev_quality === "good") {
         nextQuality = r.prev_quality;
-      } else if (
-        // Rescued / re-scored rows that still have surfaced_at but were demoted
-        qualityLabel === "below"
-      ) {
-        // Leave as below unless we are newly surfacing — handled below
+      } else if (qualityLabel === "below") {
         nextQuality = "below";
       }
 
@@ -284,28 +342,6 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       const surfacedClause = surfacingNow
         ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
         : sql``;
-
-      const velocity = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
-      const runner = computeRunnerScore({
-        calledIntelScore: r.called_intel_score,
-        calledSmartCount: r.called_smart_count ?? 0,
-        calledKolCount: r.called_kol_count ?? 0,
-        calledMcUsd: calledMc || null,
-        currentMcUsd: currentMc || null,
-        athMultiple: newAth,
-        gainPct,
-        ageMinutes,
-        velocity,
-        snapDeltaPct: lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null,
-        liveSmart: r.smart_count ?? 0,
-        liveKol: r.kol_count ?? 0,
-        secIsHoneypot: r.sec_is_honeypot,
-        secMintRenounced: r.sec_mint_renounced,
-        secFreezeRenounced: r.sec_freeze_renounced,
-        holderVelocityScore: r.holder_velocity_score,
-        volumeIntensityScore: r.volume_intensity_score,
-        smartHoldRate: conviction?.smart.holdRate ?? null,
-      });
 
       await db.execute(sql`
         UPDATE pro_calls
@@ -334,6 +370,40 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         WHERE id = ${r.pro_call_id}
       `);
 
+      const transition = buildRunnerTransition(prevPhase, runner, {
+        mcUsd: currentMc || null,
+        calledMcUsd: calledMc || null,
+        athMultiple: newAth,
+        smart: r.smart_count ?? 0,
+        kol: r.kol_count ?? 0,
+        intel: r.called_intel_score,
+      });
+      if (transition) {
+        phaseTransitions++;
+        opsLog(
+          "runner",
+          transition.to === "entry" ? "info" : transition.to === "dead" ? "warn" : "info",
+          `${r.symbol ?? "?"} · ${transition.from}→${transition.to} · MC $${Math.round(transition.mcUsd ?? 0)} · vel ${transition.velocity}× · score ${transition.score}`,
+          {
+            proCallId: r.pro_call_id,
+            tokenId: r.token_id,
+            from: transition.from,
+            to: transition.to,
+            score: transition.score,
+            mcUsd: transition.mcUsd,
+            calledMcUsd: transition.calledMcUsd,
+            velocity: transition.velocity,
+            gainPct: transition.gainPct,
+            athMultiple: transition.athMultiple,
+            smart: transition.smart,
+            kol: transition.kol,
+            intel: transition.intel,
+            reasons: transition.reasons,
+            blockers: transition.blockers,
+          },
+        );
+      }
+
       if (String(r.prev_quality ?? "") !== "good" && String(r.prev_quality ?? "") !== "very_good") {
         qualityChanged = true;
       }
@@ -345,7 +415,10 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       await invalidateProCaches();
     }
 
-    log.info({ snapCount, skippedFlat, mode }, "Pro snapshots written (momentum)");
+    log.info(
+      { snapCount, skippedFlat, phaseTransitions, mode },
+      "Pro snapshots written (momentum)",
+    );
   } catch (err) {
     log.error({ err, mode }, "Pro snapshots error");
   }
