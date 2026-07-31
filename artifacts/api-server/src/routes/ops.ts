@@ -262,13 +262,17 @@ router.get("/ops/summary", async (_req, res) => {
   }
 });
 
-// Live GMGN probe from the deployed API host (CF bypass via gmgnFetch)
+// Live GMGN probe — OpenAPI (key) + scrape (CF) status from this host
 router.get("/ops/gmgn-check", async (req, res) => {
   try {
     const mint = String(req.query.mint ?? "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263").trim();
     const { gmgnFetch, nextProxy } = await import("../lib/gmgn-client");
+    const { openApiHealthCheck, hasGmgnOpenApiKey } = await import("../lib/gmgn-openapi");
     const proxy = nextProxy();
     const t0 = Date.now();
+
+    const openApi = await openApiHealthCheck(mint);
+
     const endpoints = [
       { name: "token_info", url: `https://gmgn.ai/api/v1/token_info/sol/${mint}` },
       { name: "holder_stat", url: `https://gmgn.ai/vas/api/v1/token_holder_stat/sol/${mint}` },
@@ -294,17 +298,35 @@ router.get("/ops/gmgn-check", async (req, res) => {
       });
     }
     const okCount = results.filter(r => r.ok).length;
-    opsLog("api", okCount === results.length ? "info" : "warn",
-      `GMGN check ${okCount}/${results.length}`, { mint: mint.slice(0, 8) });
+    opsLog("api", (openApi.ok || okCount > 0) ? "info" : "warn",
+      `GMGN check openapi=${openApi.ok} scrape=${okCount}/${results.length}`, {
+        mint: mint.slice(0, 8),
+      });
+
+    let note: string;
+    if (openApi.ok) {
+      note = "Official OpenAPI OK — Pro verify uses openapi.gmgn.ai (no website Cloudflare). Key alone never unlocks gmgn.ai scrape";
+    } else if (!hasGmgnOpenApiKey()) {
+      note = "No GMGN_API_KEY — website scrape only. Set key from https://gmgn.ai/ai (X-APIKEY → openapi.gmgn.ai) or residential GMGN_PROXIES";
+    } else if (openApi.error === "AUTH_KEY_INVALID" || openApi.status === 401 || openApi.status === 403) {
+      note = "GMGN_API_KEY rejected by openapi.gmgn.ai — refresh at https://gmgn.ai/ai (header must be X-APIKEY). Also: OpenAPI is IPv4-only — disable IPv6 egress if auth looks correct";
+    } else if (okCount === 0) {
+      note = "OpenAPI failed and scrape blocked by Cloudflare — fix OpenAPI key or set residential GMGN_PROXIES";
+    } else {
+      note = `OpenAPI failed (${openApi.error ?? openApi.status}); scrape partially working`;
+    }
+
     res.json({
-      ok: okCount > 0,
+      ok: openApi.ok || okCount > 0,
       mint,
       latencyMs: Date.now() - t0,
-      proxy: proxy ? "pool" : "direct",
-      results,
-      note: okCount === 0
-        ? "All GMGN endpoints failed — Cloudflare or network block from this host"
-        : "GMGN reachable via curl HTTP/2 bypass",
+      openApi,
+      scrape: {
+        proxy: proxy ? "pool" : "direct",
+        okCount,
+        results,
+      },
+      note,
     });
   } catch (err) {
     console.error("ops gmgn-check error", err);

@@ -1,16 +1,18 @@
 /**
  * Live GMGN KOL / smart verify for Pro Caller qualify.
  *
- * Uses curl HTTP2 + browser headers (gmgnFetch) — no API key required.
- * SSOT counts prefer token_wallet_tags_stat; fall back to token_holder_stat.
- * Wallet lists from tagged token_holders (renowned / smart_degen) include
- * hold %, sold %, paper/diamond hands — used for conviction scoring + UI.
+ * Prefer Official OpenAPI (GMGN_API_KEY → openapi.gmgn.ai) — bypasses website
+ * Cloudflare. Falls back to gmgn.ai scrape (+ GMGN_PROXIES) when key missing/fails.
+ *
+ * OpenAPI path: 1× /v1/token/info (tags + stat + link) + 2× top_holders (KOL/smart).
+ * Scrape path: token_wallet_tags_stat / holder_stat / holders / link / token_stat.
  */
 
 import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { gmgnFetch, nextProxy, CHAIN_MAP } from "./gmgn-client";
+import { gmgnOpenApiGet, hasGmgnOpenApiKey } from "./gmgn-openapi";
 import { logger } from "./logger";
 
 const log = logger.child({ module: "gmgn-pro-verify" });
@@ -182,8 +184,14 @@ function emptyConviction(): WalletConviction {
 }
 
 function unwrapList(data: unknown): unknown[] {
-  const root = data as { data?: { data?: { list?: unknown[] }; list?: unknown[] } };
-  return root?.data?.data?.list ?? root?.data?.list ?? [];
+  const root = data as {
+    data?: { data?: { list?: unknown[] }; list?: unknown[] } | unknown[];
+    list?: unknown[];
+  };
+  if (Array.isArray(root?.data)) return root.data;
+  if (Array.isArray(root?.list)) return root.list;
+  const inner = root?.data as { data?: { list?: unknown[] }; list?: unknown[] } | undefined;
+  return inner?.data?.list ?? inner?.list ?? [];
 }
 
 function unwrapData(data: unknown): Record<string, unknown> {
@@ -191,18 +199,42 @@ function unwrapData(data: unknown): Record<string, unknown> {
   return (root?.data && typeof root.data === "object" ? root.data : {}) as Record<string, unknown>;
 }
 
-/**
- * Live-fetch GMGN KOL + smart + token_stat for a token. Sticky proxy for the burst.
- */
-export async function verifyTokenKolSmart(
-  chain: string,
-  address: string,
-): Promise<GmgnProVerifyResult> {
-  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
-  const proxy = nextProxy();
-  const fetchedAt = new Date();
+function buildSocials(link: Record<string, unknown>): GmgnProVerifyResult["socials"] {
+  const socials: GmgnProVerifyResult["socials"] = {};
+  const tw = typeof link.twitter_username === "string" ? link.twitter_username.trim() : "";
+  const tg = typeof link.telegram === "string" ? link.telegram.trim() : "";
+  const web = typeof link.website === "string" ? link.website.trim() : "";
+  if (tw) {
+    socials.twitter = tw.startsWith("http")
+      ? tw
+      : tw.startsWith("i/communities/")
+        ? `https://x.com/${tw}`
+        : `https://x.com/${tw.replace(/^@/, "")}`;
+  }
+  if (tg) socials.telegram = tg.startsWith("http") ? tg : `https://t.me/${tg.replace(/^@/, "")}`;
+  if (web && web.startsWith("http")) socials.website = web;
+  return socials;
+}
 
-  const empty: GmgnProVerifyResult = {
+function tokenStatFromFlat(tstat: Record<string, unknown> | null): TokenStatSnap | null {
+  if (!tstat) return null;
+  return {
+    top10HolderRate: tstat.top_10_holder_rate != null ? num(tstat.top_10_holder_rate) : null,
+    bundlerPct: tstat.top_bundler_trader_percentage != null
+      ? num(tstat.top_bundler_trader_percentage) : null,
+    ratPct: tstat.top_rat_trader_percentage != null
+      ? num(tstat.top_rat_trader_percentage) : null,
+    botDegenRate: tstat.bot_degen_rate != null ? num(tstat.bot_degen_rate) : null,
+    sniperHoldRate: tstat.top70_sniper_hold_rate != null
+      ? num(tstat.top70_sniper_hold_rate) : null,
+    creatorHoldRate: tstat.creator_hold_rate != null ? num(tstat.creator_hold_rate) : null,
+    creatorCreatedCount: tstat.creator_created_count != null
+      ? Math.round(num(tstat.creator_created_count)) : null,
+  };
+}
+
+function emptyVerify(fetchedAt: Date): GmgnProVerifyResult {
+  return {
     ok: false,
     kolCount: 0,
     smartCount: 0,
@@ -222,8 +254,124 @@ export async function verifyTokenKolSmart(
     source: "failed",
     fetchedAt,
   };
+}
+
+/** Official OpenAPI path — no gmgn.ai Cloudflare scrape. */
+async function verifyViaOpenApi(
+  chain: string,
+  address: string,
+  fetchedAt: Date,
+): Promise<GmgnProVerifyResult | null> {
+  if (!hasGmgnOpenApiKey()) return null;
+
+  const [infoRes, kolRes, smartRes] = await Promise.all([
+    gmgnOpenApiGet("/v1/token/info", { chain, address }),
+    gmgnOpenApiGet("/v1/market/token_top_holders", {
+      chain,
+      address,
+      limit: 40,
+      tag: "renowned",
+      order_by: "amount_percentage",
+      direction: "desc",
+    }),
+    gmgnOpenApiGet("/v1/market/token_top_holders", {
+      chain,
+      address,
+      limit: 40,
+      tag: "smart_degen",
+      order_by: "amount_percentage",
+      direction: "desc",
+    }),
+  ]);
+
+  if (!infoRes.ok && !kolRes.ok && !smartRes.ok) {
+    log.warn(
+      {
+        address: address.slice(0, 8),
+        infoErr: (infoRes.data as { error?: string })?.error,
+        status: infoRes.status,
+      },
+      "GMGN OpenAPI pro-verify failed — will try scrape fallback",
+    );
+    return null;
+  }
+
+  const info = unwrapData(infoRes.data);
+  const tags = (info.wallet_tags_stat && typeof info.wallet_tags_stat === "object"
+    ? info.wallet_tags_stat
+    : {}) as Record<string, unknown>;
+  const stat = (info.stat && typeof info.stat === "object" ? info.stat : {}) as Record<string, unknown>;
+  const link = (info.link && typeof info.link === "object" ? info.link : {}) as Record<string, unknown>;
+
+  const tagsKol = Math.round(num(tags.renowned_wallets));
+  const tagsSmart = Math.round(num(tags.smart_wallets));
+  const holderStatKol = tagsKol;
+  const holderStatSmart = tagsSmart;
+
+  const kolWallets = kolRes.ok ? mapHolders(unwrapList(kolRes.data)) : [];
+  const smartWallets = smartRes.ok ? mapHolders(unwrapList(smartRes.data)) : [];
+  const kolConviction = computeConviction(kolWallets);
+  const smartConviction = computeConviction(smartWallets);
+
+  const liquidityUsd = info.liquidity != null ? num(info.liquidity) : null;
+  const holderCount = info.holder_count != null ? Math.round(num(info.holder_count)) : null;
+
+  const result: GmgnProVerifyResult = {
+    ok: true,
+    kolCount: Math.max(tagsKol, 0),
+    smartCount: Math.max(tagsSmart, 0),
+    holderStatKol,
+    holderStatSmart,
+    tagsKol,
+    tagsSmart,
+    holdingKol: kolConviction.holding,
+    holdingSmart: smartConviction.holding,
+    kolConviction,
+    smartConviction,
+    tokenStat: tokenStatFromFlat({
+      ...stat,
+      creator_created_count: info.creator_created_count ?? stat.creator_created_count,
+    }),
+    holderCount,
+    liquidityUsd: liquidityUsd != null && liquidityUsd > 0 ? liquidityUsd : null,
+    socials: buildSocials(link),
+    wallets: { kol: kolWallets, smart: smartWallets },
+    source: "gmgn_live",
+    fetchedAt,
+  };
+
+  log.info(
+    {
+      address: address.slice(0, 8),
+      via: "openapi",
+      kol: result.kolCount,
+      smart: result.smartCount,
+      holdingKol: result.holdingKol,
+      holdingSmart: result.holdingSmart,
+      smartHoldRate: Math.round(smartConviction.holdRate * 100),
+    },
+    "GMGN pro-verify ok",
+  );
+  return result;
+}
+
+/**
+ * Live-fetch GMGN KOL + smart + token_stat for a token.
+ * OpenAPI-first when GMGN_API_KEY is set; scrape + sticky proxy as fallback.
+ */
+export async function verifyTokenKolSmart(
+  chain: string,
+  address: string,
+): Promise<GmgnProVerifyResult> {
+  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
+  const fetchedAt = new Date();
+  const empty = emptyVerify(fetchedAt);
 
   try {
+    const open = await verifyViaOpenApi(c, address, fetchedAt);
+    if (open?.ok) return open;
+
+    const proxy = nextProxy();
     const [statRes, tagsRes, infoRes, kolRes, smartRes, linkRes, tokenStatRes] = await Promise.all([
       gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`, proxy),
       gmgnFetch(`https://gmgn.ai/api/v1/token_wallet_tags_stat/${c}/${address}`, proxy),
@@ -268,35 +416,6 @@ export async function verifyTokenKolSmart(
     const holderCount = info.holder_count != null ? Math.round(num(info.holder_count)) : null;
 
     const link = linkRes.ok ? unwrapData(linkRes.data) : {};
-    const socials: GmgnProVerifyResult["socials"] = {};
-    const tw = typeof link.twitter_username === "string" ? link.twitter_username.trim() : "";
-    const tg = typeof link.telegram === "string" ? link.telegram.trim() : "";
-    const web = typeof link.website === "string" ? link.website.trim() : "";
-    if (tw) {
-      socials.twitter = tw.startsWith("http")
-        ? tw
-        : tw.startsWith("i/communities/")
-          ? `https://x.com/${tw}`
-          : `https://x.com/${tw.replace(/^@/, "")}`;
-    }
-    if (tg) socials.telegram = tg.startsWith("http") ? tg : `https://t.me/${tg.replace(/^@/, "")}`;
-    if (web && web.startsWith("http")) socials.website = web;
-
-    const tokenStat: TokenStatSnap | null = tstat
-      ? {
-          top10HolderRate: tstat.top_10_holder_rate != null ? num(tstat.top_10_holder_rate) : null,
-          bundlerPct: tstat.top_bundler_trader_percentage != null
-            ? num(tstat.top_bundler_trader_percentage) : null,
-          ratPct: tstat.top_rat_trader_percentage != null
-            ? num(tstat.top_rat_trader_percentage) : null,
-          botDegenRate: tstat.bot_degen_rate != null ? num(tstat.bot_degen_rate) : null,
-          sniperHoldRate: tstat.top70_sniper_hold_rate != null
-            ? num(tstat.top70_sniper_hold_rate) : null,
-          creatorHoldRate: tstat.creator_hold_rate != null ? num(tstat.creator_hold_rate) : null,
-          creatorCreatedCount: tstat.creator_created_count != null
-            ? Math.round(num(tstat.creator_created_count)) : null,
-        }
-      : null;
 
     const result: GmgnProVerifyResult = {
       ok: true,
@@ -310,10 +429,10 @@ export async function verifyTokenKolSmart(
       holdingSmart: smartConviction.holding,
       kolConviction,
       smartConviction,
-      tokenStat,
+      tokenStat: tokenStatFromFlat(tstat),
       holderCount,
       liquidityUsd: liquidityUsd != null && liquidityUsd > 0 ? liquidityUsd : null,
-      socials,
+      socials: buildSocials(link),
       wallets: { kol: kolWallets, smart: smartWallets },
       source: "gmgn_live",
       fetchedAt,
@@ -322,6 +441,7 @@ export async function verifyTokenKolSmart(
     log.info(
       {
         address: address.slice(0, 8),
+        via: "scrape",
         kol: result.kolCount,
         smart: result.smartCount,
         holdingKol: result.holdingKol,

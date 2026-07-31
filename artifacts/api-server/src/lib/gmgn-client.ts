@@ -1,8 +1,9 @@
 /**
  * GMGN client — shared fetch + persist logic
  *
- * Uses curl --http2 with browser headers to bypass Cloudflare TLS fingerprinting.
- * Supports an optional proxy pool via GMGN_PROXIES env var (comma-separated).
+ * Prefer Official OpenAPI (https://openapi.gmgn.ai) when GMGN_API_KEY is set —
+ * that path is the supported key auth and avoids website Cloudflare challenges.
+ * Falls back to curl HTTP/2 scrape of gmgn.ai (+ optional GMGN_PROXIES).
  */
 
 import { execFile } from "node:child_process";
@@ -11,6 +12,7 @@ import { db } from "@workspace/db";
 import { token_holders, wallet_profiles } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger as rootLogger } from "./logger";
+import { tryGmgnOpenApi } from "./gmgn-openapi";
 
 const log = rootLogger.child({ module: "gmgn-client" });
 
@@ -26,7 +28,7 @@ export const CHAIN_MAP: Record<string, string> = {
   arbitrum: "arb", arb: "arb",
 };
 
-// ── Browser-like headers ──────────────────────────────────────────────────────
+// ── Browser-like headers (scrape fallback only) ───────────────────────────────
 
 const GMGN_HEADERS: Record<string, string> = {
   "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -42,9 +44,11 @@ const GMGN_HEADERS: Record<string, string> = {
   "Pragma":           "no-cache",
 };
 
-// Inject API key when present — primarily for rate-limit elevation, not endpoint auth.
-const _gmgnApiKey = process.env.GMGN_API_KEY;
+// Official OpenAPI header is X-APIKEY. Scrape path historically used X-API-KEY.
+// Send both when a key is present — key alone does NOT bypass Cloudflare on gmgn.ai.
+const _gmgnApiKey = process.env.GMGN_API_KEY?.trim();
 if (_gmgnApiKey) {
+  GMGN_HEADERS["X-APIKEY"] = _gmgnApiKey;
   GMGN_HEADERS["X-API-KEY"] = _gmgnApiKey;
 }
 
@@ -131,37 +135,56 @@ export async function gmgnFetchOnce(url: string, proxy?: string): Promise<GmgnRe
 }
 
 /**
- * Fetch with proxy rotation.  Pass `stickyProxy` to pin all calls in a
- * single request to the same exit IP (avoids Cloudflare multi-IP signals).
- * Retries up to maxAttempts times rotating through the pool on block/error.
- *
- * G2 fix: per-proxy 429 cooldowns + longer backoff.
- * - Each proxy that returns 429 is marked cooling-down for 90 s.
- * - Backoff between retries: 5 s → 15 s → 30 s (was 2 s → 4 s → 8 s).
- * - With no proxy pool and sustained 429s, all 3 attempts back off before failing.
+ * Fetch with OpenAPI-first + scrape fallback.
+ * Pass `stickyProxy` to pin scrape calls to the same exit IP.
  */
 export async function gmgnFetch(
   url: string,
   stickyProxy?: string,
 ): Promise<GmgnResult> {
+  // 1) Official OpenAPI — uses GMGN_API_KEY properly (no website CF scrape)
+  try {
+    const open = await tryGmgnOpenApi(url);
+    if (open?.ok) return open;
+    if (open && !open.ok) {
+      const err = (open.data as { error?: string })?.error;
+      // Auth failures should not silently fall through pretending scrape will help
+      if (err === "AUTH_KEY_INVALID" || open.status === 401) {
+        log.warn({ url, status: open.status, err }, "GMGN OpenAPI auth failed — check GMGN_API_KEY from gmgn.ai/ai");
+        // still try scrape fallback below
+      }
+    }
+  } catch (err) {
+    log.debug({ err, url }, "OpenAPI attempt error — scrape fallback");
+  }
+
+  // 2) Website scrape (curl HTTP/2) — CF may block datacenter IPs; use GMGN_PROXIES
   const maxAttempts = PROXY_POOL.length > 0 ? Math.min(3, PROXY_POOL.length) : 3;
-  // Backoff schedule: 5 s, 15 s, 30 s
   const BACKOFFS = [5_000, 15_000, 30_000];
   let last: GmgnResult | undefined;
   for (let i = 0; i < maxAttempts; i++) {
     const proxy = i === 0 ? stickyProxy : nextProxy();
     last = await gmgnFetchOnce(url, proxy);
     if (last.ok) return last;
-    if (last.status === 429) {
-      // Mark this proxy as rate-limited so nextProxy() skips it next time
+
+    const blocked =
+      last.status === 403
+      || last.status === 429
+      || (last.data as { error?: string })?.error === "cloudflare_blocked";
+
+    if (last.status === 429 || blocked) {
       markProxyRateLimited(proxy);
+      if (PROXY_POOL.length === 0 && last.status !== 429) {
+        // No proxies — CF 403 won't clear by retrying the same datacenter IP
+        log.warn({ url, status: last.status }, "GMGN scrape blocked by Cloudflare — set GMGN_PROXIES (residential) or use OpenAPI key");
+        break;
+      }
       const delay = BACKOFFS[Math.min(i, BACKOFFS.length - 1)];
-      log.warn({ url, attempt: i + 1, delaySec: delay / 1000, proxy: proxy ?? "direct" },
-        "GMGN: 429 rate-limited, backing off");
+      log.warn({ url, attempt: i + 1, delaySec: delay / 1000, proxy: proxy ?? "direct", status: last.status },
+        "GMGN: blocked/rate-limited, backing off");
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
-    // Non-429 failure without a proxy pool — no point retrying
     if (PROXY_POOL.length === 0) break;
   }
   return last!;
