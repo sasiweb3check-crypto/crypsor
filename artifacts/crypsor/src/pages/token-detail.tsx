@@ -13,6 +13,7 @@ import {
   formatTokenPrice, formatGain, formatMarketCap, formatTimeAgo,
   truncateAddress, getGmgnUrl, cn,
 } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-base";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -222,7 +223,7 @@ export default function TokenDetailPage() {
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
 
-  const BASE = import.meta.env.BASE_URL;
+  const BASE = getApiBase();
 
   // KOL/Smart auto-fetch
   const [kolSmartResult, setKolSmartResult] = useState<KolSmartFetchResult | null>(null);

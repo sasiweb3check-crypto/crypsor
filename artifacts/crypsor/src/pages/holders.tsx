@@ -6,6 +6,7 @@ import {
   ChevronLeft, ChevronRight, Search, X, Download,
 } from "lucide-react";
 import { truncateAddress, cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-base";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ export default function HoldersPage() {
   const { data, isLoading, isFetching } = useQuery<HoldersPage>({
     queryKey: ["holders-list", page, labelFilter, debouncedQ],
     queryFn: async () => {
-      const base = import.meta.env.BASE_URL ?? "/";
+      const base = getApiBase();
       const params = new URLSearchParams({ page: String(page), limit: String(PAGE_LIMIT) });
       if (labelFilter) params.set("label", labelFilter);
       if (debouncedQ)  params.set("q", debouncedQ);
@@ -121,7 +122,7 @@ export default function HoldersPage() {
   const from  = total === 0 ? 0 : Math.min((page - 1) * PAGE_LIMIT + 1, total);
   const to    = Math.min(page * PAGE_LIMIT, total);
 
-  const downloadUrl = `${import.meta.env.BASE_URL ?? "/"}api/holders/download`;
+  const downloadUrl = `${getApiBase()}api/holders/download`;
 
   return (
     <div className="space-y-4">

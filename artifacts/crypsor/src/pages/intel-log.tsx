@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Brain, ArrowUpRight, ArrowDownRight, Minus, Filter, RefreshCw, ChevronRight, Download } from "lucide-react";
 import { cn, formatTimeAgo } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-base";
 
-const BASE = import.meta.env.BASE_URL;
+const BASE = getApiBase();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

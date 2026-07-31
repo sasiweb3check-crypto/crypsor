@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Eye, EyeOff, KeyRound, ExternalLink, CheckCircle, Send, Bot, TestTube } from "lucide-react";
 import { useGetSettings, useUpsertSetting } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
+import { getApiBase } from "@/lib/api-base";
 
 export default function Settings() {
   const { data: settings, isLoading } = useGetSettings();
@@ -71,7 +72,7 @@ export default function Settings() {
   const testTelegram = async () => {
     setTesting(true);
     try {
-      const res = await fetch(`${import.meta.env.BASE_URL}api/caller/telegram/test`, {
+      const res = await fetch(`${getApiBase()}api/caller/telegram/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });

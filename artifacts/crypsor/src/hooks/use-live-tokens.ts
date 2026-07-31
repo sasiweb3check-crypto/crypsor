@@ -13,6 +13,7 @@
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { getApiBase } from "@/lib/api-base";
 
 interface TokenUpdatedPayload {
   tokenId:      number;
@@ -46,9 +47,7 @@ export function useLiveTokens(): { connected: boolean } {
   const connectedRef = useRef(false);
 
   useEffect(() => {
-    const rawBase = import.meta.env.VITE_API_URL ?? import.meta.env.BASE_URL ?? "/";
-    const base = rawBase.endsWith("/") ? rawBase : `${rawBase}/`;
-    const url  = `${base}api/events`;
+    const url  = `${getApiBase()}api/events`;
     const es   = new EventSource(url);
 
     es.addEventListener("connected", () => {

@@ -11,6 +11,7 @@ import {
   safeImageUrl, safeSymbol, safeName,
 } from "@/lib/utils";
 import { MonitorStatusBar } from "@/components/monitor-status-bar";
+import { getApiBase } from "@/lib/api-base";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -303,7 +304,7 @@ export default function Dashboard() {
         params.set("minIntelScore", "80");
         params.set("minMc", "5000");
       }
-      const r = await fetch(`${import.meta.env.BASE_URL}api/tokens?${params}`);
+      const r = await fetch(`${getApiBase()}api/tokens?${params}`);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -315,7 +316,7 @@ export default function Dashboard() {
   const { data: topPerfPage } = useQuery<PaginatedTokenPage>({
     queryKey: ["tokens", "top-performers"],
     queryFn: async () => {
-      const r = await fetch(`${import.meta.env.BASE_URL}api/tokens?sort=detectionGainPct&order=desc&limit=1&page=1`);
+      const r = await fetch(`${getApiBase()}api/tokens?sort=detectionGainPct&order=desc&limit=1&page=1`);
       return r.json();
     },
     refetchInterval: 30_000,

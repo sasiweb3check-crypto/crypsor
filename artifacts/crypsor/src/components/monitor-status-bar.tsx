@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Wifi, WifiOff, Scan } from "lucide-react";
 import { formatTimeAgo } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-base";
 
 interface MonitorStatus {
   running: boolean;
@@ -29,7 +30,7 @@ const ENGINE_LABELS: Record<string, string> = {
 export function MonitorStatusBar() {
   const { data, refetch } = useQuery<MonitorStatus>({
     queryKey: ["monitor-status"],
-    queryFn:  () => fetch(`${import.meta.env.BASE_URL}api/monitor/status`).then(r => r.json()),
+    queryFn:  () => fetch(`${getApiBase()}api/monitor/status`).then(r => r.json()),
     refetchInterval: 15_000,
     staleTime: 10_000,
   });
@@ -91,7 +92,7 @@ export function MonitorStatusBar() {
       {/* Scan now */}
       <button
         className="ml-auto flex items-center gap-1.5 px-2.5 py-1 border border-[#30363d] text-[#8b949e] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 transition-colors"
-        onClick={() => triggerScan(import.meta.env.BASE_URL).then(() => refetch())}
+        onClick={() => triggerScan(getApiBase()).then(() => refetch())}
       >
         <Scan className="w-3 h-3" />
         Scan Now

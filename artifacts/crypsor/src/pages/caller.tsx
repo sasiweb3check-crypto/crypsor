@@ -11,6 +11,7 @@ import {
   Star, Users, BarChart2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { getApiBase } from "@/lib/api-base";
 import {
   cn, truncateAddress, formatCompactUsd, formatTimeAgo,
   getGmgnUrl, safeSymbol,
@@ -422,7 +423,7 @@ function ProScoreBar({ score }: { score: number }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
+const BASE_URL = getApiBase().replace(/\/$/, "");
 
 export default function Caller() {
   const [, navigate] = useLocation();

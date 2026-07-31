@@ -6,6 +6,7 @@ import {
   formatTokenPrice, formatGain, formatMarketCap,
   formatTimeAgo, truncateAddress, getGmgnUrl, cn,
 } from "@/lib/utils";
+import { getApiBase } from "@/lib/api-base";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ export default function Tokens() {
       if (statusFilter !== "all") p.set("status", statusFilter);
       if (chainFilter  !== "all") p.set("chain",  chainFilter);
       if (debouncedSearch)        p.set("q",      debouncedSearch);
-      const r = await fetch(`${import.meta.env.BASE_URL}api/tokens?${p}`);
+      const r = await fetch(`${getApiBase()}api/tokens?${p}`);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -257,7 +258,7 @@ export default function Tokens() {
         <button
           onClick={async () => {
             setDownloading(true);
-            try { await downloadAllTokens(import.meta.env.BASE_URL, statusFilter, chainFilter, debouncedSearch, sortField, sortOrder); }
+            try { await downloadAllTokens(getApiBase(), statusFilter, chainFilter, debouncedSearch, sortField, sortOrder); }
             catch (e) { console.error(e); }
             finally { setDownloading(false); }
           }}

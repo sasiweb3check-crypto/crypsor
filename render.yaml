@@ -1,0 +1,32 @@
+# Crypsor API — always-on Render web service (Express + intelligence pipeline)
+# Blueprint: https://render.com/docs/blueprint-spec
+#
+# After first deploy, set secrets in the Render dashboard (sync: false vars).
+# Then set CORS_ORIGIN to your Vercel frontend URL and redeploy if needed.
+
+services:
+  - type: web
+    name: crypsor-api
+    runtime: node
+    plan: starter
+    region: oregon
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AIVEN_DATABASE_URL
+        sync: false
+      - key: AIVEN_REDIS_URL
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: GMGN_API_KEY
+        sync: false
+      - key: GMGN_PROXIES
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false
