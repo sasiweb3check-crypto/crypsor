@@ -4,23 +4,23 @@
  * Identifies tokens that qualify for the Pro Caller tier and registers them
  * in `pro_calls` (one record per token, never duplicated).
  *
- * On-time path (Jul 2026 fix):
- *   Median detect→call was ~25 min and call→surface ~25h because intel + scanner
- *   + snapshots all ran on 5-minute clocks. Now:
- *     • intel:scored event → immediate scan for that token
- *     • 60s backup scanner cycle
- *     • On INSERT: compute Pro Score v2 + set quality_label + surfaced_at NOW
- *       (do not wait for the snapshot worker to make the token visible)
+ * On-time path (Jul 2026):
+ *   intel:scored → immediate scan → live GMGN KOL/smart verify → INSERT with
+ *   freeze → Pro Score v2 + surface NOW.
  *
  * Qualification tracks
  * ────────────────────
  *  VERY STRONG  (scanner_label = 'very_strong')
- *    Track A: intelligence_score >= 80 + KOL/Smart >= 1 + MC >= $5K
- *    Track B: intelligence_score >= 75 + KOL >= 2  + MC >= $5K
+ *    Track A: intelligence_score >= 80 + verified KOL/Smart >= 1 + MC >= $5K
+ *    Track B: intelligence_score >= 75 + verified KOL >= 2  + MC >= $5K
  *
  *  STRONG       (scanner_label = 'strong')
- *    Track C: intelligence_score >= 80 + KOL = 0   + MC >= $5K
- *             Auto-upgraded once KOL/Smart arrives.
+ *    Track C: intelligence_score >= 80 + verified KOL/Smart = 0 + MC >= $5K
+ *             Auto-upgraded once live GMGN shows KOL/Smart.
+ *
+ * KOL/smart SSOT at qualify: live GMGN (wallet_tags_stat / holder_stat + tagged
+ * holder lists). Never trust inflated intel-log kol (tracked-wallet boost) alone.
+ * Entry MC / ATH always use called_mc_usd; surfaced_* is first-seen-in-UI only.
  */
 
 import { db } from "@workspace/db";
@@ -33,43 +33,294 @@ import {
   deriveRunStatus,
   type EntryTier,
 } from "../lib/pro-scoring";
+import {
+  applyVerifyToTrackedToken,
+  verifyTokenKolSmart,
+  walletsPayload,
+  type GmgnProVerifyResult,
+} from "../lib/gmgn-pro-verify";
 
 const log = logger.child({ module: "pro-scanner" });
 
-const SCAN_INTERVAL_MS = 60_000;       // was 5 min — backup catch-up
+const SCAN_INTERVAL_MS = 60_000;
 const STARTUP_DELAY_MS = 12_000;
 
 const MIN_INTEL = 80;
 const MIN_INTEL_STRONG_KOL = 75;
 const MIN_KOL_STRONG = 2;
 const MIN_MC = 5_000;
+const MAX_MC = 500_000;
+/** Cap live GMGN verifies per full cycle to stay under rate limits. */
+const MAX_VERIFY_PER_CYCLE = 12;
 
-// ── Step 0: backfill KOL/smart counts in intel log ───────────────────────────
+type Candidate = {
+  token_id: number;
+  address: string;
+  chain: string;
+  computed_at: string | Date;
+  market_cap_usd: string | null;
+  intelligence_score: number;
+  holder_kol_count: number | null;
+  holder_smart_count: number | null;
+  kol_smart_score: number | null;
+  holder_velocity_score: number | null;
+  mc_growth_score: number | null;
+  volume_intensity_score: number | null;
+  status_after: string | null;
+};
 
-async function backfillKolSmartCounts(): Promise<void> {
+function gateTrack(
+  intel: number,
+  kol: number,
+  smart: number,
+): "very_strong" | "strong" | null {
+  if (intel >= MIN_INTEL && (kol >= 1 || smart >= 1)) return "very_strong";
+  if (intel >= MIN_INTEL_STRONG_KOL && kol >= MIN_KOL_STRONG) return "very_strong";
+  if (intel >= MIN_INTEL && kol === 0 && smart === 0) return "strong";
+  return null;
+}
+
+async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candidate[]> {
+  const result = await db.execute(sql`
+    SELECT DISTINCT ON (l.token_id)
+      l.token_id,
+      t.address,
+      t.chain,
+      l.computed_at,
+      l.market_cap_usd,
+      l.intelligence_score,
+      l.holder_kol_count,
+      l.holder_smart_count,
+      l.kol_smart_score,
+      l.holder_velocity_score,
+      l.mc_growth_score,
+      l.volume_intensity_score,
+      l.status_after
+    FROM token_intel_log l
+    JOIN tracked_tokens t ON t.id = l.token_id
+    WHERE l.intelligence_score >= ${MIN_INTEL_STRONG_KOL}
+      AND l.market_cap_usd::numeric >= ${MIN_MC}
+      AND l.market_cap_usd::numeric <= ${MAX_MC}
+      AND l.status_after IN ('new', 'active', 'watch')
+      AND NOT EXISTS (SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id)
+      ${onlyTokenId ? sql`AND l.token_id = ${onlyTokenId}` : sql``}
+    ORDER BY l.token_id, l.computed_at ASC
+    LIMIT ${onlyTokenId ? 1 : limit}
+  `);
+  return result.rows as Candidate[];
+}
+
+async function insertProCall(args: {
+  c: Candidate;
+  scannerLabel: "very_strong" | "strong";
+  kol: number;
+  smart: number;
+  source: string;
+  verify: GmgnProVerifyResult | null;
+}): Promise<boolean> {
+  const { c, scannerLabel, kol, smart, source, verify } = args;
+  const walletsJson = verify?.ok ? JSON.stringify(walletsPayload(verify)) : null;
   try {
     const result = await db.execute(sql`
-      UPDATE token_intel_log l
-      SET
-        holder_kol_count   = t.holder_kol_count,
-        holder_smart_count = t.holder_smart_count,
-        kol_smart_score    = LEAST(100.0, GREATEST(0.0, (
-          (t.holder_kol_count::float / NULLIF(t.holder_count, 0)) * 250.0 +
-          (t.holder_smart_count::float / NULLIF(t.holder_count, 0)) * 200.0
-        )::real))
-      FROM tracked_tokens t
-      WHERE l.token_id = t.id
-        AND (l.holder_kol_count IS NULL OR l.holder_kol_count = 0)
-        AND (l.holder_smart_count IS NULL OR l.holder_smart_count = 0)
-        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
-        AND l.intelligence_score >= ${MIN_INTEL}
+      INSERT INTO pro_calls (
+        token_id,
+        called_at,
+        called_mc_usd,
+        called_intel_score,
+        called_kol_count,
+        called_smart_count,
+        called_kol_smart_score,
+        called_holder_velocity,
+        called_mc_growth,
+        called_volume_intensity,
+        scanner_label,
+        score_version,
+        kol_smart_source,
+        verified_at,
+        verified_wallets
+      ) VALUES (
+        ${c.token_id},
+        ${c.computed_at},
+        ${c.market_cap_usd},
+        ${c.intelligence_score},
+        ${kol},
+        ${smart},
+        ${c.kol_smart_score},
+        ${c.holder_velocity_score},
+        ${c.mc_growth_score},
+        ${c.volume_intensity_score},
+        ${scannerLabel},
+        'v2',
+        ${source},
+        ${verify?.ok ? verify.fetchedAt : null},
+        ${walletsJson}
+      )
+      ON CONFLICT (token_id) DO NOTHING
     `);
-    const updated = Number((result as unknown as { rowCount?: number }).rowCount ?? 0);
-    if (updated > 0) {
-      log.info({ updated }, "KOL/smart backfill: intel log entries updated");
-    }
+    return Number((result as unknown as { rowCount?: number }).rowCount ?? 0) > 0;
   } catch (err) {
-    log.warn({ err }, "KOL/smart backfill error (non-fatal)");
+    log.error({ err, tokenId: c.token_id }, "Pro scanner INSERT error");
+    return false;
+  }
+}
+
+async function qualifyCandidates(candidates: Candidate[]): Promise<{
+  veryStrong: number;
+  strong: number;
+  verified: number;
+}> {
+  let veryStrong = 0;
+  let strong = 0;
+  let verified = 0;
+
+  // Prefer verifying highest-intel first when we must truncate.
+  const ordered = [...candidates].sort(
+    (a, b) => (b.intelligence_score ?? 0) - (a.intelligence_score ?? 0),
+  );
+  const toVerify = ordered.slice(0, MAX_VERIFY_PER_CYCLE);
+  const deferred = ordered.slice(MAX_VERIFY_PER_CYCLE);
+
+  for (const c of toVerify) {
+    const mc = parseFloat(c.market_cap_usd ?? "0") || 0;
+    if (mc < MIN_MC || mc > MAX_MC) continue;
+
+    let verify: GmgnProVerifyResult | null = null;
+    try {
+      verify = await verifyTokenKolSmart(c.chain || "sol", c.address);
+      if (verify.ok) {
+        await applyVerifyToTrackedToken(c.token_id, verify);
+        verified++;
+      }
+    } catch (err) {
+      log.warn({ err, tokenId: c.token_id }, "GMGN verify failed (non-fatal)");
+    }
+
+    const kol = verify?.ok ? verify.kolCount : Math.max(0, Number(c.holder_kol_count ?? 0));
+    const smart = verify?.ok ? verify.smartCount : Math.max(0, Number(c.holder_smart_count ?? 0));
+    const source = verify?.ok ? "gmgn_live" : "intel_log";
+    const track = gateTrack(c.intelligence_score, kol, smart);
+    if (!track) continue;
+
+    const inserted = await insertProCall({
+      c, scannerLabel: track, kol, smart, source, verify,
+    });
+    if (inserted) {
+      if (track === "very_strong") veryStrong++;
+      else strong++;
+      log.info(
+        {
+          tokenId: c.token_id,
+          symbolHint: c.address.slice(0, 8),
+          track,
+          intel: c.intelligence_score,
+          kol,
+          smart,
+          source,
+          calledMc: c.market_cap_usd,
+        },
+        "Pro call registered",
+      );
+    }
+  }
+
+  // Deferred candidates: insert without live verify using raw log counts so we
+  // do not drop them; upgradeStrong / next cycle will re-verify.
+  for (const c of deferred) {
+    const kol = Math.max(0, Number(c.holder_kol_count ?? 0));
+    const smart = Math.max(0, Number(c.holder_smart_count ?? 0));
+    const track = gateTrack(c.intelligence_score, kol, smart);
+    if (!track) continue;
+    const inserted = await insertProCall({
+      c, scannerLabel: track, kol, smart, source: "intel_log", verify: null,
+    });
+    if (inserted) {
+      if (track === "very_strong") veryStrong++;
+      else strong++;
+    }
+  }
+
+  return { veryStrong, strong, verified };
+}
+
+async function upgradeStrongToVeryStrong(): Promise<number> {
+  try {
+    const pending = await db.execute(sql`
+      SELECT pc.id AS pro_call_id, pc.token_id, t.address, t.chain,
+             pc.called_kol_count, pc.called_smart_count
+      FROM pro_calls pc
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      WHERE pc.scanner_label = 'strong'
+      ORDER BY pc.called_at DESC
+      LIMIT ${MAX_VERIFY_PER_CYCLE}
+    `);
+
+    let upgraded = 0;
+    for (const row of pending.rows as Array<{
+      pro_call_id: number; token_id: number; address: string; chain: string;
+      called_kol_count: number | null; called_smart_count: number | null;
+    }>) {
+      const verify = await verifyTokenKolSmart(row.chain || "sol", row.address);
+      if (!verify.ok) continue;
+      await applyVerifyToTrackedToken(row.token_id, verify);
+      if (verify.kolCount < 1 && verify.smartCount < 1) continue;
+
+      await db.execute(sql`
+        UPDATE pro_calls
+        SET
+          scanner_label      = 'very_strong',
+          called_kol_count   = ${verify.kolCount},
+          called_smart_count = ${verify.smartCount},
+          kol_smart_source   = 'gmgn_live',
+          verified_at        = ${verify.fetchedAt},
+          verified_wallets   = ${JSON.stringify(walletsPayload(verify))}
+        WHERE id = ${row.pro_call_id}
+          AND scanner_label = 'strong'
+      `);
+      upgraded++;
+    }
+    return upgraded;
+  } catch (err) {
+    log.warn({ err }, "Pro scanner: strong→very_strong upgrade error (non-fatal)");
+    return 0;
+  }
+}
+
+/** Backfill live GMGN verify onto recent pro_calls missing kol_smart_source. */
+async function reverifyUnsourcedCalls(): Promise<number> {
+  try {
+    const pending = await db.execute(sql`
+      SELECT pc.id AS pro_call_id, pc.token_id, t.address, t.chain
+      FROM pro_calls pc
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      WHERE pc.kol_smart_source IS NULL
+        AND pc.called_at >= NOW() - INTERVAL '14 days'
+      ORDER BY pc.called_at DESC
+      LIMIT ${Math.min(6, MAX_VERIFY_PER_CYCLE)}
+    `);
+
+    let n = 0;
+    for (const row of pending.rows as Array<{
+      pro_call_id: number; token_id: number; address: string; chain: string;
+    }>) {
+      const verify = await verifyTokenKolSmart(row.chain || "sol", row.address);
+      if (!verify.ok) continue;
+      await applyVerifyToTrackedToken(row.token_id, verify);
+      await db.execute(sql`
+        UPDATE pro_calls
+        SET
+          called_kol_count   = ${verify.kolCount},
+          called_smart_count = ${verify.smartCount},
+          kol_smart_source   = 'gmgn_live',
+          verified_at        = ${verify.fetchedAt},
+          verified_wallets   = ${JSON.stringify(walletsPayload(verify))}
+        WHERE id = ${row.pro_call_id}
+      `);
+      n++;
+    }
+    return n;
+  } catch (err) {
+    log.warn({ err }, "reverifyUnsourcedCalls error (non-fatal)");
+    return 0;
   }
 }
 
@@ -152,6 +403,7 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
       const surfacingNow = qualityLabel === "good" || qualityLabel === "very_good";
       const entryTier: EntryTier = result.entryTier;
 
+      // surfaced_mc = MC when first visible in UI (audit), NOT entry price.
       await db.execute(sql`
         UPDATE pro_calls
         SET
@@ -188,149 +440,24 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
   }
 }
 
-async function insertVeryStrong(onlyTokenId?: number): Promise<number> {
-  try {
-    const result = await db.execute(sql`
-      INSERT INTO pro_calls (
-        token_id,
-        called_at,
-        called_mc_usd,
-        called_intel_score,
-        called_kol_count,
-        called_smart_count,
-        called_kol_smart_score,
-        called_holder_velocity,
-        called_mc_growth,
-        called_volume_intensity,
-        scanner_label,
-        score_version
-      )
-      SELECT DISTINCT ON (l.token_id)
-        l.token_id,
-        l.computed_at                    AS called_at,
-        l.market_cap_usd                 AS called_mc_usd,
-        l.intelligence_score             AS called_intel_score,
-        l.holder_kol_count               AS called_kol_count,
-        l.holder_smart_count             AS called_smart_count,
-        l.kol_smart_score                AS called_kol_smart_score,
-        l.holder_velocity_score          AS called_holder_velocity,
-        l.mc_growth_score                AS called_mc_growth,
-        l.volume_intensity_score         AS called_volume_intensity,
-        'very_strong'                    AS scanner_label,
-        'v2'                             AS score_version
-      FROM token_intel_log l
-      WHERE (
-        (
-          l.intelligence_score        >= ${MIN_INTEL}
-          AND (l.holder_kol_count >= 1 OR l.holder_smart_count >= 1)
-        )
-        OR
-        (
-          l.intelligence_score        >= ${MIN_INTEL_STRONG_KOL}
-          AND l.holder_kol_count      >= ${MIN_KOL_STRONG}
-        )
-      )
-        AND l.market_cap_usd::numeric   >= ${MIN_MC}
-        AND l.market_cap_usd::numeric   <= 500000
-        AND l.status_after IN ('new', 'active', 'watch')
-        AND NOT EXISTS (
-          SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id
-        )
-        ${onlyTokenId ? sql`AND l.token_id = ${onlyTokenId}` : sql``}
-      ORDER BY l.token_id, l.computed_at ASC
-      ON CONFLICT (token_id) DO NOTHING
-    `);
-    return Number((result as unknown as { rowCount?: number }).rowCount ?? 0);
-  } catch (err) {
-    log.error({ err }, "Pro scanner: very_strong INSERT error");
-    return 0;
-  }
-}
-
-async function upgradeStrongToVeryStrong(): Promise<number> {
-  try {
-    const result = await db.execute(sql`
-      UPDATE pro_calls pc
-      SET
-        scanner_label      = 'very_strong',
-        called_kol_count   = GREATEST(pc.called_kol_count,   t.holder_kol_count),
-        called_smart_count = GREATEST(pc.called_smart_count, t.holder_smart_count)
-      FROM tracked_tokens t
-      WHERE pc.token_id = t.id
-        AND pc.scanner_label = 'strong'
-        AND (t.holder_kol_count >= 1 OR t.holder_smart_count >= 1)
-    `);
-    return Number((result as unknown as { rowCount?: number }).rowCount ?? 0);
-  } catch (err) {
-    log.warn({ err }, "Pro scanner: strong→very_strong upgrade error (non-fatal)");
-    return 0;
-  }
-}
-
-async function insertStrong(onlyTokenId?: number): Promise<number> {
-  try {
-    const result = await db.execute(sql`
-      INSERT INTO pro_calls (
-        token_id,
-        called_at,
-        called_mc_usd,
-        called_intel_score,
-        called_kol_count,
-        called_smart_count,
-        called_kol_smart_score,
-        called_holder_velocity,
-        called_mc_growth,
-        called_volume_intensity,
-        scanner_label,
-        score_version
-      )
-      SELECT DISTINCT ON (l.token_id)
-        l.token_id,
-        l.computed_at                    AS called_at,
-        l.market_cap_usd                 AS called_mc_usd,
-        l.intelligence_score             AS called_intel_score,
-        COALESCE(l.holder_kol_count, 0)  AS called_kol_count,
-        COALESCE(l.holder_smart_count,0) AS called_smart_count,
-        l.kol_smart_score                AS called_kol_smart_score,
-        l.holder_velocity_score          AS called_holder_velocity,
-        l.mc_growth_score                AS called_mc_growth,
-        l.volume_intensity_score         AS called_volume_intensity,
-        'strong'                         AS scanner_label,
-        'v2'                             AS score_version
-      FROM token_intel_log l
-      WHERE l.intelligence_score        >= ${MIN_INTEL}
-        AND (l.holder_kol_count  IS NULL OR l.holder_kol_count  = 0)
-        AND (l.holder_smart_count IS NULL OR l.holder_smart_count = 0)
-        AND l.market_cap_usd::numeric   >= ${MIN_MC}
-        AND l.market_cap_usd::numeric   <= 500000
-        AND l.status_after IN ('new', 'active', 'watch')
-        AND NOT EXISTS (
-          SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id
-        )
-        ${onlyTokenId ? sql`AND l.token_id = ${onlyTokenId}` : sql``}
-      ORDER BY l.token_id, l.computed_at ASC
-      ON CONFLICT (token_id) DO NOTHING
-    `);
-    return Number((result as unknown as { rowCount?: number }).rowCount ?? 0);
-  } catch (err) {
-    log.error({ err }, "Pro scanner: strong INSERT error");
-    return 0;
-  }
-}
-
 async function scanOnce(onlyTokenId?: number): Promise<void> {
-  if (!onlyTokenId) {
-    await backfillKolSmartCounts();
-  }
-
-  const veryStrongInserted = await insertVeryStrong(onlyTokenId);
+  const candidates = await loadCandidates(onlyTokenId);
+  const { veryStrong, strong, verified } = await qualifyCandidates(candidates);
   const upgraded = await upgradeStrongToVeryStrong();
-  const strongInserted = await insertStrong(onlyTokenId);
+  const reverified = onlyTokenId ? 0 : await reverifyUnsourcedCalls();
   const scored = await scoreAndSurfacePending(onlyTokenId);
 
-  if (veryStrongInserted > 0 || upgraded > 0 || strongInserted > 0 || scored > 0) {
+  if (veryStrong > 0 || strong > 0 || upgraded > 0 || scored > 0 || verified > 0 || reverified > 0) {
     log.info(
-      { veryStrongInserted, upgraded, strongInserted, scored, onlyTokenId: onlyTokenId ?? null },
+      {
+        veryStrongInserted: veryStrong,
+        strongInserted: strong,
+        upgraded,
+        scored,
+        verified,
+        reverified,
+        onlyTokenId: onlyTokenId ?? null,
+      },
       "Pro scanner cycle complete",
     );
   }
@@ -341,7 +468,6 @@ export function startProScanner(): void {
     await scanOnce(data.tokenId);
   });
 
-  // Event-driven: react within seconds when intel crosses the gate
   eventBus.on("intel:scored", (e: IntelScoredEvent) => {
     if (e.intelligenceScore < MIN_INTEL_STRONG_KOL) return;
     const mc = e.marketCapUsd ? parseFloat(e.marketCapUsd) : 0;
@@ -362,6 +488,6 @@ export function startProScanner(): void {
 
   log.info(
     { delayMs: STARTUP_DELAY_MS, intervalMs: SCAN_INTERVAL_MS },
-    "Pro scanner scheduled (event-driven + 60s backup | immediate v2 score+surface on call)",
+    "Pro scanner scheduled (GMGN live verify + event-driven + 60s backup)",
   );
 }

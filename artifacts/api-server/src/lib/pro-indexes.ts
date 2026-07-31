@@ -1,6 +1,13 @@
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
 
+/** Idempotent schema patches for Pro GMGN verify freeze. */
+const SCHEMA_STATEMENTS = [
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS kol_smart_source text`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_at timestamptz`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_wallets text`,
+];
+
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */
 const STATEMENTS = [
   // CONCURRENTLY avoids blocking writes/reads during first deploy index build.
@@ -22,8 +29,15 @@ const STATEMENTS = [
 ];
 
 export async function ensureProIndexes(): Promise<void> {
-  // Don't block boot/health — build indexes in the background.
+  // Don't block boot/health — schema + indexes in the background.
   void (async () => {
+    for (const sqlText of SCHEMA_STATEMENTS) {
+      try {
+        await pool.query(sqlText);
+      } catch (err) {
+        logger.warn({ err, sqlText }, "pro schema ensure failed");
+      }
+    }
     for (const sqlText of STATEMENTS) {
       try {
         // CONCURRENTLY cannot run inside a transaction; use bare pool.query.
@@ -32,6 +46,6 @@ export async function ensureProIndexes(): Promise<void> {
         logger.warn({ err, sqlText }, "pro index ensure failed");
       }
     }
-    logger.info("pro indexes ensured");
+    logger.info("pro schema + indexes ensured");
   })();
 }

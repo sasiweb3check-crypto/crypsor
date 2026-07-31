@@ -194,6 +194,8 @@ router.get("/pro/history", async (req, res) => {
             pc.surfaced_at,
             pc.surfaced_mc_usd,
             pc.scanner_label,
+            pc.kol_smart_source,
+            pc.verified_at,
             t.address, t.chain, t.name, t.symbol,
             t.logo_uri, t.image_path,
             t.status,
@@ -238,6 +240,8 @@ router.get("/pro/history", async (req, res) => {
         surfaced_at: string | null;
         surfaced_mc_usd: string | null;
         scanner_label: string | null;
+        kol_smart_source: string | null;
+        verified_at: string | null;
         live_intel: number | null;
         live_kol: number | null; live_smart: number | null;
         live_hv: number | null;
@@ -337,6 +341,8 @@ router.get("/pro/history", async (req, res) => {
           surfacedAt:     call.surfaced_at ?? null,
           surfacedMcUsd:  call.surfaced_mc_usd ? parseFloat(call.surfaced_mc_usd) : null,
           scannerLabel:   (call.scanner_label ?? "very_strong") as "very_strong" | "strong",
+          kolSmartSource: call.kol_smart_source ?? null,
+          verifiedAt:     call.verified_at ?? null,
           secMintRenounced:   call.sec_mint_renounced,
           secFreezeRenounced: call.sec_freeze_renounced,
           secIsHoneypot:      call.sec_is_honeypot,
@@ -384,7 +390,12 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         pc.hit_5x,  pc.hit_5x_at,
         pc.hit_10x, pc.hit_10x_at,
         pc.hit_100x,pc.hit_100x_at,
-        pc.last_snapshot_at
+        pc.last_snapshot_at,
+        pc.kol_smart_source,
+        pc.verified_at,
+        pc.verified_wallets,
+        pc.surfaced_at,
+        pc.surfaced_mc_usd
       FROM pro_calls pc
       WHERE pc.token_id = ${tokenId}
       LIMIT 1
@@ -396,6 +407,16 @@ router.get("/pro/token/:tokenId", async (req, res) => {
     }
 
     const r = result.rows[0] as Record<string, unknown>;
+    let verifiedWallets: unknown = null;
+    if (r.verified_wallets) {
+      try {
+        verifiedWallets = typeof r.verified_wallets === "string"
+          ? JSON.parse(String(r.verified_wallets))
+          : r.verified_wallets;
+      } catch {
+        verifiedWallets = null;
+      }
+    }
     res.json({
       proCall: {
         id:               Number(r.id),
@@ -411,6 +432,11 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         entryTier:        r.entry_tier ?? null,
         scoreVersion:     r.score_version ?? null,
         lastSnapshotAt:   r.last_snapshot_at ?? null,
+        kolSmartSource:   r.kol_smart_source ?? null,
+        verifiedAt:       r.verified_at ?? null,
+        verifiedWallets,
+        surfacedAt:       r.surfaced_at ?? null,
+        surfacedMcUsd:    r.surfaced_mc_usd ? parseFloat(String(r.surfaced_mc_usd)) : null,
         hit2x:    Boolean(r.hit_2x),    hit2xAt:  r.hit_2x_at   ?? null,
         hit3x:    Boolean(r.hit_3x),    hit3xAt:  r.hit_3x_at   ?? null,
         hit5x:    Boolean(r.hit_5x),    hit5xAt:  r.hit_5x_at   ?? null,
