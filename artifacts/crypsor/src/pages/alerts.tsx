@@ -49,6 +49,19 @@ interface AlertToken {
   confidence: ConfidenceInfo;
 }
 
+interface BandStat {
+  key: string;
+  label: string;
+  role: string;
+  n: number;
+  winRate2x: number;
+  winRate5x: number;
+  winRate10x: number;
+  x2Count: number;
+  x5Count: number;
+  x10Count: number;
+}
+
 interface AlertsPayload {
   stats: {
     sent: number;
@@ -61,7 +74,9 @@ interface AlertsPayload {
     alertLive: number;
     watchLive: number;
     pendingSend: number;
+    ruleN?: number;
   };
+  bands?: BandStat[];
   sent: AlertToken[];
   alert: AlertToken[];
   watch: AlertToken[];
@@ -303,8 +318,9 @@ export default function AlertsPage() {
           Alert tracker
         </h1>
         <p className="text-[var(--cryp-mute)] text-sm mt-2 max-w-xl leading-relaxed">
-          Track Telegram high-confidence sends in-app — entry MC, gain, ATH, and why they fired.
-          Live Alert / Watch lanes show what the desk would notify next.
+          <span className="text-[var(--cryp-text)]">Alert</span> = Telegram (cluster · intel≥90 · MC $5–15K · mint · fresh).{" "}
+          <span className="text-[var(--cryp-text)]">Watch</span> = same cluster, intel≥85, MC $5–25K — research only, no ping.{" "}
+          <span className="text-[var(--cryp-text)]">Sent</span> = already delivered.
         </p>
       </header>
 
@@ -348,6 +364,44 @@ export default function AlertsPage() {
         )}
       </section>
 
+      {/* MC band research — why Alert stays $5–15K */}
+      {!showSkeleton && (data?.bands?.length ?? 0) > 0 && (
+        <section className="fade-up fade-up-delay-1 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] tracking-[0.2em] uppercase text-[var(--cryp-mute)]">
+              Entry MC bands · cluster + intel≥90 + mint
+              {stats?.ruleN != null ? ` · n=${stats.ruleN}` : ""}
+            </div>
+            <div className="text-[10px] text-[var(--cryp-mute)]">
+              Widening Alert past $15K keeps 2× but kills 5×
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+            {(data?.bands ?? []).map(b => (
+              <div
+                key={b.key}
+                className="desk-card px-3 py-2.5"
+                style={b.key === "5-15k" ? { borderColor: "rgba(61,154,139,0.45)" } : undefined}
+              >
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-display text-[12px] font-bold">{b.label}</span>
+                  <span className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">{b.role}</span>
+                </div>
+                <div className="font-mono-num text-[11px] mt-1.5 text-[var(--cryp-text)]">
+                  n={b.n}
+                </div>
+                <div className="flex gap-3 mt-1 text-[11px] font-mono-num">
+                  <span style={{ color: "var(--cryp-gain)" }}>{b.winRate2x}% 2×</span>
+                  <span style={{ color: b.winRate5x >= 20 ? "var(--cryp-gain)" : "var(--cryp-mute)" }}>
+                    {b.winRate5x}% 5×
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="flex flex-wrap items-center gap-2 fade-up fade-up-delay-2">
         {tabs.map(t => (
           <button
@@ -369,7 +423,7 @@ export default function AlertsPage() {
         ))}
         <div className="flex items-center gap-1.5 text-[11px] text-[var(--cryp-mute)] ml-auto">
           <Shield className="w-3 h-3" />
-          Cluster · intel≥90 · $5–15K · mint · fresh
+          Alert $5–15K · Watch $5–25K
         </div>
       </section>
 

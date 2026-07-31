@@ -6,14 +6,20 @@
  * GMGN / KOL heatmaps / smart-money cluster tools:
  *
  *   • Cluster buy: ≥2 holding smart AND ≥1 KOL at verify
- *   • Sweet-spot MC ($5–15K)
+ *   • Sweet-spot MC ($5–15K) for Telegram Alert — best 5× band in backtest
  *   • High intel (≥90)
  *   • Mint renounced · not honeypot
  *   • Fresh (minutes after call) · not chasing a pump
  *
- * Backtest on sticky desk (entry MC $5–40K, n≈321):
- *   Rule D (cluster ∧ intel≥90 ∧ mc5–15k ∧ mint) → ~55% 2× / ~30% 5×
+ * Live desk backtest (cluster ∧ intel≥90 ∧ mint, surfaced good/very_good):
+ *   MC $5–15K  → ~50% 2× / ~27% 5×  (Alert hard gate)
+ *   MC $15–25K → ~39% 2× / ~4% 5×   (Watch research only — dilutes 5×)
+ *   MC $5–25K  → ~44% 2× / ~16% 5×
  *   Desk baseline → ~31% 2× / ~10% 5×
+ *
+ * Watch uses a wider MC band ($5–25K) so near-misses stay visible in-app.
+ * Early snapshot gates (first 3/5 snaps) are not used yet — only ~10% of
+ * historical rule tokens have snaps in the first 45m.
  *
  * Pro Score may include live momentum; Confidence does NOT.
  */
@@ -211,7 +217,9 @@ export function computeConfidence(inp: ConfidenceInput): ConfidenceResult {
 
   let tier: ConfidenceTier = "desk";
   if (alertEligible) tier = "alert";
-  else if (cluster && intel >= 85 && mc >= 5_000 && mc <= 18_000 && inp.secIsHoneypot !== true) {
+  // Watch: same cluster signal, looser intel/MC — research lane, no Telegram.
+  // MC extended to $25K so 15–25K near-misses stay visible (Alert stays $5–15K).
+  else if (cluster && intel >= 85 && mc >= 5_000 && mc <= 25_000 && inp.secIsHoneypot !== true) {
     tier = "watch";
   }
 
