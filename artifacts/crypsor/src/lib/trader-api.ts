@@ -40,6 +40,9 @@ export type DexStatus = {
     observationSnaps: number;
     maxOpen: number;
   };
+  lastTickAt: string | null;
+  tickAgeSec: number | null;
+  runtimeNote?: string;
   updatedAt: string | null;
 };
 
@@ -67,6 +70,8 @@ export type DexPosition = {
   exitAt: string | null;
   realizedPnlUsd: number;
   runnerPhase: string | null;
+  entryFeedback?: Record<string, unknown> | null;
+  exitFeedback?: Record<string, unknown> | null;
 };
 
 export type DexEvent = {

@@ -85,6 +85,9 @@ const SCHEMA_STATEMENTS = [
      last_seen_at timestamptz NOT NULL DEFAULT NOW(),
      notes text
    )`,
+  `ALTER TABLE dex_agent_state ADD COLUMN IF NOT EXISTS last_tick_at timestamptz`,
+  `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS entry_feedback text`,
+  `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS exit_feedback text`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */

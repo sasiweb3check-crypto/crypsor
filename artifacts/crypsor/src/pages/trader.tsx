@@ -94,6 +94,18 @@ function PositionCard({ p, onOpen }: { p: DexPosition; onOpen: () => void }) {
           pattern {p.patternKey}
         </div>
       )}
+      {(() => {
+        const why = (p.entryFeedback?.why as string[] | undefined)
+          ?? (p.entryFeedback?.market as { reasons?: string[] } | undefined)?.reasons;
+        const exitWhy = p.exitFeedback?.reasonDetail as string | undefined;
+        if (!why?.length && !exitWhy) return null;
+        return (
+          <div className="mt-2 text-[11px] text-[var(--cryp-mute)] space-y-0.5">
+            {why?.slice(0, 2).map((w, i) => <div key={i}>📥 {w}</div>)}
+            {exitWhy && <div className="text-[var(--cryp-text)]">📤 {exitWhy}</div>}
+          </div>
+        );
+      })()}
     </article>
   );
 }
@@ -191,6 +203,19 @@ export default function TraderPage() {
             <div className="text-[11px] text-[var(--cryp-mute)] mt-0.5">
               {status?.rules?.takeProfit ?? "70% @ 3×"} · {status?.rules?.moonBag ?? "30% trailed"} ·{" "}
               {status?.rules?.observationSnaps ?? 5} snaps · max {status?.rules?.maxOpen ?? 3} open
+            </div>
+            <div
+              className="text-[11px] mt-1"
+              style={{
+                color: (status?.tickAgeSec ?? 999) <= 60
+                  ? "var(--cryp-gain)"
+                  : (status?.tickAgeSec ?? 999) <= 180
+                    ? "var(--cryp-warn)"
+                    : "var(--cryp-loss)",
+              }}
+            >
+              Heartbeat {status?.tickAgeSec != null ? `${status.tickAgeSec}s ago` : "—"}
+              {(status?.tickAgeSec ?? 0) > 180 ? " · API may be asleep — use cron /api/trader/tick" : ""}
             </div>
           </div>
         </div>
@@ -345,6 +370,8 @@ export default function TraderPage() {
               <li>🌙 Trail <span className="text-[var(--cryp-warn)]">30% moon bag</span> (−32% from peak or fade)</li>
               <li>🛑 Hard stop at 0.65× or dead phase</li>
               <li>⛓️ Marks = live on-chain MC · paper bankroll</li>
+              <li>🫀 Heartbeat every ~20s in-process</li>
+              <li>⏰ Render free sleeps → cron <span className="text-[var(--cryp-text)]">GET /api/trader/tick</span> every 1m</li>
             </ul>
           </div>
 
