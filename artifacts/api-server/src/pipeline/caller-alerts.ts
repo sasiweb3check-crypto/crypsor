@@ -1,15 +1,13 @@
 /**
- * Pro Caller Alerts — rebuilt from scratch
+ * Pro Caller Alerts — confidence-gated (paid-tier precision)
  *
- * 1. First Call alert — once when a token enters Pro as very_good and is
- *    scored. Stored on pro_calls.call_alert_sent_at (never on tracked_tokens).
+ * 1. First Call alert — ONLY when entry Confidence clears hard gates
+ *    (cluster smart+KOL, intel≥90, MC $5–15K, mint renounced, fresh, not chasing).
+ *    Desk can still list every surfaced call; Telegram is the scarce signal.
  *
- * 2. Milestone alerts — each of 2× / 5× / 10× / 20× from called_mc fires once.
- *    Stored in pro_calls.milestone_alerts_sent ("2,5,10"). Every crossed tier
- *    is sent (not only the highest jump).
+ * 2. Milestone alerts — 2× / 5× / 10× / 20× for calls that received a first alert.
  *
- * Trader payload: entry MC, now MC, gain, ATH, KOL/smart @ call + now, HV,
- * survival, Pro score, CA, GMGN, socials.
+ * Backtest: Rule D ≈ 55% 2× / 30% 5× vs desk ~31% / 10%.
  */
 
 import { db } from "@workspace/db";
@@ -19,6 +17,10 @@ import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
 import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
+import {
+  computeConfidence,
+  convictionFieldsFromVerified,
+} from "../lib/pro-confidence";
 
 const log = logger.child({ module: "caller-alerts" });
 
@@ -156,6 +158,7 @@ interface ProAlertToken {
   name: string | null;
   symbol: string | null;
   rawMetadata: unknown;
+  verifiedWallets: unknown;
   calledAt: string | Date;
   calledMcUsd: string | null;
   calledIntel: number | null;
@@ -188,23 +191,56 @@ function parseSentTiers(raw: string | null | undefined): Set<number> {
   );
 }
 
-function buildFirstCallMessage(t: ProAlertToken): string {
+function ageMinutes(calledAt: string | Date): number {
+  const t = calledAt instanceof Date ? calledAt.getTime() : new Date(calledAt).getTime();
+  if (!Number.isFinite(t)) return 9999;
+  return (Date.now() - t) / 60_000;
+}
+
+function gainPct(calledMc: string | null, currentMc: string | null): number | null {
+  const a = parseFloat(calledMc ?? "0") || 0;
+  const b = parseFloat(currentMc ?? "0") || 0;
+  if (a <= 0 || b <= 0) return null;
+  return ((b - a) / a) * 100;
+}
+
+function evaluateConfidence(t: ProAlertToken) {
+  const vw = convictionFieldsFromVerified(t.verifiedWallets);
+  return computeConfidence({
+    calledIntelScore: t.calledIntel,
+    calledSmartCount: t.calledSmart,
+    calledKolCount: t.calledKol,
+    calledMcUsd: parseFloat(t.calledMcUsd ?? "0") || null,
+    calledHolderVelocity: t.calledHv,
+    smartHoldRate: vw.smartHoldRate,
+    diamondHands: vw.diamondHands,
+    paperHands: vw.paperHands,
+    top10HolderRate: vw.top10HolderRate,
+    bundlerPct: vw.bundlerPct,
+    secIsHoneypot: t.secHoneypot,
+    secMintRenounced: t.secMint,
+    secFreezeRenounced: t.secFreeze,
+    ageMinutes: ageMinutes(t.calledAt),
+    gainSinceCallPct: gainPct(t.calledMcUsd, t.currentMc),
+  });
+}
+
+function buildFirstCallMessage(t: ProAlertToken, conf: ReturnType<typeof computeConfidence>): string {
   const name = esc(t.name ?? "Unknown");
   const symbol = esc(t.symbol ?? "?");
-  const quality = t.qualityLabel === "very_good" ? "Very Good" : "Good";
   const socials = extractSocials(t.rawMetadata);
+  const why = conf.reasons.slice(0, 4).map(r => `• ${esc(r)}`);
   const lines = [
-    `⭐ *PRO CALL* — *${name}* \\(${symbol}\\)`,
+    `🎯 *HIGH CONFIDENCE ENTRY* — *${name}* \\(${symbol}\\)`,
     ``,
-    `${esc(quality)} · Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}*`,
-    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}*${t.entryTier ? ` · ${esc(t.entryTier)}` : ""}`,
+    `Confidence *${conf.score}* · Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}*`,
+    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}* · cluster *${t.calledSmart} smart / ${t.calledKol} KOL*`,
     `Intel *${Math.round(t.calledIntel ?? 0)}* · HV *${Math.round(t.calledHv ?? 0)}*`,
-    `KOL *${t.calledKol}* · Smart *${t.calledSmart}* @ call`,
+    t.secMint === true ? `✅ Mint renounced` : null,
     t.liquidityUsd ? `Liq: *${esc(fmtMc(t.liquidityUsd))}*` : null,
-    t.secHoneypot === true ? `⚠️ Honeypot flag` : null,
-    t.secMint === false || t.secFreeze === false
-      ? `Auth: mint ${t.secMint === true ? "renounced" : "OPEN"} · freeze ${t.secFreeze === true ? "renounced" : "OPEN"}`
-      : null,
+    ``,
+    `*Why this alert*`,
+    ...why,
     ``,
     `\`${t.address}\``,
     `🔗 [GMGN](${gmgnLink(t.chain, t.address)})`,
@@ -261,6 +297,7 @@ async function checkAndAlert(): Promise<void> {
     return;
   }
 
+  // Candidates: fresh surfaced calls not yet alerted, OR already-alerted for milestones
   const rows = await db.execute(sql`
     SELECT
       pc.id                    AS "proCallId",
@@ -270,6 +307,7 @@ async function checkAndAlert(): Promise<void> {
       t.name,
       t.symbol,
       t.raw_metadata           AS "rawMetadata",
+      pc.verified_wallets      AS "verifiedWallets",
       pc.called_at             AS "calledAt",
       pc.called_mc_usd         AS "calledMcUsd",
       pc.called_intel_score    AS "calledIntel",
@@ -295,10 +333,11 @@ async function checkAndAlert(): Promise<void> {
       t.sec_is_honeypot        AS "secHoneypot"
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
-    WHERE pc.quality_label IN ('very_good')
+    WHERE pc.surfaced_at IS NOT NULL
+      AND pc.quality_label IN ('very_good', 'good')
       AND (
-        pc.call_alert_sent_at IS NULL
-        OR COALESCE(pc.ath_multiple, 1) >= 2
+        (pc.call_alert_sent_at IS NULL AND pc.called_at >= NOW() - INTERVAL '2 hours')
+        OR (pc.call_alert_sent_at IS NOT NULL AND COALESCE(pc.ath_multiple, 1) >= 2)
       )
     ORDER BY
       (pc.call_alert_sent_at IS NULL) DESC,
@@ -309,19 +348,27 @@ async function checkAndAlert(): Promise<void> {
   const tokens = rows.rows as unknown as ProAlertToken[];
   let firstCallSent = 0;
   let milestoneSent = 0;
+  let skippedLowConf = 0;
   // Cap sends per cycle — backlog of 30+ pending was causing TypeError: fetch failed
   const MAX_SENDS_PER_CYCLE = 8;
   let sends = 0;
 
   for (const t of tokens) {
     if (sends >= MAX_SENDS_PER_CYCLE) {
-      opsLog("telegram", "warn", `Alert cap ${MAX_SENDS_PER_CYCLE}/cycle — ${tokens.length - firstCallSent} remain`);
+      opsLog("telegram", "warn", `Alert cap ${MAX_SENDS_PER_CYCLE}/cycle — remain queued`);
       break;
     }
-    // ── 1. First Pro call alert ────────────────────────────────────────────
+    // ── 1. High-confidence entry alert only ────────────────────────────────
     if (!t.callAlertSentAt) {
+      const conf = evaluateConfidence(t);
+      if (!conf.alertEligible) {
+        skippedLowConf++;
+        // Fresh calls stay in the 2h query window and retry each cycle until
+        // gates pass or they age out — never spam Telegram for desk-only rows.
+        continue;
+      }
       try {
-        await sendTelegram(creds, buildFirstCallMessage(t));
+        await sendTelegram(creds, buildFirstCallMessage(t, conf));
         await db.execute(sql`
           UPDATE pro_calls
           SET call_alert_sent_at = NOW()
@@ -330,12 +377,20 @@ async function checkAndAlert(): Promise<void> {
         firstCallSent++;
         sends++;
         log.info(
-          { proCallId: t.proCallId, symbol: t.symbol, quality: t.qualityLabel, proScore: t.proScore },
-          "Pro first-call alert sent",
+          {
+            proCallId: t.proCallId,
+            symbol: t.symbol,
+            confidence: conf.score,
+            reasons: conf.reasons,
+            proScore: t.proScore,
+          },
+          "High-confidence entry alert sent",
         );
-        opsLog("telegram", "info", `First-call alert · ${t.symbol ?? t.address.slice(0, 6)}`, {
-          quality: t.qualityLabel,
-          proScore: t.proScore,
+        opsLog("telegram", "info", `Confidence alert · ${t.symbol ?? t.address.slice(0, 6)} · ${conf.score}`, {
+          confidence: conf.score,
+          smart: t.calledSmart,
+          kol: t.calledKol,
+          intel: t.calledIntel,
         });
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
@@ -378,8 +433,8 @@ async function checkAndAlert(): Promise<void> {
     }
   }
 
-  if (firstCallSent > 0 || milestoneSent > 0) {
-    log.info({ firstCallSent, milestoneSent }, "Pro alerts cycle complete");
+  if (firstCallSent > 0 || milestoneSent > 0 || skippedLowConf > 0) {
+    log.info({ firstCallSent, milestoneSent, skippedLowConf }, "Pro alerts cycle complete");
   }
   healthMonitor.ok("caller-alerts", Date.now() - t0);
 }
@@ -397,7 +452,7 @@ export function startCallerAlerts(): void {
   setTimeout(loop, STARTUP_DELAY_MS);
   log.info(
     { intervalMs: CHECK_INTERVAL_MS, milestones: ALERT_MILESTONES },
-    "Pro alerts ready (first-call + 2×/5×/10×/20× milestones, state on pro_calls)",
+    "Pro alerts ready (confidence entry + 2×/5×/10×/20× milestones)",
   );
   opsLog("telegram", "info", "Pro alerts loop started");
 }

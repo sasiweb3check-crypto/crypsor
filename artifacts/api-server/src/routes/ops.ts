@@ -152,7 +152,7 @@ router.get("/ops/summary", async (_req, res) => {
       blockers.push({
         code: "pending_first_calls",
         level: "warn",
-        msg: `${pendingFirstCalls} Pro call(s) waiting for first Telegram alert`,
+        msg: `${pendingFirstCalls} Pro call(s) in very_good queue (alerts now require confidence gates)`,
       });
     }
     if (qualityBelowBlocked > 0 && pendingFirstCalls === 0) {
