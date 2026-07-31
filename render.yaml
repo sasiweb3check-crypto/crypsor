@@ -35,7 +35,6 @@ services:
   - type: web
     name: crypsor-web
     runtime: static
-    plan: free
     buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter @workspace/crypsor run build
     staticPublishPath: artifacts/crypsor/dist/public
     routes:
