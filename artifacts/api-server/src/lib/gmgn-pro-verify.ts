@@ -655,6 +655,7 @@ export function walletsPayload(verify: GmgnProVerifyResult): Record<string, unkn
     tokenStat: verify.tokenStat,
     security: verify.security,
     holding: { kol: verify.holdingKol, smart: verify.holdingSmart },
+    socials: verify.socials ?? {},
     kol: verify.wallets.kol.slice(0, 40),
     smart: verify.wallets.smart.slice(0, 40),
   };

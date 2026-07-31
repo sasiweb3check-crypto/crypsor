@@ -144,7 +144,7 @@ async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candida
       )
       AND NOT EXISTS (SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id)
       ${onlyTokenId ? sql`AND l.token_id = ${onlyTokenId}` : sql``}
-    ORDER BY l.token_id, l.computed_at ASC
+    ORDER BY l.token_id, l.computed_at DESC
     LIMIT ${onlyTokenId ? 1 : limit}
   `);
   return result.rows as Candidate[];
@@ -157,10 +157,16 @@ async function insertProCall(args: {
   smart: number;
   source: string;
   verify: GmgnProVerifyResult | null;
+  /** Live MC at verify/insert — never the earliest intel_log row. */
+  calledMcUsd: number | null;
 }): Promise<boolean> {
-  const { c, scannerLabel, kol, smart, source, verify } = args;
+  const { c, scannerLabel, kol, smart, source, verify, calledMcUsd } = args;
   const walletsJson = verify?.ok ? JSON.stringify(walletsPayload(verify)) : null;
+  const mcStr = calledMcUsd != null && calledMcUsd > 0
+    ? String(calledMcUsd)
+    : c.market_cap_usd;
   try {
+    // Freeze called_at at insert time (NOW), not earliest intel_log.computed_at
     const result = await db.execute(sql`
       INSERT INTO pro_calls (
         token_id,
@@ -180,8 +186,8 @@ async function insertProCall(args: {
         verified_wallets
       ) VALUES (
         ${c.token_id},
-        ${c.computed_at},
-        ${c.market_cap_usd},
+        NOW(),
+        ${mcStr},
         ${c.intelligence_score},
         ${kol},
         ${smart},
@@ -283,8 +289,25 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
       continue;
     }
 
+    // Prefer live tracked MC at verify time over (possibly stale) intel_log MC
+    let liveMc = mc;
+    try {
+      const live = await db.execute(sql`
+        SELECT market_cap_usd FROM tracked_tokens WHERE id = ${c.token_id} LIMIT 1
+      `);
+      const raw = (live.rows[0] as { market_cap_usd?: string | null } | undefined)?.market_cap_usd;
+      const parsed = raw != null ? parseFloat(String(raw)) : NaN;
+      if (Number.isFinite(parsed) && parsed > 0) liveMc = parsed;
+    } catch { /* keep intel mc */ }
+    if (liveMc < MIN_MC || liveMc > MAX_MC) {
+      opsLog("pro_qualify", "info", `Skip — live MC $${Math.round(liveMc)} outside band`, {
+        tokenId: c.token_id,
+      });
+      continue;
+    }
+
     const inserted = await insertProCall({
-      c, scannerLabel: track, kol, smart, source: "gmgn_live", verify,
+      c, scannerLabel: track, kol, smart, source: "gmgn_live", verify, calledMcUsd: liveMc,
     });
     if (inserted) {
       veryStrong++;
@@ -297,7 +320,7 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
           kol,
           smart,
           source: "gmgn_live",
-          calledMc: c.market_cap_usd,
+          calledMc: liveMc,
           liq: verify.liquidityUsd,
         },
         "Pro call registered (strict)",
@@ -308,7 +331,7 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
         kol,
         smart,
         source: "gmgn_live",
-        mc: c.market_cap_usd,
+        mc: liveMc,
       });
     }
   }
@@ -381,12 +404,12 @@ async function reverifyUnsourcedCalls(): Promise<number> {
       if (!verify.ok) continue;
       await applyVerifyToTrackedToken(row.token_id, verify);
       const held = holdingCounts(verify);
-      // Only stamp holding counts — never overwrite with tag totals
+      // Freeze call-time counts once set — only fill NULLs; refresh wallet board JSON
       await db.execute(sql`
         UPDATE pro_calls
         SET
-          called_kol_count   = ${held.kol},
-          called_smart_count = ${held.smart},
+          called_kol_count   = COALESCE(called_kol_count, ${held.kol}),
+          called_smart_count = COALESCE(called_smart_count, ${held.smart}),
           kol_smart_source   = 'gmgn_live',
           verified_at        = ${verify.fetchedAt},
           verified_wallets   = ${JSON.stringify(walletsPayload(verify))}

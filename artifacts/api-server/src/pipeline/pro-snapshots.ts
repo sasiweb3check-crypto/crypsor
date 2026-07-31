@@ -16,6 +16,7 @@ import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { computeProScore, deriveRunStatus } from "../lib/pro-scoring";
 import { convictionFromPayload, qualitySignalsFromPayload } from "../lib/gmgn-pro-verify";
+import { invalidateProCaches } from "../lib/pro-cache";
 
 const log = logger.child({ module: "pro-snapshots" });
 
@@ -45,6 +46,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         pc.token_id,
         pc.called_at,
         pc.called_mc_usd,
+        pc.quality_label             AS prev_quality,
         pc.ath_multiple              AS prev_ath,
         pc.called_intel_score,
         pc.called_kol_count,
@@ -79,7 +81,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
 
     type Row = {
       pro_call_id: number; token_id: number; called_at: string | Date;
-      called_mc_usd: string | null; prev_ath: number | null;
+      called_mc_usd: string | null; prev_quality: string | null; prev_ath: number | null;
       called_intel_score: number | null;
       called_kol_count: number | null; called_smart_count: number | null;
       called_holder_velocity: number | null;
@@ -103,6 +105,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
     };
 
     let snapCount = 0;
+    let qualityChanged = false;
     for (const r of rows.rows as Row[]) {
       const calledMc  = parseFloat(r.called_mc_usd ?? "0") || 0;
       const currentMc = parseFloat(r.current_mc ?? "0") || 0;
@@ -233,7 +236,13 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         )
       `);
 
-      const surfacingNow = (qualityLabel === "good" || qualityLabel === "very_good");
+      // Honest demotion: snapshots own ongoing quality (no ratchet that froze elites).
+      // DEAD <2× always demotes; otherwise use fresh scorer label.
+      let nextQuality = qualityLabel;
+      if (runStatus === "DEAD" && newAth < 2) nextQuality = "below";
+      if (r.sec_is_honeypot === true) nextQuality = "below";
+
+      const surfacingNow = (nextQuality === "good" || nextQuality === "very_good");
       const surfacedClause = surfacingNow
         ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
         : sql``;
@@ -248,20 +257,19 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           last_survival_at = NOW(),
           entry_tier       = ${entryTier},
           score_version    = 'v2',
-          quality_label    = CASE
-            WHEN ${runStatus} = 'DEAD' AND ${newAth} < 2 THEN ${qualityLabel}
-            WHEN quality_label = 'very_good'                        THEN 'very_good'
-            WHEN quality_label = 'good' AND ${qualityLabel} = 'very_good' THEN 'very_good'
-            WHEN quality_label = 'good' AND ${qualityLabel} = 'below' THEN 'good'
-            WHEN quality_label = 'good'                             THEN 'good'
-            ELSE ${qualityLabel}
-          END
+          quality_label    = ${nextQuality}
           ${surfacedClause}
           ${sql.join(milestoneParts, sql``)}
         WHERE id = ${r.pro_call_id}
       `);
 
+      if (String(r.prev_quality ?? "") !== String(nextQuality)) qualityChanged = true;
       snapCount++;
+    }
+
+    // Always refresh feed after hot snaps (scores/ATH move); also on quality flips.
+    if (snapCount > 0 && (mode === "hot" || qualityChanged)) {
+      await invalidateProCaches();
     }
 
     log.info({ snapCount, mode }, "Pro snapshots written");
