@@ -16,43 +16,216 @@
 
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { sql, type SQL } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { extractSocials } from "../lib/socials";
-import { computeProScore, deriveRunStatus, type QualityLabel } from "../lib/pro-scoring";
+import { deriveRunStatus } from "../lib/pro-scoring";
+import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
 
 const router = Router();
 
-/** Short in-process cache — cuts repeat polls while MC stays fresh enough. */
-const responseCache = new Map<string, { expires: number; body: unknown }>();
-function cachedJson(key: string, ttlMs: number, compute: () => Promise<unknown>) {
-  const hit = responseCache.get(key);
-  if (hit && hit.expires > Date.now()) return Promise.resolve(hit.body);
-  return compute().then((body) => {
-    responseCache.set(key, { expires: Date.now() + ttlMs, body });
-    return body;
+const FEED_CACHE_TTL_SEC = 12;
+const STATS_CACHE_TTL_SEC = 15;
+
+type SlimToken = {
+  id: number;
+  address: string;
+  chain: string;
+  name: string | null;
+  symbol: string | null;
+  logoUri: string | null;
+  status: string;
+  calledAt: string | null;
+  calledMcUsd: number | null;
+  calledIntel: number | null;
+  calledKol: number;
+  calledSmart: number;
+  calledKolSmartScore: number | null;
+  calledHolderVelocity: number | null;
+  currentMcUsd: number | null;
+  gainSinceCall: number | null;
+  athMultiple: number;
+  runStatus: string;
+  proScore: number;
+  qualityLabel: string;
+  survivalScore: number | null;
+  entryTier: string | null;
+  scoreVersion: string;
+  currentKol: number;
+  currentSmart: number;
+  currentIntel: number | null;
+  lastSnapshotAt: string | null;
+  hit2x: boolean; hit5x: boolean; hit10x: boolean; hit100x: boolean;
+  surfacedAt: string | null;
+  surfacedMcUsd: number | null;
+  scannerLabel: string;
+  secMintRenounced: boolean | null;
+  secFreezeRenounced: boolean | null;
+  secIsHoneypot: boolean | null;
+  socials: { twitter?: string; telegram?: string; website?: string };
+};
+
+async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
+  const cacheKey = `pro:feed:v2:${limit}`;
+  const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
+  if (cached?.tokens?.length) return cached;
+
+  const callRows = await db.execute(sql`
+    SELECT
+      pc.token_id,
+      pc.called_at,
+      pc.called_mc_usd,
+      pc.called_intel_score,
+      pc.called_kol_count,
+      pc.called_smart_count,
+      pc.called_kol_smart_score,
+      pc.called_holder_velocity,
+      pc.ath_multiple,
+      pc.last_snapshot_at AS snap_at,
+      pc.pro_score,
+      pc.quality_label,
+      pc.survival_score,
+      pc.entry_tier,
+      pc.score_version,
+      pc.hit_2x, pc.hit_5x, pc.hit_10x, pc.hit_100x,
+      pc.surfaced_at,
+      pc.surfaced_mc_usd,
+      pc.scanner_label,
+      t.address, t.chain, t.name, t.symbol,
+      t.logo_uri, t.image_path,
+      t.status,
+      t.market_cap_usd,
+      t.intelligence_score AS live_intel,
+      t.holder_kol_count   AS live_kol,
+      t.holder_smart_count AS live_smart,
+      t.sec_is_honeypot,
+      t.sec_mint_renounced,
+      t.sec_freeze_renounced
+    FROM pro_calls pc
+    JOIN tracked_tokens t ON t.id = pc.token_id
+    WHERE pc.quality_label IN ('very_good', 'good')
+    ORDER BY pc.called_at DESC NULLS LAST
+    LIMIT ${limit}
+  `);
+
+  const tokens: SlimToken[] = (callRows.rows as Array<Record<string, unknown>>).map(call => {
+    const calledMc = call.called_mc_usd ? parseFloat(String(call.called_mc_usd)) : null;
+    const currentMc = parseFloat(String(call.market_cap_usd ?? "0")) || null;
+    const gainSinceCall = calledMc && currentMc
+      ? ((currentMc - calledMc) / calledMc) * 100 : null;
+    const athMultiple = Number(call.ath_multiple ?? 1) || 1;
+    const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
+    const proScore = Number(call.pro_score ?? 0);
+    const qualityLabel = String(call.quality_label ?? "below");
+
+    return {
+      id: Number(call.token_id),
+      address: String(call.address),
+      chain: String(call.chain),
+      name: (call.name as string | null) ?? null,
+      symbol: (call.symbol as string | null) ?? null,
+      logoUri: call.image_path ? `/api/assets${call.image_path}` : (call.logo_uri as string | null),
+      status: String(call.status ?? ""),
+      calledAt: toIsoUtc(call.called_at),
+      calledMcUsd: calledMc,
+      calledIntel: call.called_intel_score != null ? Number(call.called_intel_score) : null,
+      calledKol: Number(call.called_kol_count ?? 0),
+      calledSmart: Number(call.called_smart_count ?? 0),
+      calledKolSmartScore: call.called_kol_smart_score != null ? Number(call.called_kol_smart_score) : null,
+      calledHolderVelocity: call.called_holder_velocity != null ? Number(call.called_holder_velocity) : null,
+      currentMcUsd: currentMc,
+      gainSinceCall,
+      athMultiple,
+      runStatus,
+      proScore,
+      qualityLabel,
+      survivalScore: call.survival_score != null ? Number(call.survival_score) : null,
+      entryTier: (call.entry_tier as string | null) ?? null,
+      scoreVersion: String(call.score_version ?? "v2"),
+      currentKol: Math.max(Number(call.live_kol ?? 0), Number(call.called_kol_count ?? 0)),
+      currentSmart: Math.max(Number(call.live_smart ?? 0), Number(call.called_smart_count ?? 0)),
+      currentIntel: call.live_intel != null ? Number(call.live_intel) : (call.called_intel_score != null ? Number(call.called_intel_score) : null),
+      lastSnapshotAt: toIsoUtc(call.snap_at),
+      hit2x: Boolean(call.hit_2x),
+      hit5x: Boolean(call.hit_5x),
+      hit10x: Boolean(call.hit_10x),
+      hit100x: Boolean(call.hit_100x),
+      surfacedAt: toIsoUtc(call.surfaced_at),
+      surfacedMcUsd: call.surfaced_mc_usd ? parseFloat(String(call.surfaced_mc_usd)) : null,
+      scannerLabel: String(call.scanner_label ?? "very_strong"),
+      secMintRenounced: call.sec_mint_renounced as boolean | null,
+      secFreezeRenounced: call.sec_freeze_renounced as boolean | null,
+      secIsHoneypot: call.sec_is_honeypot as boolean | null,
+      socials: {},
+    };
   });
+
+  const payload = { tokens, total: tokens.length };
+  await proCacheSet(cacheKey, payload, FEED_CACHE_TTL_SEC);
+  return payload;
 }
 
-function qualityAthWhere(quality: string): SQL {
-  const base = sql`pc.quality_label IN ('very_good', 'good')`;
+function sortTokens(tokens: SlimToken[], sort: string, order: "asc" | "desc"): SlimToken[] {
+  const dir = order === "asc" ? 1 : -1;
+  const out = [...tokens];
+  out.sort((a, b) => {
+    const num = (x: number | null | undefined, fallback = -Infinity) =>
+      x == null || !Number.isFinite(x) ? fallback : x;
+    switch (sort) {
+      case "ath":
+        return (num(a.athMultiple) - num(b.athMultiple)) * dir;
+      case "gain":
+        return (num(a.gainSinceCall) - num(b.gainSinceCall)) * dir;
+      case "intel":
+        return (num(a.currentIntel) - num(b.currentIntel)) * dir;
+      case "calledMc":
+        return (num(a.calledMcUsd) - num(b.calledMcUsd)) * dir;
+      case "calledAt":
+      case "age": {
+        const ta = a.calledAt ? new Date(a.calledAt).getTime() : 0;
+        const tb = b.calledAt ? new Date(b.calledAt).getTime() : 0;
+        return (ta - tb) * dir;
+      }
+      case "survival":
+        return (num(a.survivalScore) - num(b.survivalScore)) * dir;
+      case "proScore":
+      default:
+        return (num(a.proScore) - num(b.proScore)) * dir;
+    }
+  });
+  return out;
+}
+
+function filterTokens(tokens: SlimToken[], quality: string): SlimToken[] {
+  const now = Date.now();
+  const within = (hours: number) => (t: SlimToken) => {
+    if (!t.calledAt) return false;
+    return now - new Date(t.calledAt).getTime() <= hours * 3_600_000;
+  };
   switch (quality) {
     case "very_good":
-      return sql`pc.quality_label = 'very_good'`;
+      return tokens.filter(t => t.qualityLabel === "very_good");
     case "good":
-      return sql`pc.quality_label = 'good'`;
+      return tokens.filter(t => t.qualityLabel === "good");
     case "recent":
-      return sql`${base} AND pc.called_at >= NOW() - INTERVAL '24 hours'`;
-    case "all":
-      return sql`TRUE`;
+    case "24h":
+      return tokens.filter(within(24));
+    case "1h":
+      return tokens.filter(within(1));
+    case "6h":
+      return tokens.filter(within(6));
+    case "7d":
+      return tokens.filter(within(24 * 7));
     case "x5":
-      return sql`${base} AND pc.ath_multiple >= 5 AND pc.ath_multiple < 10`;
+      return tokens.filter(t => t.athMultiple >= 5 && t.athMultiple < 10);
     case "x10":
-      return sql`${base} AND pc.ath_multiple >= 10 AND pc.ath_multiple < 20`;
+      return tokens.filter(t => t.athMultiple >= 10 && t.athMultiple < 20);
     case "x10plus":
-      return sql`${base} AND pc.ath_multiple >= 20`;
+      return tokens.filter(t => t.athMultiple >= 20);
     case "quality":
+    case "feed":
+    case "sections":
     default:
-      return base;
+      return tokens;
   }
 }
 
@@ -60,55 +233,78 @@ function qualityAthWhere(quality: string): SQL {
 
 router.get("/pro/stats", async (_req, res) => {
   try {
-    const body = await cachedJson("pro:stats", 10_000, async () => {
-      const result = await db.execute(sql`
-        SELECT
-          COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int           AS total,
-          COUNT(*)::int                                                                  AS total_all_time,
-          COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS win,
-          COUNT(CASE WHEN ath_multiple >= 1.5 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x1,
-          COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x2,
-          COUNT(CASE WHEN ath_multiple >= 3   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x3,
-          COUNT(CASE WHEN ath_multiple >= 5 AND ath_multiple < 10 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x5,
-          COUNT(CASE WHEN ath_multiple >= 10 AND ath_multiple < 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10,
-          COUNT(CASE WHEN ath_multiple >= 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10_plus,
-          COUNT(CASE WHEN ath_multiple >= 100 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x100,
-          COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
-          ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
-          COUNT(CASE WHEN quality_label = 'very_good' THEN 1 END)::int                  AS very_good_count,
-          COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count,
-          COUNT(*) FILTER (
-            WHERE quality_label IN ('very_good','good')
-              AND called_at >= NOW() - INTERVAL '24 hours'
-          )::int                                                                         AS recent_count,
-          ROUND(AVG(CASE WHEN quality_label IN ('very_good','good') THEN survival_score END)::numeric, 1) AS avg_survival
-        FROM pro_calls
-      `);
+    const cacheKey = "pro:stats:v2";
+    const cached = await proCacheGet<Record<string, unknown>>(cacheKey);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
 
-      const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
-      const total = Number(row.total ?? 0);
-      const win   = Number(row.win   ?? 0);
+    const result = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int           AS total,
+        COUNT(*)::int                                                                  AS total_all_time,
+        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS win,
+        COUNT(CASE WHEN ath_multiple >= 1.5 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x1,
+        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x2,
+        COUNT(CASE WHEN ath_multiple >= 3   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x3,
+        COUNT(CASE WHEN ath_multiple >= 5 AND ath_multiple < 10 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x5,
+        COUNT(CASE WHEN ath_multiple >= 10 AND ath_multiple < 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10,
+        COUNT(CASE WHEN ath_multiple >= 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10_plus,
+        COUNT(CASE WHEN ath_multiple >= 100 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x100,
+        COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
+        ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
+        COUNT(CASE WHEN quality_label = 'very_good' THEN 1 END)::int                  AS very_good_count,
+        COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count,
+        COUNT(*) FILTER (
+          WHERE quality_label IN ('very_good','good')
+            AND called_at >= NOW() - INTERVAL '1 hour'
+        )::int                                                                         AS recent_1h,
+        COUNT(*) FILTER (
+          WHERE quality_label IN ('very_good','good')
+            AND called_at >= NOW() - INTERVAL '6 hours'
+        )::int                                                                         AS recent_6h,
+        COUNT(*) FILTER (
+          WHERE quality_label IN ('very_good','good')
+            AND called_at >= NOW() - INTERVAL '24 hours'
+        )::int                                                                         AS recent_count,
+        COUNT(*) FILTER (
+          WHERE quality_label IN ('very_good','good')
+            AND called_at >= NOW() - INTERVAL '7 days'
+        )::int                                                                         AS recent_7d,
+        ROUND(AVG(CASE WHEN quality_label IN ('very_good','good') THEN survival_score END)::numeric, 1) AS avg_survival,
+        MAX(called_at) FILTER (WHERE quality_label IN ('very_good','good'))            AS latest_called_at
+      FROM pro_calls
+    `);
 
-      return {
-        total,
-        totalAllTime:   Number(row.total_all_time ?? 0),
-        winRate:        total > 0 ? Math.round((win / total) * 100) : 0,
-        x1Count:        Number(row.x1   ?? 0),
-        x2Count:        Number(row.x2   ?? 0),
-        x3Count:        Number(row.x3   ?? 0),
-        x5Count:        Number(row.x5   ?? 0),
-        x10Count:       Number(row.x10  ?? 0),
-        x10PlusCount:   Number(row.x10_plus ?? 0),
-        x100Count:      Number(row.x100 ?? 0),
-        x200Count:      Number(row.x200 ?? 0),
-        bestAth:        row.best_ath != null ? Number(row.best_ath) : null,
-        veryGoodCount:  Number(row.very_good_count ?? 0),
-        goodCount:      Number(row.good_count      ?? 0),
-        qualityCount:   Number(row.very_good_count ?? 0) + Number(row.good_count ?? 0),
-        recentCount:    Number(row.recent_count    ?? 0),
-        avgSurvival:    row.avg_survival != null ? Number(row.avg_survival) : null,
-      };
-    });
+    const row   = (result.rows[0] ?? {}) as Record<string, unknown>;
+    const total = Number(row.total ?? 0);
+    const win   = Number(row.win   ?? 0);
+
+    const body = {
+      total,
+      totalAllTime:   Number(row.total_all_time ?? 0),
+      winRate:        total > 0 ? Math.round((win / total) * 100) : 0,
+      x1Count:        Number(row.x1   ?? 0),
+      x2Count:        Number(row.x2   ?? 0),
+      x3Count:        Number(row.x3   ?? 0),
+      x5Count:        Number(row.x5   ?? 0),
+      x10Count:       Number(row.x10  ?? 0),
+      x10PlusCount:   Number(row.x10_plus ?? 0),
+      x100Count:      Number(row.x100 ?? 0),
+      x200Count:      Number(row.x200 ?? 0),
+      bestAth:        row.best_ath != null ? Number(row.best_ath) : null,
+      veryGoodCount:  Number(row.very_good_count ?? 0),
+      goodCount:      Number(row.good_count      ?? 0),
+      qualityCount:   Number(row.very_good_count ?? 0) + Number(row.good_count ?? 0),
+      recent1hCount:  Number(row.recent_1h ?? 0),
+      recent6hCount:  Number(row.recent_6h ?? 0),
+      recentCount:    Number(row.recent_count    ?? 0),
+      recent7dCount:  Number(row.recent_7d ?? 0),
+      avgSurvival:    row.avg_survival != null ? Number(row.avg_survival) : null,
+      latestCalledAt: toIsoUtc(row.latest_called_at),
+    };
+    await proCacheSet(cacheKey, body, STATS_CACHE_TTL_SEC);
     res.json(body);
   } catch (err) {
     console.error("pro stats error", err);
@@ -117,243 +313,27 @@ router.get("/pro/stats", async (_req, res) => {
 });
 
 // ── GET /api/pro/history ──────────────────────────────────────────────────────
+// Fast path: one cached quality feed + in-memory filter/sort (tab changes are free).
 
 router.get("/pro/history", async (req, res) => {
   try {
     const sort    = (req.query.sort    as string) ?? "proScore";
     const order   = (req.query.order   as string) === "asc" ? "asc" : "desc";
     const quality = (req.query.quality as string) ?? "quality";
-    const limit   = Math.min(Math.max(parseInt(String(req.query.limit ?? "150"), 10) || 150, 1), 300);
+    const limit   = Math.min(Math.max(parseInt(String(req.query.limit ?? "300"), 10) || 300, 1), 400);
 
-    const cacheKey = `pro:history:${quality}:${sort}:${order}:${limit}`;
-    const body = await cachedJson(cacheKey, 8_000, async () => {
-      const whereClause = qualityAthWhere(quality);
+    const feed = await loadQualityFeed(Math.max(limit, 300));
+    const filtered = filterTokens(feed.tokens, quality);
+    const sorted = sortTokens(filtered, sort, order).slice(0, limit);
 
-      const dir = order === "asc" ? sql`ASC` : sql`DESC`;
-      let orderClause: SQL;
-      switch (sort) {
-        case "ath":
-          orderClause = sql`pc.ath_multiple ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-        case "gain":
-          orderClause = sql`(
-            CASE WHEN NULLIF(pc.called_mc_usd, '')::numeric > 0
-                 THEN (NULLIF(t.market_cap_usd, '')::numeric / NULLIF(pc.called_mc_usd, '')::numeric)
-                 ELSE NULL END
-          ) ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-        case "intel":
-          orderClause = sql`t.intelligence_score ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-        case "calledMc":
-          orderClause = sql`NULLIF(pc.called_mc_usd, '')::numeric ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-        case "calledAt":
-          orderClause = sql`pc.called_at ${dir}`;
-          break;
-        case "survival":
-          orderClause = sql`pc.survival_score ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-        case "proScore":
-        default:
-          orderClause = sql`pc.pro_score ${dir} NULLS LAST, pc.called_at DESC`;
-          break;
-      }
-
-      const [countRows, callRows] = await Promise.all([
-        db.execute(sql`
-          SELECT COUNT(*)::int AS total_matching
-          FROM pro_calls pc
-          WHERE ${whereClause}
-        `),
-        db.execute(sql`
-          SELECT
-            pc.id              AS pro_call_id,
-            pc.token_id,
-            pc.called_at,
-            pc.called_mc_usd,
-            pc.called_intel_score,
-            pc.called_kol_count,
-            pc.called_smart_count,
-            pc.called_kol_smart_score,
-            pc.called_holder_velocity,
-            pc.called_mc_growth,
-            pc.called_volume_intensity,
-            pc.ath_multiple,
-            pc.last_snapshot_at AS snap_at,
-            pc.pro_score,
-            pc.quality_label,
-            pc.survival_score,
-            pc.entry_tier,
-            pc.score_version,
-            pc.hit_2x,  pc.hit_2x_at,
-            pc.hit_3x,  pc.hit_3x_at,
-            pc.hit_5x,  pc.hit_5x_at,
-            pc.hit_10x, pc.hit_10x_at,
-            pc.hit_100x,pc.hit_100x_at,
-            pc.surfaced_at,
-            pc.surfaced_mc_usd,
-            pc.scanner_label,
-            pc.kol_smart_source,
-            pc.verified_at,
-            t.address, t.chain, t.name, t.symbol,
-            t.logo_uri, t.image_path,
-            t.status,
-            t.market_cap_usd,
-            t.liquidity_usd,
-            t.raw_metadata,
-            t.intelligence_score AS live_intel,
-            t.holder_kol_count   AS live_kol,
-            t.holder_smart_count AS live_smart,
-            t.holder_velocity_score AS live_hv,
-            t.sec_is_honeypot,
-            t.sec_mint_renounced,
-            t.sec_freeze_renounced,
-            t.sec_top10_holder_rate,
-            t.sec_lp_locked,
-            t.sec_rat_trader_amt_rate
-          FROM pro_calls pc
-          JOIN tracked_tokens t ON t.id = pc.token_id
-          WHERE ${whereClause}
-          ORDER BY ${orderClause}
-          LIMIT ${limit}
-        `),
-      ]);
-
-      type CallRow = {
-        pro_call_id: number; token_id: number;
-        called_at: string; called_mc_usd: string | null;
-        called_intel_score: number | null;
-        called_kol_count: number | null; called_smart_count: number | null;
-        called_kol_smart_score: number | null;
-        called_holder_velocity: number | null;
-        called_mc_growth: number | null; called_volume_intensity: number | null;
-        ath_multiple: number | null; snap_at: string | null;
-        pro_score: number | null; quality_label: string | null;
-        survival_score: number | null; entry_tier: string | null;
-        score_version: string | null;
-        hit_2x: boolean | null; hit_2x_at: string | null;
-        hit_3x: boolean | null; hit_3x_at: string | null;
-        hit_5x: boolean | null; hit_5x_at: string | null;
-        hit_10x: boolean | null; hit_10x_at: string | null;
-        hit_100x: boolean | null; hit_100x_at: string | null;
-        surfaced_at: string | null;
-        surfaced_mc_usd: string | null;
-        scanner_label: string | null;
-        kol_smart_source: string | null;
-        verified_at: string | null;
-        live_intel: number | null;
-        live_kol: number | null; live_smart: number | null;
-        live_hv: number | null;
-        address: string; chain: string; name: string | null; symbol: string | null;
-        logo_uri: string | null; image_path: string | null;
-        status: string; market_cap_usd: string | null;
-        liquidity_usd: string | null; raw_metadata: unknown;
-        sec_is_honeypot: boolean | null; sec_mint_renounced: boolean | null;
-        sec_freeze_renounced: boolean | null; sec_top10_holder_rate: number | null;
-        sec_lp_locked: boolean | null; sec_rat_trader_amt_rate: number | null;
-      };
-
-      const rows = callRows.rows as CallRow[];
-      const totalMatching = Number(
-        (countRows.rows[0] as { total_matching?: number } | undefined)?.total_matching ?? rows.length,
-      );
-
-      const tokens = rows.map(call => {
-        const calledMc  = call.called_mc_usd ? parseFloat(call.called_mc_usd) : null;
-        const currentMc = parseFloat(call.market_cap_usd ?? "0") || null;
-        const liquidityUsd = parseFloat(call.liquidity_usd ?? "0") || null;
-        const gainSinceCall = calledMc && currentMc
-          ? ((currentMc - calledMc) / calledMc) * 100 : null;
-        const athMultiple = call.ath_multiple ?? 1;
-        const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
-        const ageHours = call.called_at
-          ? (Date.now() - new Date(call.called_at).getTime()) / 3_600_000
-          : null;
-
-        let proScore: number;
-        let qualityLabel: QualityLabel;
-        let survivalScore: number | null = call.survival_score;
-        if (call.pro_score != null && call.quality_label != null && call.score_version === "v2") {
-          proScore = call.pro_score;
-          qualityLabel = call.quality_label as QualityLabel;
-        } else {
-          const result = computeProScore({
-            calledIntelScore:    call.called_intel_score,
-            calledKolCount:      call.called_kol_count ?? 0,
-            calledSmartCount:    call.called_smart_count ?? 0,
-            calledMcUsd:         calledMc,
-            calledHolderVelocity: call.called_holder_velocity,
-            calledMcGrowth:      call.called_mc_growth,
-            calledVolumeIntensity: call.called_volume_intensity,
-            currentMcUsd:        currentMc,
-            athMultiple,
-            gainSinceCall,
-            runStatus,
-            liquidityUsd,
-            ageHoursSinceCall:   ageHours,
-            holderVelocityScore: call.live_hv,
-            secIsHoneypot:        call.sec_is_honeypot,
-            secMintRenounced:     call.sec_mint_renounced,
-            secFreezeRenounced:   call.sec_freeze_renounced,
-            secTop10HolderRate:   call.sec_top10_holder_rate,
-            secLpLocked:          call.sec_lp_locked,
-            secRatTraderAmtRate:  call.sec_rat_trader_amt_rate,
-          });
-          proScore = result.score;
-          qualityLabel = result.qualityLabel;
-          survivalScore = result.survivalScore;
-        }
-
-        return {
-          id:             call.token_id,
-          address:        call.address,
-          chain:          call.chain,
-          name:           call.name,
-          symbol:         call.symbol,
-          logoUri:        call.image_path ? `/api/assets${call.image_path}` : call.logo_uri,
-          status:         call.status,
-          calledAt:       call.called_at,
-          calledMcUsd:    calledMc,
-          calledIntel:    call.called_intel_score,
-          calledKol:      call.called_kol_count ?? 0,
-          calledSmart:    call.called_smart_count ?? 0,
-          calledKolSmartScore: call.called_kol_smart_score,
-          calledHolderVelocity: call.called_holder_velocity,
-          currentMcUsd:   currentMc,
-          gainSinceCall,
-          athMultiple,
-          runStatus,
-          proScore,
-          qualityLabel,
-          survivalScore,
-          entryTier: call.entry_tier ?? null,
-          scoreVersion: call.score_version ?? "v2",
-          currentKol:   Math.max(call.live_kol ?? 0, call.called_kol_count ?? 0),
-          currentSmart: Math.max(call.live_smart ?? 0, call.called_smart_count ?? 0),
-          currentIntel:   call.live_intel ?? call.called_intel_score,
-          lastSnapshotAt: call.snap_at ?? null,
-          hit2x:    call.hit_2x    ?? false, hit2xAt:  call.hit_2x_at   ?? null,
-          hit3x:    call.hit_3x    ?? false, hit3xAt:  call.hit_3x_at   ?? null,
-          hit5x:    call.hit_5x    ?? false, hit5xAt:  call.hit_5x_at   ?? null,
-          hit10x:   call.hit_10x   ?? false, hit10xAt: call.hit_10x_at  ?? null,
-          hit100x:  call.hit_100x  ?? false, hit100xAt:call.hit_100x_at ?? null,
-          surfacedAt:     call.surfaced_at ?? null,
-          surfacedMcUsd:  call.surfaced_mc_usd ? parseFloat(call.surfaced_mc_usd) : null,
-          scannerLabel:   (call.scanner_label ?? "very_strong") as "very_strong" | "strong",
-          kolSmartSource: call.kol_smart_source ?? null,
-          verifiedAt:     call.verified_at ?? null,
-          secMintRenounced:   call.sec_mint_renounced,
-          secFreezeRenounced: call.sec_freeze_renounced,
-          secIsHoneypot:      call.sec_is_honeypot,
-          socials:            extractSocials(call.raw_metadata),
-        };
-      });
-
-      return { total: totalMatching, totalAll: totalMatching, tokens };
+    res.setHeader("Cache-Control", "private, max-age=5");
+    res.json({
+      total: filtered.length,
+      totalAll: feed.total,
+      tokens: sorted,
+      latestCalledAt: feed.tokens[0]?.calledAt ?? null,
+      cache: "feed",
     });
-
-    res.json(body);
   } catch (err) {
     console.error("pro history error", err);
     res.status(500).json({ error: "Internal server error" });

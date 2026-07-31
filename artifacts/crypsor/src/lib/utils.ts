@@ -91,9 +91,23 @@ export function formatGain(pct: number | null | undefined): string {
   return pct >= 0 ? `+${formatted}X` : `-${formatted}X`;
 }
 
+/** Parse API / PG timestamps. Bare "YYYY-MM-DD HH:mm:ss" is treated as UTC. */
+export function parseApiDate(dateStr: string | null | undefined): Date | null {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  if (!s) return null;
+  if (/Z$/i.test(s) || /[+-]\d{2}:\d{2}$/.test(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const normalized = s.includes("T") ? `${s}Z` : `${s.replace(" ", "T")}Z`;
+  const d = new Date(normalized);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function formatTimeAgo(dateStr: string | null | undefined): string {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
+  const date = parseApiDate(dateStr);
+  if (!date) return "";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffSec = Math.max(0, Math.floor(diffMs / 1000));
@@ -107,6 +121,17 @@ export function formatTimeAgo(dateStr: string | null | undefined): string {
   const diffMonth = Math.floor(diffDay / 30);
   if (diffMonth < 12) return `${diffMonth}mo`;
   return `${Math.floor(diffMonth / 12)}y`;
+}
+
+/** Absolute call time for Age / filter clarity (UTC). */
+export function formatCalledAt(dateStr: string | null | undefined): string {
+  const date = parseApiDate(dateStr);
+  if (!date) return "—";
+  const mon = date.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const day = date.getUTCDate();
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mm = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${mon} ${day} ${hh}:${mm} UTC`;
 }
 
 // ── Token metadata safety helpers ────────────────────────────────────────────

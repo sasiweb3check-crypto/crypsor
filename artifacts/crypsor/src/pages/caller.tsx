@@ -2,19 +2,19 @@
  * Pro Caller Page — shows only Very Good (≥75) and Good (55–74) tokens
  * sorted by Pro Score by default.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   Copy, ExternalLink, Twitter, Send, Globe,
   TrendingUp, Zap, Shield, ShieldCheck, ShieldOff,
-  Star, Users, BarChart2,
+  Star, BarChart2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiBase } from "@/lib/api-base";
 import {
-  cn, truncateAddress, formatCompactUsd, formatTimeAgo,
-  getGmgnUrl, safeSymbol,
+  cn, truncateAddress, formatCompactUsd, formatTimeAgo, formatCalledAt,
+  parseApiDate, getGmgnUrl, safeSymbol,
 } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ interface ProToken {
   symbol: string | null;
   logoUri: string | null;
   status: string;
-  calledAt: string;
+  calledAt: string | null;
   calledMcUsd: number | null;
   calledIntel: number | null;
   calledKol: number;
@@ -78,6 +78,10 @@ interface ProStats {
   goodCount: number;
   qualityCount: number;
   recentCount: number;
+  recent1hCount?: number;
+  recent6hCount?: number;
+  recent7dCount?: number;
+  latestCalledAt?: string | null;
   avgSurvival?: number | null;
 }
 
@@ -359,10 +363,15 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
         </div>
         <div className="text-right">
           <div className="text-[7px] uppercase tracking-widest text-[#484f58]">
-            Survive{t.survivalScore != null ? ` · ${Math.round(t.survivalScore)}` : ""}
+            Called{t.survivalScore != null ? ` · survive ${Math.round(t.survivalScore)}` : ""}
           </div>
           <div className="flex items-center justify-end gap-1">
-            <span className="text-[9px] text-[#8b949e]">{formatTimeAgo(t.calledAt)}</span>
+            <div className="flex flex-col items-end leading-tight">
+              <span className="text-[9px] text-[#8b949e] tabular-nums" title={formatCalledAt(t.calledAt)}>
+                {t.calledAt ? `${formatTimeAgo(t.calledAt)} ago` : "—"}
+              </span>
+              <span className="text-[7px] text-[#484f58] tabular-nums">{formatCalledAt(t.calledAt)}</span>
+            </div>
             <SecurityIcons
               mint={t.secMintRenounced}
               freeze={t.secFreezeRenounced}
@@ -438,7 +447,73 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
 // ── Quality filter tab ────────────────────────────────────────────────────────
 
 // ATH section filters: x5 (5–10×), x10 (10–20×), x10plus (≥20× "10× more")
-type QualityFilter = "quality" | "very_good" | "good" | "recent" | "x5" | "x10" | "x10plus" | "sections";
+// Age windows filter by pro_calls.called_at (UTC)
+type QualityFilter =
+  | "quality" | "very_good" | "good"
+  | "recent" | "1h" | "6h" | "24h" | "7d"
+  | "x5" | "x10" | "x10plus" | "sections";
+
+function withinHours(calledAt: string | null | undefined, hours: number, nowMs: number): boolean {
+  const d = parseApiDate(calledAt);
+  if (!d) return false;
+  return nowMs - d.getTime() <= hours * 3_600_000;
+}
+
+function filterFeed(tokens: ProToken[], quality: QualityFilter, nowMs: number): ProToken[] {
+  switch (quality) {
+    case "very_good":
+      return tokens.filter(t => t.qualityLabel === "very_good");
+    case "good":
+      return tokens.filter(t => t.qualityLabel === "good");
+    case "1h":
+      return tokens.filter(t => withinHours(t.calledAt, 1, nowMs));
+    case "6h":
+      return tokens.filter(t => withinHours(t.calledAt, 6, nowMs));
+    case "recent":
+    case "24h":
+      return tokens.filter(t => withinHours(t.calledAt, 24, nowMs));
+    case "7d":
+      return tokens.filter(t => withinHours(t.calledAt, 24 * 7, nowMs));
+    case "x5":
+      return tokens.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10);
+    case "x10":
+      return tokens.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20);
+    case "x10plus":
+      return tokens.filter(t => (t.athMultiple ?? 0) >= 20);
+    case "sections":
+    case "quality":
+    default:
+      return tokens;
+  }
+}
+
+function sortFeed(tokens: ProToken[], sortKey: SortKey, asc: boolean): ProToken[] {
+  const dir = asc ? 1 : -1;
+  const num = (x: number | null | undefined, fallback = -Infinity) =>
+    x == null || !Number.isFinite(x) ? fallback : x;
+  return [...tokens].sort((a, b) => {
+    switch (sortKey) {
+      case "ath":
+        return (num(a.athMultiple) - num(b.athMultiple)) * dir;
+      case "gain":
+        return (num(a.gainSinceCall) - num(b.gainSinceCall)) * dir;
+      case "intel":
+        return (num(a.currentIntel) - num(b.currentIntel)) * dir;
+      case "calledMc":
+        return (num(a.calledMcUsd) - num(b.calledMcUsd)) * dir;
+      case "calledAt": {
+        const ta = parseApiDate(a.calledAt)?.getTime() ?? 0;
+        const tb = parseApiDate(b.calledAt)?.getTime() ?? 0;
+        return (ta - tb) * dir;
+      }
+      case "survival":
+        return (num(a.survivalScore) - num(b.survivalScore)) * dir;
+      case "proScore":
+      default:
+        return (num(a.proScore) - num(b.proScore)) * dir;
+    }
+  });
+}
 
 function FilterTab({
   label, active, count, onClick,
@@ -482,43 +557,68 @@ export default function Caller() {
     else { setSortKey(key); setSortAsc(false); }
   }
 
-  // ── Data fetching ──────────────────────────────────────────────────────────
+  // ── Data fetching — one slim feed; tab/sort changes are client-side (instant) ─
 
   const { data: stats } = useQuery<ProStats>({
     queryKey: ["proStats"],
     queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime:       20_000,
+    refetchInterval: 20_000,
+    staleTime:       12_000,
     refetchOnWindowFocus: true,
   });
 
-  const isSections = qualityFilter === "sections";
-  const apiQuality = qualityFilter === "recent" ? "recent"
-    : isSections ? "quality"
-    : qualityFilter;
-  const apiSort    = qualityFilter === "recent" ? "calledAt" : sortKey;
-  const apiOrder   = qualityFilter === "recent" ? "desc" : (sortAsc ? "asc" : "desc");
-
-  const { data: historyData, isLoading } = useQuery<{ total: number; totalAll: number; tokens: ProToken[] }>({
-    queryKey: ["proHistory", qualityFilter, sortKey, sortAsc ? "asc" : "desc"],
+  const { data: historyData, isLoading } = useQuery<{
+    total: number; totalAll: number; tokens: ProToken[]; latestCalledAt?: string | null;
+  }>({
+    queryKey: ["proHistory", "feed"],
     queryFn:  () =>
-      fetch(`${BASE_URL}/api/pro/history?quality=${apiQuality}&sort=${apiSort}&order=${apiOrder}&limit=150`)
+      fetch(`${BASE_URL}/api/pro/history?quality=feed&sort=calledAt&order=desc&limit=300`)
         .then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime:       20_000,
+    refetchInterval: 15_000,
+    staleTime:       12_000,
     refetchOnWindowFocus: true,
     placeholderData: (prev) => prev,
   });
 
-  const sorted      = historyData?.tokens ?? [];
-  const sectionX5   = sorted.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10);
-  const sectionX10  = sorted.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20);
-  const sectionX10p = sorted.filter(t => (t.athMultiple ?? 0) >= 20);
+  const feed = historyData?.tokens ?? [];
+  const isSections = qualityFilter === "sections";
+  const ageSort = qualityFilter === "recent" || qualityFilter === "1h"
+    || qualityFilter === "6h" || qualityFilter === "24h" || qualityFilter === "7d";
+  const effectiveSort: SortKey = ageSort && sortKey === "proScore" ? "calledAt" : sortKey;
+  const effectiveAsc = ageSort && sortKey === "proScore" ? false : sortAsc;
 
-  const totalCalled = stats?.total ?? 0;
-  const veryGoodCt  = stats?.veryGoodCount ?? 0;
-  const goodCt      = stats?.goodCount     ?? 0;
-  const recentCt    = stats?.recentCount   ?? 0;
+  const sorted = useMemo(() => {
+    const nowMs = Date.now();
+    return sortFeed(filterFeed(feed, qualityFilter, nowMs), effectiveSort, effectiveAsc);
+  }, [feed, qualityFilter, effectiveSort, effectiveAsc]);
+
+  const sectionX5   = useMemo(
+    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10), effectiveSort, effectiveAsc),
+    [feed, effectiveSort, effectiveAsc],
+  );
+  const sectionX10  = useMemo(
+    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20), effectiveSort, effectiveAsc),
+    [feed, effectiveSort, effectiveAsc],
+  );
+  const sectionX10p = useMemo(
+    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 20), effectiveSort, effectiveAsc),
+    [feed, effectiveSort, effectiveAsc],
+  );
+
+  const ageCounts = useMemo(() => {
+    const nowMs = Date.now();
+    return {
+      h1: feed.filter(t => withinHours(t.calledAt, 1, nowMs)).length,
+      h6: feed.filter(t => withinHours(t.calledAt, 6, nowMs)).length,
+      h24: feed.filter(t => withinHours(t.calledAt, 24, nowMs)).length,
+      d7: feed.filter(t => withinHours(t.calledAt, 24 * 7, nowMs)).length,
+    };
+  }, [feed]);
+
+  const totalCalled = stats?.total ?? feed.length;
+  const veryGoodCt  = stats?.veryGoodCount ?? feed.filter(t => t.qualityLabel === "very_good").length;
+  const goodCt      = stats?.goodCount     ?? feed.filter(t => t.qualityLabel === "good").length;
+  const recentCt    = stats?.recentCount   ?? ageCounts.h24;
   const x5Ct        = stats?.x5Count ?? sectionX5.length;
   const x10Ct       = stats?.x10Count ?? sectionX10.length;
   const x10PlusCt   = stats?.x10PlusCount ?? sectionX10p.length;
@@ -545,7 +645,7 @@ export default function Caller() {
             </span>
           </div>
           <p className="text-[9px] text-[#484f58] mt-0.5">
-            5× · 10× · 10×+ sections — Pro Score v2 + survival
+            Instant filters · called time UTC · Redis-cached feed
           </p>
         </div>
         <div
@@ -619,10 +719,26 @@ export default function Caller() {
             count={totalCalled}
             onClick={() => setQF("quality")}
           />
+          <div className="w-px self-stretch shrink-0 mx-0.5" style={{ background: "#21262d" }} />
           <FilterTab
-            label="Recent" active={qualityFilter === "recent"}
+            label="1h" active={qualityFilter === "1h"}
+            count={stats?.recent1hCount ?? ageCounts.h1}
+            onClick={() => setQF("1h")}
+          />
+          <FilterTab
+            label="6h" active={qualityFilter === "6h"}
+            count={stats?.recent6hCount ?? ageCounts.h6}
+            onClick={() => setQF("6h")}
+          />
+          <FilterTab
+            label="24h" active={qualityFilter === "recent" || qualityFilter === "24h"}
             count={recentCt}
-            onClick={() => setQF("recent")}
+            onClick={() => setQF("24h")}
+          />
+          <FilterTab
+            label="7d" active={qualityFilter === "7d"}
+            count={stats?.recent7dCount ?? ageCounts.d7}
+            onClick={() => setQF("7d")}
           />
         </div>
 
