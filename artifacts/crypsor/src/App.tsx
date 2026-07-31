@@ -13,6 +13,7 @@ import Settings from '@/pages/settings';
 import Wallets from '@/pages/wallets';
 import Holders from '@/pages/holders';
 import IntelLog from '@/pages/intel-log';
+import OpsPage from '@/pages/ops';
 import NotFound from '@/pages/not-found';
 import { useLiveTokens } from '@/hooks/use-live-tokens';
 
@@ -54,6 +55,7 @@ function Router() {
         <Route path="/wallets" component={Wallets} />
         <Route path="/holders" component={Holders} />
         <Route path="/intel-log" component={IntelLog} />
+        <Route path="/ops" component={OpsPage} />
         <Route path="/settings" component={Settings} />
         <Route component={NotFound} />
       </Switch>

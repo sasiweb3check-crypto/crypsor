@@ -17,6 +17,8 @@ import { settings } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
+import { opsLog } from "../lib/ops-log";
+import { healthMonitor } from "./health-monitor";
 
 const log = logger.child({ module: "caller-alerts" });
 
@@ -47,6 +49,7 @@ async function sendTelegram(
   const url = `https://api.telegram.org/bot${creds.botToken}/sendMessage`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
+  const t0 = Date.now();
   try {
     let resp = await fetch(url, {
       method: "POST",
@@ -69,10 +72,16 @@ async function sendTelegram(
         signal: controller.signal,
       });
     }
+    const latencyMs = Date.now() - t0;
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      throw new Error(`Telegram ${resp.status}: ${body.slice(0, 300)}`);
+      const err = `Telegram ${resp.status}: ${body.slice(0, 300)}`;
+      opsLog("telegram", "error", err, { latencyMs }, latencyMs);
+      healthMonitor.error("caller-alerts", err);
+      throw new Error(err);
     }
+    opsLog("telegram", "info", "Telegram send OK", undefined, latencyMs);
+    healthMonitor.ok("caller-alerts", latencyMs);
   } finally {
     clearTimeout(timer);
   }
@@ -210,9 +219,16 @@ function buildMilestoneMessage(t: ProAlertToken, tier: number): string {
 }
 
 async function checkAndAlert(): Promise<void> {
+  const t0 = Date.now();
   const creds = await getTelegramCreds();
   if (!creds) {
-    log.debug("Telegram not configured — skipping");
+    // Log at most once per 10 minutes — avoid flooding the ops ring
+    const last = (checkAndAlert as { _lastNoTg?: number })._lastNoTg ?? 0;
+    if (Date.now() - last > 600_000) {
+      (checkAndAlert as { _lastNoTg?: number })._lastNoTg = Date.now();
+      opsLog("blocker", "warn", "Telegram not configured — Pro alerts skipped");
+    }
+    healthMonitor.ok("caller-alerts");
     return;
   }
 
@@ -278,9 +294,14 @@ async function checkAndAlert(): Promise<void> {
           { proCallId: t.proCallId, symbol: t.symbol, quality: t.qualityLabel, proScore: t.proScore },
           "Pro first-call alert sent",
         );
+        opsLog("telegram", "info", `First-call alert · ${t.symbol ?? t.address.slice(0, 6)}`, {
+          quality: t.qualityLabel,
+          proScore: t.proScore,
+        });
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
         log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "First-call alert failed");
+        opsLog("telegram", "error", `First-call failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
       }
       // Milestones next cycle so first-call stands alone
       continue;
@@ -306,9 +327,11 @@ async function checkAndAlert(): Promise<void> {
           { proCallId: t.proCallId, symbol: t.symbol, tier, athX },
           "Pro milestone alert sent",
         );
+        opsLog("telegram", "info", `Milestone ${tier}× · ${t.symbol ?? "?"}`, { athX });
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
         log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");
+        opsLog("telegram", "error", `Milestone ${tier}× failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 140)}`);
         break; // don't mark further tiers if Telegram is failing
       }
     }
@@ -317,12 +340,17 @@ async function checkAndAlert(): Promise<void> {
   if (firstCallSent > 0 || milestoneSent > 0) {
     log.info({ firstCallSent, milestoneSent }, "Pro alerts cycle complete");
   }
+  healthMonitor.ok("caller-alerts", Date.now() - t0);
 }
 
 export function startCallerAlerts(): void {
   const loop = () => {
     checkAndAlert()
-      .catch(err => log.warn({ err }, "Pro alerts check failed"))
+      .catch(err => {
+        log.warn({ err }, "Pro alerts check failed");
+        opsLog("telegram", "error", `Alerts loop: ${String(err).slice(0, 180)}`);
+        healthMonitor.error("caller-alerts", err);
+      })
       .finally(() => setTimeout(loop, CHECK_INTERVAL_MS));
   };
   setTimeout(loop, STARTUP_DELAY_MS);
@@ -330,4 +358,5 @@ export function startCallerAlerts(): void {
     { intervalMs: CHECK_INTERVAL_MS, milestones: ALERT_MILESTONES },
     "Pro alerts ready (first-call + 2×/5×/10×/20× milestones, state on pro_calls)",
   );
+  opsLog("telegram", "info", "Pro alerts loop started");
 }

@@ -39,6 +39,8 @@ import {
   walletsPayload,
   type GmgnProVerifyResult,
 } from "../lib/gmgn-pro-verify";
+import { opsLog } from "../lib/ops-log";
+import { healthMonitor } from "./health-monitor";
 
 const log = logger.child({ module: "pro-scanner" });
 
@@ -220,6 +222,14 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
         },
         "Pro call registered",
       );
+      opsLog("pro_qualify", "info", `Pro call · ${track} · intel ${c.intelligence_score}`, {
+        inserted: true,
+        tokenId: c.token_id,
+        kol,
+        smart,
+        source,
+        mc: c.market_cap_usd,
+      });
     }
   }
 
@@ -441,25 +451,46 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
 }
 
 async function scanOnce(onlyTokenId?: number): Promise<void> {
-  const candidates = await loadCandidates(onlyTokenId);
-  const { veryStrong, strong, verified } = await qualifyCandidates(candidates);
-  const upgraded = await upgradeStrongToVeryStrong();
-  const reverified = onlyTokenId ? 0 : await reverifyUnsourcedCalls();
-  const scored = await scoreAndSurfacePending(onlyTokenId);
+  const t0 = Date.now();
+  try {
+    const candidates = await loadCandidates(onlyTokenId);
+    const { veryStrong, strong, verified } = await qualifyCandidates(candidates);
+    const upgraded = await upgradeStrongToVeryStrong();
+    const reverified = onlyTokenId ? 0 : await reverifyUnsourcedCalls();
+    const scored = await scoreAndSurfacePending(onlyTokenId);
 
-  if (veryStrong > 0 || strong > 0 || upgraded > 0 || scored > 0 || verified > 0 || reverified > 0) {
-    log.info(
-      {
-        veryStrongInserted: veryStrong,
-        strongInserted: strong,
+    if (veryStrong > 0 || strong > 0 || upgraded > 0 || scored > 0 || verified > 0 || reverified > 0) {
+      log.info(
+        {
+          veryStrongInserted: veryStrong,
+          strongInserted: strong,
+          upgraded,
+          scored,
+          verified,
+          reverified,
+          onlyTokenId: onlyTokenId ?? null,
+        },
+        "Pro scanner cycle complete",
+      );
+      opsLog("pro_qualify", "info", `Qualify cycle · +${veryStrong + strong} calls · scored ${scored}`, {
+        veryStrong,
+        strong,
+        verified,
         upgraded,
         scored,
+        candidates: candidates.length,
+      });
+    } else if (candidates.length > 0) {
+      opsLog("pro_qualify", "info", `Qualify checked ${candidates.length} — none inserted`, {
+        candidates: candidates.length,
         verified,
-        reverified,
-        onlyTokenId: onlyTokenId ?? null,
-      },
-      "Pro scanner cycle complete",
-    );
+      });
+    }
+    healthMonitor.ok("pro-scanner", Date.now() - t0);
+  } catch (err) {
+    log.error({ err }, "Pro scanner cycle failed");
+    opsLog("pro_qualify", "error", `Pro scanner failed: ${String(err).slice(0, 180)}`);
+    healthMonitor.error("pro-scanner", err);
   }
 }
 

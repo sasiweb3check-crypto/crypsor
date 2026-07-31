@@ -3,9 +3,10 @@ import { Eye, EyeOff, KeyRound, ExternalLink, CheckCircle, Send, Bot, TestTube }
 import { useGetSettings, useUpsertSetting } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiBase } from "@/lib/api-base";
+import { Link } from "wouter";
 
 export default function Settings() {
-  const { data: settings, isLoading } = useGetSettings();
+  const { data: settings, isLoading, error: settingsError, refetch } = useGetSettings();
   const upsertSetting = useUpsertSetting();
   const { toast } = useToast();
 
@@ -21,6 +22,8 @@ export default function Settings() {
   const [tgSaved, setTgSaved] = useState(false);
   const [testing, setTesting] = useState(false);
 
+  const apiBase = getApiBase();
+
   useEffect(() => {
     if (settings) {
       const hKey  = settings.find(s => s.key === "helius_api_key");
@@ -34,56 +37,113 @@ export default function Settings() {
 
   const saveHelius = () => {
     upsertSetting.mutate(
-      { data: { key: "helius_api_key", value: heliusKey } },
+      { data: { key: "helius_api_key", value: heliusKey.trim() } },
       {
         onSuccess: () => {
           setHeliusSaved(true);
           toast({ title: "Saved", description: "Helius API key updated." });
           setTimeout(() => setHeliusSaved(false), 3000);
         },
-        onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+        onError: (err) => toast({
+          title: "Failed to save",
+          description: err instanceof Error ? err.message : `Check API at ${apiBase}`,
+          variant: "destructive",
+        }),
       },
     );
   };
 
-  const saveTelegram = () => {
-    // Save both keys sequentially
-    upsertSetting.mutate(
-      { data: { key: "telegram_bot_token", value: botToken } },
-      {
-        onSuccess: () => {
-          upsertSetting.mutate(
-            { data: { key: "telegram_chat_id", value: chatId } },
-            {
-              onSuccess: () => {
-                setTgSaved(true);
-                toast({ title: "Saved", description: "Telegram credentials saved." });
-                setTimeout(() => setTgSaved(false), 3000);
+  const saveTelegram = (): Promise<void> =>
+    new Promise((resolve, reject) => {
+      upsertSetting.mutate(
+        { data: { key: "telegram_bot_token", value: botToken.trim() } },
+        {
+          onSuccess: () => {
+            upsertSetting.mutate(
+              { data: { key: "telegram_chat_id", value: chatId.trim() } },
+              {
+                onSuccess: () => {
+                  setTgSaved(true);
+                  toast({ title: "Saved", description: "Telegram credentials saved." });
+                  setTimeout(() => setTgSaved(false), 3000);
+                  resolve();
+                },
+                onError: (err) => {
+                  toast({
+                    title: "Failed to save chat ID",
+                    description: err instanceof Error ? err.message : undefined,
+                    variant: "destructive",
+                  });
+                  reject(err);
+                },
               },
-              onError: () => toast({ title: "Failed to save chat ID", variant: "destructive" }),
-            },
-          );
+            );
+          },
+          onError: (err) => {
+            toast({
+              title: "Failed to save bot token",
+              description: err instanceof Error ? err.message : `API: ${apiBase}`,
+              variant: "destructive",
+            });
+            reject(err);
+          },
         },
-        onError: () => toast({ title: "Failed to save bot token", variant: "destructive" }),
-      },
-    );
-  };
+      );
+    });
 
   const testTelegram = async () => {
     setTesting(true);
     try {
-      const res = await fetch(`${getApiBase()}api/caller/telegram/test`, {
+      // Wake / verify API first (Render free tier cold starts cause "Failed to fetch")
+      const pingUrl = `${apiBase}api/ops/ping`;
+      let pingOk = false;
+      for (let i = 0; i < 3 && !pingOk; i++) {
+        try {
+          const ping = await fetch(pingUrl, { signal: AbortSignal.timeout(20_000) });
+          pingOk = ping.ok;
+        } catch {
+          if (i < 2) await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+        }
+      }
+      if (!pingOk) {
+        toast({
+          title: "Failed to fetch API",
+          description: `Cannot reach ${apiBase} — cold start, wrong VITE_API_URL, or CORS. Open Ops page for details.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Persist then test (body also sends credentials so Test works even if Save raced)
+      try {
+        await saveTelegram();
+      } catch {
+        /* still attempt test with body credentials */
+      }
+
+      const res = await fetch(`${apiBase}api/caller/telegram/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botToken: botToken.trim(), chatId: chatId.trim() }),
+        signal: AbortSignal.timeout(25_000),
       });
       if (res.ok) {
         toast({ title: "Test sent ✅", description: "Check your Telegram for the test message." });
       } else {
         const body = await res.json().catch(() => ({ error: "Unknown error" }));
-        toast({ title: "Test failed", description: body.error ?? "Check bot token and chat ID.", variant: "destructive" });
+        toast({
+          title: "Test failed",
+          description: body.error ?? "Check bot token and chat ID.",
+          variant: "destructive",
+        });
       }
-    } catch {
-      toast({ title: "Network error", variant: "destructive" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({
+        title: "Failed to fetch",
+        description: `${msg} · API base: ${apiBase}. If on Render free tier, wait for API wake then retry. See Ops.`,
+        variant: "destructive",
+      });
     } finally {
       setTesting(false);
     }
@@ -96,6 +156,16 @@ export default function Settings() {
         <h1 className="text-lg font-bold text-[#f59e0b] tracking-widest uppercase">Settings</h1>
         <p className="text-[#484f58] text-[10px] mt-0.5 tracking-widest uppercase">Configure API integrations and monitoring</p>
       </div>
+
+      {settingsError && (
+        <div className="px-3 py-2 rounded-lg text-[10px] text-[#ef4444]" style={{ border: "1px solid #ef444440", background: "#ef444412" }}>
+          Settings load failed (Failed to fetch?). API: <span className="font-mono">{apiBase}</span>
+          {" · "}
+          <button type="button" className="underline" onClick={() => void refetch()}>Retry</button>
+          {" · "}
+          <Link href="/ops"><span className="underline cursor-pointer">Open Ops</span></Link>
+        </div>
+      )}
 
       {/* ── API Keys card ──────────────────────────────────────────────────── */}
       <div className="border border-[#30363d] bg-[#161b22] overflow-hidden">
@@ -169,7 +239,7 @@ export default function Settings() {
           <div>
             <div className="text-[#c9d1d9] text-sm font-bold tracking-wide">Caller — Telegram Alerts</div>
             <div className="text-[9px] text-[#484f58] tracking-widest uppercase mt-0.5">
-              GOOD SETUP · SURPRISE SIGNAL · DUMP WARNING
+              Pro first-call · 2× / 5× / 10× / 20× milestones
             </div>
           </div>
         </div>
@@ -182,7 +252,6 @@ export default function Settings() {
             </div>
           ) : (
             <>
-              {/* Bot token */}
               <div className="space-y-2">
                 <label className="text-[9px] text-[#8b949e] uppercase tracking-widest block">
                   Bot Token
@@ -213,7 +282,6 @@ export default function Settings() {
                 </p>
               </div>
 
-              {/* Chat ID */}
               <div className="space-y-2">
                 <label className="text-[9px] text-[#8b949e] uppercase tracking-widest block">
                   Chat ID
@@ -233,9 +301,9 @@ export default function Settings() {
           )}
         </div>
 
-        <div className="px-5 py-4 border-t border-[#30363d] flex items-center gap-3">
+        <div className="px-5 py-4 border-t border-[#30363d] flex items-center gap-3 flex-wrap">
           <button
-            onClick={saveTelegram}
+            onClick={() => void saveTelegram()}
             disabled={upsertSetting.isPending || isLoading || !botToken || !chatId}
             className={`flex items-center gap-2 h-8 px-4 text-[9px] font-bold uppercase tracking-widest border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               tgSaved
@@ -249,13 +317,19 @@ export default function Settings() {
           </button>
 
           <button
-            onClick={testTelegram}
+            onClick={() => void testTelegram()}
             disabled={testing || isLoading || !botToken || !chatId}
             className="flex items-center gap-2 h-8 px-4 text-[9px] font-bold uppercase tracking-widest border border-[#3b82f6]/40 bg-[#3b82f6]/10 text-[#3b82f6] hover:bg-[#3b82f6]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <TestTube className="w-3 h-3" />
             {testing ? "Sending…" : "Test"}
           </button>
+
+          <Link href="/ops">
+            <span className="text-[9px] text-[#484f58] hover:text-[#f59e0b] uppercase tracking-widest cursor-pointer">
+              View Ops logs →
+            </span>
+          </Link>
         </div>
       </div>
     </div>
