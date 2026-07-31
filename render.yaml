@@ -19,6 +19,7 @@ services:
         value: production
       - key: AIVEN_DATABASE_URL
         sync: false
+      # Optional — API uses in-process queue; only needed for a future BullMQ worker.
       - key: AIVEN_REDIS_URL
         sync: false
       - key: HELIUS_API_KEY

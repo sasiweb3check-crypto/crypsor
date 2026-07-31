@@ -36,11 +36,18 @@ export const pool = new Pool({
   ssl: requiresSsl ? { rejectUnauthorized: false } : undefined,
   // Keep the free Render + Aiven path snappy: small pool, fail fast on
   // cold connects, recycle idle clients so TLS sessions stay warm.
-  max: Number(process.env.PG_POOL_MAX ?? 8),
-  min: Number(process.env.PG_POOL_MIN ?? 1),
+  // Default max 5 (was 8): pipeline services now concurrency-limit their
+  // fan-out; a smaller pool leaves headroom on Aiven free connection caps.
+  max: Number(process.env.PG_POOL_MAX ?? 5),
+  min: Number(process.env.PG_POOL_MIN ?? 0),
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   allowExitOnIdle: false,
+});
+
+pool.on("error", (err) => {
+  // Idle client errors must not take down the process.
+  console.error("[pg-pool] idle client error:", err.message);
 });
 export const db = drizzle(pool, { schema });
 

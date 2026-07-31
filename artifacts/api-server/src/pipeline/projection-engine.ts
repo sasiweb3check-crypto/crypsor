@@ -6,14 +6,24 @@
  * them to the DB so that routes and the dashboard never compute anything.
  *
  * Philosophy: token_state is the source of truth. Dashboard reads, never computes.
+ *
+ * Crash-hardening: never fan out one DB round-trip per token with unbounded
+ * Promise.allSettled / EventEmitter concurrency — that exhausted the Postgres
+ * pool (max ~5–8) and took the Render free instance down in a restart loop.
  */
 
 import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, notInArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
+import { CoalesceQueue, mapPool } from "../lib/async-pool";
+
+const FULL_PASS_CONCURRENCY = 3;
+const EVENT_CONCURRENCY = 3;
+/** Skip cold tokens on the periodic full pass — event path still covers hot ones. */
+const COLD_STATUSES = ["archive", "dumped"] as const;
 
 // Weighted buy pressure score — recent windows count more
 function computeBuyPressure(m5: number, m15: number, m30: number, m1h: number, m6h: number): number {
@@ -73,11 +83,20 @@ async function projectToken(tokenId: number): Promise<void> {
   }
 }
 
-/** Full pass — reproject every token. Called by the periodic loop in startProjectionEngine. */
+const projectQueue = new CoalesceQueue(
+  (tokenId) => projectToken(tokenId),
+  { concurrency: EVENT_CONCURRENCY, debounceMs: 150 },
+);
+
+/** Full pass — reproject live tokens with bounded concurrency. */
 export async function projectAll(): Promise<void> {
   try {
-    const tokens = await db.select({ id: tracked_tokens.id }).from(tracked_tokens);
-    await Promise.allSettled(tokens.map(t => projectToken(t.id)));
+    const tokens = await db
+      .select({ id: tracked_tokens.id })
+      .from(tracked_tokens)
+      .where(notInArray(tracked_tokens.status, [...COLD_STATUSES]));
+
+    await mapPool(tokens, FULL_PASS_CONCURRENCY, (t: { id: number }) => projectToken(t.id));
   } catch (err) {
     logger.warn({ err }, "Projection full-pass failed");
   }
@@ -86,19 +105,17 @@ export async function projectAll(): Promise<void> {
 /**
  * Start the projection engine.
  * Periodic full-pass runs every 60 s with a 3 s initial delay.
- * Event-driven per-token projections fire immediately via eventBus.
+ * Event-driven per-token projections are coalesced + concurrency-limited.
  */
 export function startProjectionEngine(): void {
   healthMonitor.register("projection-engine");
 
-  // React to price updates
-  eventBus.on("price:updated", async (evt) => {
-    await projectToken(evt.tokenId);
+  eventBus.on("price:updated", (evt) => {
+    projectQueue.schedule(evt.tokenId);
   });
 
-  // React to new buys (momentum changed)
-  eventBus.on("token:bought", async (evt) => {
-    await projectToken(evt.tokenId);
+  eventBus.on("token:bought", (evt) => {
+    projectQueue.schedule(evt.tokenId);
   });
 
   // Periodic full-pass — completion-chained to prevent overlapping runs
@@ -109,5 +126,5 @@ export function startProjectionEngine(): void {
   };
   setTimeout(loop, 3_000);
 
-  logger.info("Projection engine started (event-driven per-token + 60 s full-pass)");
+  logger.info("Projection engine started (coalesced events + 60 s full-pass, concurrency 3)");
 }

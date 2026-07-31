@@ -1,29 +1,23 @@
 /**
- * PipelineQueue — BullMQ-backed priority job queue.
+ * PipelineQueue — in-process priority job queue
  *
- * Drop-in replacement for the old in-process PipelineQueue.  Public API
- * is unchanged so all callers (metadata-service, holders-refresh, etc.)
- * require no modification.
+ * Provides the core BullMQ concepts (priority, dedup, concurrency, retries,
+ * stats) without requiring Redis. All state is in-process; jobs do not
+ * survive a server restart (acceptable for background pipeline work that
+ * will be re-enqueued by the next scan cycle).
  *
- * Key differences from the in-process version:
- *   • Jobs are durable: stored in Aiven Redis, survive process restarts.
- *   • Workers are created by calling register(); the queue itself is safe
- *     to import in the API process (Queue instances connect lazily).
- *   • Dedup via BullMQ jobId: a second enqueue() with the same dedupKey
- *     while the job is still waiting is silently ignored by BullMQ.
- *   • Priority is inverted: callers use "higher = sooner" (same as before);
- *     we convert to BullMQ's "lower number = higher priority" internally.
- *   • totalWaiting() is synchronous via a cached counter updated every 5 s
- *     (only in worker process — triggered by the first register() call).
+ * Restored from the pre-BullMQ implementation: the Redis-backed queue required
+ * AIVEN_REDIS_URL at import time and opened many ioredis connections in the
+ * same Render free-tier process that also runs the full pipeline — a primary
+ * cause of boot failures and crash loops. Multi-process BullMQ can return
+ * once a dedicated worker entrypoint exists.
  */
 
-import { Queue, Worker, type JobsOptions, type WorkerOptions } from "bullmq";
-import { getBullMQRedisOpts } from "./redis";
 import { logger as rootLogger } from "./logger";
 
 const log = rootLogger.child({ module: "job-queue" });
 
-// ── Types (unchanged public API) ──────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export type QueueName = "discovery" | "metadata" | "holders" | "price" | "migration";
 
@@ -31,17 +25,29 @@ export interface EnqueueOptions {
   /** Higher number = processed sooner. Default 0. */
   priority?: number;
   /**
-   * If set, BullMQ deduplicates: a job with this jobId that is already
-   * waiting or delayed will not be replaced by a new one.
+   * If set, this job is skipped when an identical key is already waiting
+   * or actively processing. Cleared when the job begins (so re-enqueue
+   * after completion is allowed).
    */
   dedupKey?: string;
-  /** Delay before the job becomes eligible (milliseconds). */
+  /** Delay before the job becomes eligible for processing. */
   delayMs?: number;
+}
+
+interface PendingJob<T = unknown> {
+  id:          string;
+  name:        QueueName;
+  data:        T;
+  priority:    number;
+  addedAt:     number;
+  dedupKey:    string | undefined;
+  attempts:    number;
+  maxAttempts: number;
 }
 
 export type JobHandler<T = unknown> = (data: T, attempt: number) => Promise<void>;
 
-// ── Per-queue configuration ───────────────────────────────────────────────────
+// ── Per-queue configuration ────────────────────────────────────────────────────
 
 const QUEUE_CONFIG: Record<QueueName, { concurrency: number; maxAttempts: number }> = {
   discovery: { concurrency: 5, maxAttempts: 3 },
@@ -54,160 +60,153 @@ const QUEUE_CONFIG: Record<QueueName, { concurrency: number; maxAttempts: number
 // ── PipelineQueue ─────────────────────────────────────────────────────────────
 
 export class PipelineQueue {
-  private queues  = new Map<QueueName, Queue>();
-  private workers = new Map<QueueName, Worker>();
-  private stats   = new Map<QueueName, { waiting: number; processed: number; failed: number }>();
-  private cachedTotalWaiting = 0;
-  private pollingStarted     = false;
+  private queues   = new Map<QueueName, PendingJob[]>();
+  private dedup    = new Map<QueueName, Set<string>>();
+  private active   = new Map<QueueName, number>();
+  private handlers = new Map<QueueName, JobHandler<unknown>>();
+  private stats    = new Map<QueueName, { processed: number; failed: number }>();
 
   constructor() {
-    const connection = getBullMQRedisOpts();
     for (const name of Object.keys(QUEUE_CONFIG) as QueueName[]) {
-      this.queues.set(name, new Queue(name, {
-        connection,
-        defaultJobOptions: {
-          removeOnComplete: { count: 20 },
-          removeOnFail:     { count: 10 },
-        },
-      }));
-      this.stats.set(name, { waiting: 0, processed: 0, failed: 0 });
+      this.queues.set(name, []);
+      this.dedup.set(name, new Set());
+      this.active.set(name, 0);
+      this.stats.set(name, { processed: 0, failed: 0 });
     }
   }
 
-  // ── Private: background waiting-count refresh ──────────────────────────────
-
-  private _startPolling(): void {
-    if (this.pollingStarted) return;
-    this.pollingStarted = true;
-    setInterval(() => this._refreshWaitingCounts(), 5_000);
-  }
-
-  private async _refreshWaitingCounts(): Promise<void> {
-    try {
-      const entries = Array.from(this.queues.entries()) as [QueueName, Queue][];
-      const counts  = await Promise.all(entries.map(([, q]) => q.getWaitingCount()));
-      let total = 0;
-      entries.forEach(([name], i) => {
-        this.stats.get(name)!.waiting = counts[i];
-        total += counts[i];
-      });
-      this.cachedTotalWaiting = total;
-    } catch { /* non-fatal */ }
-  }
-
-  // ── Registration ───────────────────────────────────────────────────────────
+  // ── Registration ─────────────────────────────────────────────────────────────
 
   register<T>(name: QueueName, handler: JobHandler<T>): void {
-    this._startPolling(); // Only poll when running as worker
-
-    if (this.workers.has(name)) {
-      log.warn({ queue: name }, "Queue handler already registered — skipping");
-      return;
-    }
-
-    const config     = QUEUE_CONFIG[name];
-    const connection = getBullMQRedisOpts();
-
-    const worker = new Worker<Record<string, unknown>>(
-      name,
-      async (job) => {
-        await handler(job.data as unknown as T, job.attemptsMade + 1);
-        this.stats.get(name)!.processed++;
-      },
-      {
-        connection,
-        concurrency:      config.concurrency,
-        stalledInterval:  30_000,  // check for stalled jobs every 30 s
-        lockDuration:     60_000,  // job lock expires after 60 s; auto-requeued if worker dies
-        removeOnComplete: { count: 20 },
-        removeOnFail:     { count: 10 },
-      } as WorkerOptions,
-    );
-
-    worker.on("failed", (job, err) => {
-      this.stats.get(name)!.failed++;
-      log.warn({ queue: name, jobId: job?.id, attempt: job?.attemptsMade, err }, "Job failed");
-    });
-
-    worker.on("stalled", (jobId) => {
-      log.error({ queue: name, jobId }, "Job stalled — lock expired; BullMQ will re-queue");
-    });
-
-    worker.on("error", (err) => {
-      log.error({ queue: name, err }, "Worker error");
-    });
-
-    this.workers.set(name, worker as unknown as Worker);
-    log.debug({ queue: name, concurrency: config.concurrency }, "Queue handler registered");
+    this.handlers.set(name, handler as JobHandler<unknown>);
+    log.debug({ queue: name }, "Queue handler registered");
   }
 
-  // ── Enqueue ────────────────────────────────────────────────────────────────
+  // ── Enqueue ───────────────────────────────────────────────────────────────────
 
   /**
    * Add a job to the named queue.
-   * Returns true always — BullMQ deduplication is async so we cannot determine
-   * synchronously whether the job was enqueued or skipped. Callers that tracked
-   * enqueued vs skipped counts should treat every call as enqueued; actual dedup
-   * is enforced by BullMQ ignoring a second add() with the same jobId while a
-   * job with that ID is still waiting or active.
+   * Returns `true` if enqueued, `false` if skipped (dedup hit).
    */
   enqueue<T>(name: QueueName, data: T, opts: EnqueueOptions = {}): boolean {
-    const queue = this.queues.get(name)!;
-    const config = QUEUE_CONFIG[name];
+    const dedupKey = opts.dedupKey;
+    const deduped  = this.dedup.get(name)!;
 
-    const jobOpts: JobsOptions = {
-      attempts: config.maxAttempts,
-      backoff:  { type: "exponential", delay: 2_000 },
+    if (dedupKey && deduped.has(dedupKey)) {
+      log.debug({ queue: name, dedupKey }, "Job skipped (dedup hit)");
+      return false;
+    }
+
+    if (dedupKey) deduped.add(dedupKey);
+
+    const job: PendingJob<T> = {
+      id:          `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      data,
+      priority:    opts.priority ?? 0,
+      addedAt:     Date.now(),
+      dedupKey,
+      attempts:    0,
+      maxAttempts: QUEUE_CONFIG[name].maxAttempts,
     };
 
-    if (opts.dedupKey) {
-      // BullMQ rejects job IDs containing ":" (reserved for its repeat key format).
-      // Sanitize by replacing colons with hyphens to preserve uniqueness.
-      jobOpts.jobId = opts.dedupKey.replace(/:/g, "-");
-      // Remove completed jobs immediately so the same jobId can be re-enqueued
-      // after completion (otherwise BullMQ returns the stale completed record and
-      // skips creating new work for the same token).
-      jobOpts.removeOnComplete = true;
-      jobOpts.removeOnFail     = true;
-    }
-    if (opts.priority !== undefined)     jobOpts.priority = Math.max(1, 100 - opts.priority);
-    if (opts.delayMs  && opts.delayMs > 0) jobOpts.delay  = opts.delayMs;
+    // Insert maintaining descending priority order
+    const queue = this.queues.get(name)!;
+    const idx   = queue.findIndex(j => j.priority < job.priority);
+    if (idx === -1) queue.push(job as PendingJob);
+    else            queue.splice(idx, 0, job as PendingJob);
 
-    queue.add(name, data as Record<string, unknown>, jobOpts).catch(err => {
-      log.warn({ err, queue: name }, "Failed to enqueue job");
-    });
+    if (opts.delayMs && opts.delayMs > 0) {
+      setTimeout(() => { void this._drain(name); }, opts.delayMs);
+    } else {
+      setImmediate(() => { void this._drain(name); });
+    }
 
     return true;
   }
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
+  // ── Drain ─────────────────────────────────────────────────────────────────────
+
+  private async _drain(name: QueueName): Promise<void> {
+    const config = QUEUE_CONFIG[name];
+    const active = this.active.get(name)!;
+    if (active >= config.concurrency) return;
+
+    const queue = this.queues.get(name)!;
+    const job   = queue.shift();
+    if (!job) return;
+
+    // Clear dedup as soon as job starts so re-enqueue after completion works
+    if (job.dedupKey) {
+      this.dedup.get(name)!.delete(job.dedupKey);
+    }
+
+    this.active.set(name, active + 1);
+
+    const handler = this.handlers.get(name);
+    if (!handler) {
+      log.warn({ queue: name }, "No handler registered for queue — job dropped");
+      this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
+      setImmediate(() => { void this._drain(name); });
+      return;
+    }
+
+    let retrying = false;
+    try {
+      job.attempts++;
+      await handler(job.data, job.attempts);
+      this.stats.get(name)!.processed++;
+    } catch (err) {
+      log.warn({ queue: name, jobId: job.id, attempt: job.attempts, err }, "Job failed");
+      if (job.attempts < job.maxAttempts) {
+        retrying = true;
+        const delay = 2_000 * job.attempts;
+        if (job.dedupKey) this.dedup.get(name)!.add(job.dedupKey);
+        setTimeout(() => {
+          const q = this.queues.get(name)!;
+          q.unshift(job);
+          void this._drain(name);
+        }, delay);
+      } else {
+        this.stats.get(name)!.failed++;
+      }
+    } finally {
+      if (!retrying) {
+        this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
+      } else {
+        // Release the slot while waiting for the backoff re-queue.
+        this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
+      }
+      setImmediate(() => { void this._drain(name); });
+    }
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────────
 
   getStatus(): Record<QueueName, { waiting: number; active: number; processed: number; failed: number }> {
     const result = {} as Record<QueueName, { waiting: number; active: number; processed: number; failed: number }>;
     for (const name of Object.keys(QUEUE_CONFIG) as QueueName[]) {
-      const s = this.stats.get(name as QueueName)!;
       result[name as QueueName] = {
-        waiting:   s.waiting,
-        active:    0, // BullMQ tracks this internally; not critical for dashboard
-        processed: s.processed,
-        failed:    s.failed,
+        waiting:   this.queues.get(name as QueueName)!.length,
+        active:    this.active.get(name as QueueName)!,
+        processed: this.stats.get(name as QueueName)!.processed,
+        failed:    this.stats.get(name as QueueName)!.failed,
       };
     }
     return result;
   }
 
-  /** Total jobs waiting across all queues (cached; updated every 5 s in worker). */
+  /** Total jobs waiting across all queues */
   totalWaiting(): number {
-    return this.cachedTotalWaiting;
+    let n = 0;
+    for (const q of this.queues.values()) n += q.length;
+    return n;
   }
 
   async close(): Promise<void> {
-    await Promise.all([
-      ...Array.from(this.workers.values()).map(w => w.close()),
-      ...Array.from(this.queues.values()).map(q => q.close()),
-    ]);
+    // In-process queue — nothing durable to tear down.
   }
 }
 
-/** Singleton queue shared across the entire process. */
+/** Singleton queue shared across the entire API server process. */
 export const pipelineQueue = new PipelineQueue();

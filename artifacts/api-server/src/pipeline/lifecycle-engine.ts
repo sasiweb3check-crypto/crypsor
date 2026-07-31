@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { eventBus, type PriceUpdatedEvent } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
+import { CoalesceQueue } from "../lib/async-pool";
 
 // ── Market cap lifecycle thresholds (USD) ─────────────────────────────────────
 const MC = {
@@ -137,8 +138,22 @@ async function applyLifecycle(e: PriceUpdatedEvent): Promise<void> {
 }
 
 export function startLifecycleEngine() {
+  // Coalesce + bound concurrency: a price refresh can emit hundreds of
+  // price:updated events; firing applyLifecycle for each in parallel exhausted
+  // the Postgres pool and contributed to Render crash loops.
+  const pending = new Map<number, PriceUpdatedEvent>();
+  const queue = new CoalesceQueue(
+    async (tokenId) => {
+      const evt = pending.get(tokenId);
+      pending.delete(tokenId);
+      if (evt) await applyLifecycle(evt);
+    },
+    { concurrency: 3, debounceMs: 150 },
+  );
+
   eventBus.on("price:updated", (e) => {
-    applyLifecycle(e).catch(() => {});
+    pending.set(e.tokenId, e); // keep latest payload per token
+    queue.schedule(e.tokenId);
   });
   logger.info(
     `Lifecycle engine started — hysteresis: ${ARCHIVE_CONSECUTIVE_REQUIRED} consecutive checks to archive ` +

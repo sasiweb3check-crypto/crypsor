@@ -219,9 +219,8 @@ async function refreshCycle(): Promise<void> {
           dedupKey: `holders:${token.id}`,
         },
       );
-      // BullMQ dedup is async — enqueue() always returns true; count every call.
-      void added;
-      enqueued++;
+      if (added) enqueued++;
+      else skipped++;
     }
 
     healthMonitor.ok("holders-refresh", Date.now() - t0);
