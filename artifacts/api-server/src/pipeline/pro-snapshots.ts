@@ -59,6 +59,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         t.intelligence_score         AS intel_score,
         t.holder_velocity_score,
         t.liquidity_usd,
+        t.holder_count,
+        t.mc_growth_score,
+        t.volume_intensity_score,
         t.sec_is_honeypot,
         t.sec_mint_renounced,
         t.sec_freeze_renounced,
@@ -85,6 +88,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       smart_count: number | null; intel_score: number | null;
       holder_velocity_score: number | null;
       liquidity_usd: string | null;
+      holder_count: number | null;
+      mc_growth_score: number | null;
+      volume_intensity_score: number | null;
       sec_is_honeypot: boolean | null;
       sec_mint_renounced: boolean | null;
       sec_freeze_renounced: boolean | null;
@@ -131,6 +137,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         secLpLocked:          r.sec_lp_locked,
         secRatTraderAmtRate:  r.sec_rat_trader_amt_rate,
       });
+
+      const kolDelta = (r.kol_count ?? 0) - (r.called_kol_count ?? 0);
+      const smartDelta = (r.smart_count ?? 0) - (r.called_smart_count ?? 0);
 
       const existingFlags: Record<string, boolean | null> = {
         hit_2x:   r.hit_2x,
@@ -180,7 +189,9 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         INSERT INTO pro_snapshots (
           pro_call_id, token_id, mc_usd, kol_count, smart_count, intel_score, ath_multiple,
           survival_score, pro_score, quality_label, gain_pct, run_status,
-          holder_velocity_score, age_hours
+          holder_velocity_score, age_hours,
+          holder_count, mc_growth_score, volume_intensity_score, liquidity_usd,
+          kol_delta, smart_delta
         )
         VALUES (
           ${r.pro_call_id}, ${r.token_id},
@@ -188,7 +199,12 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           ${r.kol_count ?? 0}, ${r.smart_count ?? 0},
           ${r.intel_score ?? null}, ${multiple},
           ${survivalScore}, ${proScore}, ${qualityLabel}, ${gainPct}, ${runStatus},
-          ${r.holder_velocity_score ?? null}, ${ageHours}
+          ${r.holder_velocity_score ?? null}, ${ageHours},
+          ${r.holder_count ?? null},
+          ${r.mc_growth_score ?? null},
+          ${r.volume_intensity_score ?? null},
+          ${r.liquidity_usd ?? null},
+          ${kolDelta}, ${smartDelta}
         )
       `);
 

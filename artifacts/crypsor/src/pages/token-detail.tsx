@@ -114,9 +114,58 @@ interface ProCallData {
   calledIntelScore: number | null;
   calledKolCount: number;
   calledSmartCount: number;
+  calledHolderVelocity?: number | null;
   athMultiple: number | null;
   proScore: number | null;
   qualityLabel: string | null;
+  survivalScore?: number | null;
+  entryTier?: string | null;
+  liveKol?: number;
+  liveSmart?: number;
+  liveHv?: number | null;
+  currentMcUsd?: number | null;
+  runStatus?: string | null;
+  socials?: { twitter?: string; telegram?: string; website?: string };
+  hit2x?: boolean; hit5x?: boolean; hit10x?: boolean;
+  hit2xAt?: string | null; hit5xAt?: string | null; hit10xAt?: string | null;
+  kolSmartSource?: string | null;
+  callAlertSentAt?: string | null;
+}
+
+interface ProSnapshotRow {
+  snapshotAt: string;
+  mcUsd: number | null;
+  gainPct: number | null;
+  athMultiple: number | null;
+  kolCount: number;
+  smartCount: number;
+  kolDelta: number;
+  smartDelta: number;
+  holderVelocityScore: number | null;
+  survivalScore: number | null;
+  runStatus: string | null;
+}
+
+interface ProPostmortem {
+  severity: string;
+  headline: string;
+  summary: string;
+  notes: string[];
+  entry: { mcUsd: number | null; intel: number | null; kol: number; smart: number; hv: number | null; tier: string | null; at: string };
+  now: {
+    mcUsd: number | null; gainPct: number | null; athMultiple: number | null;
+    kol: number; smart: number; kolDelta: number; smartDelta: number;
+    hv: number | null; survival: number | null; proScore: number | null; runStatus: string | null;
+    liquidityUsd: number | null; holders: number | null;
+  };
+  milestones: Array<{ tier: number; hit: boolean; at: string | null }>;
+  socials: { twitter?: string; telegram?: string; website?: string };
+}
+
+interface ProTokenResponse {
+  proCall: ProCallData | null;
+  postmortem: ProPostmortem | null;
+  snapshots: ProSnapshotRow[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -284,7 +333,7 @@ export default function TokenDetailPage() {
     staleTime: 2 * 60_000,
   });
 
-  const { data: proCallData } = useQuery<{ proCall: ProCallData | null }>({
+  const { data: proPack } = useQuery<ProTokenResponse>({
     queryKey: ["token-pro-call", id],
     queryFn: async () => {
       const r = await fetch(`${BASE}api/pro/token/${id}`);
@@ -292,8 +341,10 @@ export default function TokenDetailPage() {
       return r.json();
     },
     enabled: id != null,
-    staleTime: 5 * 60_000,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   });
+  const proCallData = proPack;
 
   const handleRefresh = useCallback(async () => {
     if (!id || refreshing) return;
@@ -350,6 +401,9 @@ export default function TokenDetailPage() {
 
   // Pro call MC reference
   const calledMc = proCallData?.proCall?.calledMcUsd ?? null;
+  const pm = proCallData?.postmortem ?? null;
+  const proSnaps = proCallData?.snapshots ?? [];
+  const proSocials = pm?.socials ?? proCallData?.proCall?.socials ?? {};
 
   return (
     <div className="space-y-4">
@@ -500,11 +554,130 @@ export default function TokenDetailPage() {
         </div>
       )}
 
+      {/* ── Pro Desk (trader view) ───────────────────────────────────────────── */}
+      {pm && proCallData?.proCall && (
+        <div className="border border-[#30363d] bg-[#0d1117] p-4 space-y-3">
+          <div className="flex items-start justify-between gap-2 flex-wrap">
+            <div>
+              <div className="text-[9px] text-[#484f58] uppercase tracking-widest">Pro Desk</div>
+              <div className="text-sm font-bold text-[#c9d1d9]">{pm.headline}</div>
+              <div className="text-[10px] text-[#8b949e] mt-0.5">{pm.summary}</div>
+            </div>
+            <div className="text-right text-[10px] space-y-0.5">
+              <div className="text-[#a78bfa] font-bold">Pro {Math.round(pm.now.proScore ?? 0)}</div>
+              <div className="text-[#06b6d4]">Survive {Math.round(pm.now.survival ?? 0)}</div>
+              <div className="text-[#484f58] uppercase tracking-widest">{pm.now.runStatus ?? "—"}</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <StatCard label="Entry MC" value={pm.entry.mcUsd != null ? fmtMc(pm.entry.mcUsd) : "—"} sub={pm.entry.tier ?? undefined} accent />
+            <StatCard
+              label="Gain from Call"
+              value={<span className={gainColor(pm.now.gainPct)}>{pm.now.gainPct != null ? `${pm.now.gainPct >= 0 ? "+" : ""}${pm.now.gainPct.toFixed(0)}%` : "—"}</span>}
+              sub={pm.now.athMultiple != null ? `ATH ${pm.now.athMultiple.toFixed(1)}×` : undefined}
+            />
+            <StatCard
+              label="KOL @ call → now"
+              value={`K${pm.entry.kol} → ${pm.now.kol}`}
+              sub={pm.now.kolDelta !== 0 ? `${pm.now.kolDelta > 0 ? "+" : ""}${pm.now.kolDelta} since call` : "flat"}
+            />
+            <StatCard
+              label="Smart @ call → now"
+              value={`S${pm.entry.smart} → ${pm.now.smart}`}
+              sub={pm.now.smartDelta !== 0 ? `${pm.now.smartDelta > 0 ? "+" : ""}${pm.now.smartDelta} since call` : "flat"}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-[10px]">
+            <div className="border border-[#30363d] p-2">
+              <div className="text-[#484f58] uppercase tracking-widest text-[8px]">Intel / HV</div>
+              <div className="text-[#c9d1d9] font-bold tabular-nums">
+                {Math.round(pm.entry.intel ?? 0)} · HV {Math.round(pm.entry.hv ?? pm.now.hv ?? 0)}
+              </div>
+            </div>
+            <div className="border border-[#30363d] p-2">
+              <div className="text-[#484f58] uppercase tracking-widest text-[8px]">Milestones</div>
+              <div className="flex gap-1.5 mt-0.5 font-bold">
+                {pm.milestones.map(m => (
+                  <span key={m.tier} style={{ color: m.hit ? "#22c55e" : "#30363d" }}>{m.tier}×</span>
+                ))}
+              </div>
+            </div>
+            <div className="border border-[#30363d] p-2">
+              <div className="text-[#484f58] uppercase tracking-widest text-[8px]">Liq / Holders</div>
+              <div className="text-[#c9d1d9] font-bold tabular-nums">
+                {pm.now.liquidityUsd != null ? fmtMc(pm.now.liquidityUsd) : "—"} · {pm.now.holders ?? "—"}
+              </div>
+            </div>
+          </div>
+
+          {(proSocials.twitter || proSocials.telegram || proSocials.website) && (
+            <div className="flex flex-wrap gap-3 text-[10px]">
+              {proSocials.twitter && (
+                <a href={proSocials.twitter} target="_blank" rel="noopener noreferrer" className="text-[#60a5fa] hover:underline">Twitter</a>
+              )}
+              {proSocials.telegram && (
+                <a href={proSocials.telegram} target="_blank" rel="noopener noreferrer" className="text-[#22c55e] hover:underline">Telegram</a>
+              )}
+              {proSocials.website && (
+                <a href={proSocials.website} target="_blank" rel="noopener noreferrer" className="text-[#f59e0b] hover:underline">Website</a>
+              )}
+            </div>
+          )}
+
+          {pm.notes.length > 0 && (
+            <ul className="text-[10px] text-[#8b949e] space-y-1 list-disc pl-4">
+              {pm.notes.map((n, i) => <li key={i}>{n}</li>)}
+            </ul>
+          )}
+
+          {proSnaps.length > 1 && (
+            <div>
+              <div className="text-[9px] text-[#484f58] uppercase tracking-widest mb-2">Gain from call (Pro snapshots)</div>
+              <div className="h-36">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={proSnaps.filter(s => s.gainPct != null).map(s => ({
+                    ts: new Date(s.snapshotAt).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" }),
+                    gain: Math.round(s.gainPct!),
+                    kol: s.kolCount,
+                    smart: s.smartCount,
+                  }))}>
+                    <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
+                    <XAxis dataKey="ts" tick={{ fill: "#484f58", fontSize: 9 }} />
+                    <YAxis tick={{ fill: "#484f58", fontSize: 9 }} />
+                    <Tooltip contentStyle={{ background: "#0d1117", border: "1px solid #30363d", fontSize: 11 }} />
+                    <ReferenceLine y={0} stroke="#30363d" />
+                    <Area type="monotone" dataKey="gain" stroke="#f59e0b" fill="#f59e0b22" name="Gain %" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="h-28 mt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={proSnaps.map(s => ({
+                    ts: new Date(s.snapshotAt).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" }),
+                    kol: s.kolCount,
+                    smart: s.smartCount,
+                  }))}>
+                    <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
+                    <XAxis dataKey="ts" tick={{ fill: "#484f58", fontSize: 9 }} />
+                    <YAxis tick={{ fill: "#484f58", fontSize: 9 }} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: "#0d1117", border: "1px solid #30363d", fontSize: 11 }} />
+                    <Line type="monotone" dataKey="smart" stroke="#06b6d4" dot={false} name="Smart" />
+                    <Line type="monotone" dataKey="kol" stroke="#a855f7" dot={false} name="KOL" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Postmortem ───────────────────────────────────────────────────────── */}
       <div>
         <div className="text-[9px] text-[#484f58] uppercase tracking-widest flex items-center gap-2 mb-3">
           <FileSearch className="w-3 h-3" />
-          <span>Postmortem · Price &amp; Intel History</span>
+          <span>Price &amp; Intel History</span>
           {token.tokenCreatedAt && (
             <span className="ml-auto flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />

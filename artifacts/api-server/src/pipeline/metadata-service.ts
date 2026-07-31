@@ -204,29 +204,58 @@ async function enrichToken(job: MetadataJobData): Promise<void> {
       }
     }
 
-    // PumpFun coin endpoint — fetch name/symbol AND logo for any Solana token
-    // that either had no DexScreener data or DexScreener returned no imageUrl.
-    if (job.chain === "solana" && (!data || !data.logoUri)) {
+    // PumpFun coin endpoint — name/symbol/logo only. Never wipe Dex socials.
+    if (job.chain === "solana" && (!data || !data.logoUri || !data.name || !data.symbol)) {
       try {
         const coinResp = await fetch(
           `https://frontend-api.pump.fun/coins/${job.tokenAddress}`,
           { signal: AbortSignal.timeout(8_000), headers: { Accept: "application/json" } },
         );
         if (coinResp.ok) {
-          const coin = await coinResp.json() as { name?: string; symbol?: string; image_uri?: string };
+          const coin = await coinResp.json() as {
+            name?: string; symbol?: string; image_uri?: string;
+            twitter?: string; telegram?: string; website?: string;
+          };
           if (!data) {
-            data = { name: coin.name ?? null, symbol: coin.symbol ?? null,
-                     priceUsd: null, logoUri: coin.image_uri ?? null,
-                     marketCapUsd: null, fdvUsd: null, liquidityUsd: null,
-                     volume24hUsd: null, tokenCreatedAt: null };
+            data = {
+              name: coin.name ?? null, symbol: coin.symbol ?? null,
+              priceUsd: null, logoUri: coin.image_uri ?? null,
+              marketCapUsd: null, fdvUsd: null, liquidityUsd: null,
+              volume24hUsd: null, tokenCreatedAt: null,
+            };
+            rawPayload = {
+              pairs: [],
+              pumpfun: coin,
+              twitter: coin.twitter, telegram: coin.telegram, website: coin.website,
+            };
           } else {
-            if (!data.name   && coin.name)       data.name      = coin.name;
-            if (!data.symbol && coin.symbol)     data.symbol    = coin.symbol;
-            if (!data.logoUri && coin.image_uri) data.logoUri   = coin.image_uri;
+            if (!data.name && coin.name) data.name = coin.name;
+            if (!data.symbol && coin.symbol) data.symbol = coin.symbol;
+            if (!data.logoUri && coin.image_uri) data.logoUri = coin.image_uri;
+            // Merge socials into existing Dex pairs payload without replacing it
+            if (Array.isArray(rawPayload)) {
+              rawPayload = {
+                pairs: rawPayload,
+                pumpfun: { twitter: coin.twitter, telegram: coin.telegram, website: coin.website },
+                twitter: coin.twitter, telegram: coin.telegram, website: coin.website,
+              };
+            } else if (rawPayload && typeof rawPayload === "object") {
+              rawPayload = {
+                ...(rawPayload as Record<string, unknown>),
+                pumpfun: { twitter: coin.twitter, telegram: coin.telegram, website: coin.website },
+                twitter: coin.twitter ?? (rawPayload as Record<string, unknown>).twitter,
+                telegram: coin.telegram ?? (rawPayload as Record<string, unknown>).telegram,
+                website: coin.website ?? (rawPayload as Record<string, unknown>).website,
+              };
+            }
           }
-          rawPayload = coin;
         }
       } catch { /* non-fatal */ }
+    }
+
+    // Also wrap bare pairs array so extractSocials always sees { pairs }
+    if (Array.isArray(rawPayload)) {
+      rawPayload = { pairs: rawPayload };
     }
 
     if (!data) return;

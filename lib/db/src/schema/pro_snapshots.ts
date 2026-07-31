@@ -1,9 +1,8 @@
 /**
  * pro_snapshots
  *
- * Periodic snapshots (every 5 min) of market data for all pro-called tokens.
- * Sourced from tracked_tokens (already maintained by the main pipeline) — no
- * extra GMGN calls needed.
+ * Periodic snapshots of market + intel state for pro-called tokens after the
+ * call freeze. Used by trader detail charts and milestone / postmortem views.
  */
 
 import {
@@ -21,21 +20,19 @@ export const pro_snapshots = pgTable(
   {
     id:           serial("id").primaryKey(),
 
-    proCallId:    integer("pro_call_id").notNull(),  // FK -> pro_calls.id
-    tokenId:      integer("token_id").notNull(),      // FK -> tracked_tokens.id
+    proCallId:    integer("pro_call_id").notNull(),
+    tokenId:      integer("token_id").notNull(),
 
     snapshotAt:   timestamp("snapshot_at").defaultNow().notNull(),
 
-    // ── Market state at snapshot time ────────────────────────────────────────
     mcUsd:        text("mc_usd"),
     kolCount:     integer("kol_count").default(0),
     smartCount:   integer("smart_count").default(0),
     intelScore:   real("intel_score"),
 
-    // ── ATH multiple at this snapshot (current_mc / called_mc) ──────────────
+    // Current MC / called MC at this snapshot (not the running max ATH)
     athMultiple:  real("ath_multiple"),
 
-    // ── Pro Score v2 snapshot fields (survival / age tracking) ───────────────
     survivalScore:        real("survival_score"),
     proScore:             real("pro_score"),
     qualityLabel:         text("quality_label"),
@@ -43,6 +40,15 @@ export const pro_snapshots = pgTable(
     runStatus:            text("run_status"),
     holderVelocityScore:  real("holder_velocity_score"),
     ageHours:             real("age_hours"),
+
+    // ── Enriched trader intel (added for Pro postmortem / detail) ────────────
+    holderCount:          integer("holder_count"),
+    mcGrowthScore:        real("mc_growth_score"),
+    volumeIntensityScore: real("volume_intensity_score"),
+    liquidityUsd:         text("liquidity_usd"),
+    // Deltas vs call freeze (positive = more KOL/smart arrived after call)
+    kolDelta:             integer("kol_delta").default(0),
+    smartDelta:           integer("smart_delta").default(0),
   },
   (t) => [
     index("pro_snapshots_call_snap_idx").on(t.proCallId, t.snapshotAt),

@@ -1,34 +1,28 @@
 /**
- * Caller Alerts
+ * Pro Caller Alerts — rebuilt from scratch
  *
- * Two alert types — no signal/postmortem label alerts at all:
+ * 1. First Call alert — once when a token enters Pro (good | very_good) and is
+ *    scored. Stored on pro_calls.call_alert_sent_at (never on tracked_tokens).
  *
- *   1. New Call alert — fires exactly ONCE when a token first enters pro_calls
- *      with quality_label = 'very_good'.  Persisted via lastAlertedLabel =
- *      '__NEW_CALL__'.  Label changes after this point are ignored — no
- *      duplicate call alerts, ever.
+ * 2. Milestone alerts — each of 2× / 5× / 10× / 20× from called_mc fires once.
+ *    Stored in pro_calls.milestone_alerts_sent ("2,5,10"). Every crossed tier
+ *    is sent (not only the highest jump).
  *
- *   2. Milestone alert — fires once each at 2×, 5×, 10× ATH from called MC,
- *      for any quality token (very_good + good).  Persisted in
- *      athAlertMultiple — each tier fires exactly once, ever.
- *
- * Cycle: every 5 minutes, 35 s after startup.
+ * Trader payload: entry MC, now MC, gain, ATH, KOL/smart @ call + now, HV,
+ * survival, Pro score, CA, GMGN, socials.
  */
 
 import { db } from "@workspace/db";
-import { tracked_tokens, settings } from "@workspace/db";
-import { sql, eq } from "drizzle-orm";
+import { settings } from "@workspace/db";
+import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { extractSocials, type Socials } from "../lib/socials";
 
 const log = logger.child({ module: "caller-alerts" });
 
-const CHECK_INTERVAL_MS = 60_000; // was 5 min — align with on-time Pro path
-
-// Only 2×, 5×, 10× — no 3× noise
-const ALERT_MILESTONES = [2, 5, 10] as const;
-
-// ── Telegram helpers ──────────────────────────────────────────────────────────
+const CHECK_INTERVAL_MS = 30_000;
+const STARTUP_DELAY_MS = 20_000;
+const ALERT_MILESTONES = [2, 5, 10, 20] as const;
 
 async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } | null> {
   try {
@@ -37,10 +31,12 @@ async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } 
       .from(settings)
       .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id')`);
     const botToken = rows.find(r => r.key === "telegram_bot_token")?.value?.trim() ?? "";
-    const chatId   = rows.find(r => r.key === "telegram_chat_id")?.value?.trim()   ?? "";
+    const chatId = rows.find(r => r.key === "telegram_chat_id")?.value?.trim() ?? "";
     if (!botToken || !chatId) return null;
     return { botToken, chatId };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 async function sendTelegram(
@@ -48,10 +44,10 @@ async function sendTelegram(
   text: string,
 ): Promise<void> {
   const resp = await fetch(`https://api.telegram.org/bot${creds.botToken}/sendMessage`, {
-    method:  "POST",
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      chat_id:    creds.chatId,
+      chat_id: creds.chatId,
       text,
       parse_mode: "MarkdownV2",
       disable_web_page_preview: false,
@@ -63,14 +59,18 @@ async function sendTelegram(
   }
 }
 
-// ── Formatting helpers ────────────────────────────────────────────────────────
-
 function fmtMc(usd: string | number | null | undefined): string {
   const n = typeof usd === "string" ? parseFloat(usd) : (usd ?? 0);
   if (!n || !isFinite(n)) return "—";
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000)     return `$${(n / 1_000).toFixed(1)}K`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
   return `$${n.toFixed(0)}`;
+}
+
+function fmtPct(n: number | null | undefined): string {
+  if (n == null || !isFinite(n)) return "—";
+  const sign = n >= 0 ? "+" : "";
+  return `${sign}${n.toFixed(0)}%`;
 }
 
 function esc(s: string): string {
@@ -78,94 +78,117 @@ function esc(s: string): string {
 }
 
 function gmgnLink(chain: string, address: string): string {
-  return chain === "solana"
+  return chain === "solana" || chain === "sol"
     ? `https://gmgn\\.ai/sol/token/${address}`
     : `https://dexscreener\\.com/${esc(chain)}/${address}`;
 }
 
-function socialLines(socials: Socials): string[] {
-  const lines: string[] = [];
-  if (socials.twitter)  lines.push(`🐦 [Twitter](${socials.twitter})`);
-  if (socials.telegram) lines.push(`✈️ [Telegram](${socials.telegram})`);
-  if (socials.website)  lines.push(`🌐 [Website](${socials.website})`);
-  return lines;
+function socialBlock(socials: Socials): string[] {
+  const out: string[] = [];
+  if (socials.twitter) out.push(`🐦 ${esc(socials.twitter)}`);
+  if (socials.telegram) out.push(`✈️ ${esc(socials.telegram)}`);
+  if (socials.website) out.push(`🌐 ${esc(socials.website)}`);
+  return out;
 }
 
-// ── Token type ────────────────────────────────────────────────────────────────
-
-interface QualityToken {
-  id: number;
+interface ProAlertToken {
+  proCallId: number;
+  tokenId: number;
   address: string;
   chain: string;
   name: string | null;
   symbol: string | null;
-  intelligenceScore: number | null;
-  holderKolCount: number;
-  holderSmartCount: number;
-  lastAlertedLabel: string | null;
-  athAlertMultiple: number;
   rawMetadata: unknown;
-  // from pro_calls
-  calledAt: string;
+  calledAt: string | Date;
   calledMcUsd: string | null;
-  calledIntelScore: number | null;
-  calledKolCount: number;
-  calledSmartCount: number;
+  calledIntel: number | null;
+  calledKol: number;
+  calledSmart: number;
+  calledHv: number | null;
   athMultiple: number | null;
-  proScore: number;
+  proScore: number | null;
+  survivalScore: number | null;
   qualityLabel: string;
+  entryTier: string | null;
+  callAlertSentAt: string | Date | null;
+  milestoneAlertsSent: string | null;
+  currentMc: string | null;
+  liveKol: number;
+  liveSmart: number;
+  liveIntel: number | null;
+  liveHv: number | null;
+  liquidityUsd: string | null;
+  holderCount: number | null;
+  secMint: boolean | null;
+  secFreeze: boolean | null;
+  secHoneypot: boolean | null;
 }
 
-// ── Message builders ──────────────────────────────────────────────────────────
+function parseSentTiers(raw: string | null | undefined): Set<number> {
+  if (!raw) return new Set();
+  return new Set(
+    raw.split(",").map(s => parseFloat(s.trim())).filter(n => Number.isFinite(n) && n > 0),
+  );
+}
 
-function buildNewCallMessage(t: QualityToken): string {
-  const name   = esc(t.name   ?? "Unknown");
+function buildFirstCallMessage(t: ProAlertToken): string {
+  const name = esc(t.name ?? "Unknown");
   const symbol = esc(t.symbol ?? "?");
-
+  const quality = t.qualityLabel === "very_good" ? "Very Good" : "Good";
+  const socials = extractSocials(t.rawMetadata);
   const lines = [
-    `⭐ *${name}* \\(${symbol}\\) — *New Pro Call*`,
+    `⭐ *PRO CALL* — *${name}* \\(${symbol}\\)`,
     ``,
-    `Very Good · Score: *${Math.round(t.proScore)}*`,
-    `Intel: *${Math.round(t.calledIntelScore ?? t.intelligenceScore ?? 0)}* · KOL: ${t.calledKolCount} · Smart: ${t.calledSmartCount}`,
-    `Called MC: *${esc(fmtMc(t.calledMcUsd))}*`,
+    `${esc(quality)} · Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}*`,
+    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}*${t.entryTier ? ` · ${esc(t.entryTier)}` : ""}`,
+    `Intel *${Math.round(t.calledIntel ?? 0)}* · HV *${Math.round(t.calledHv ?? 0)}*`,
+    `KOL *${t.calledKol}* · Smart *${t.calledSmart}* @ call`,
+    t.liquidityUsd ? `Liq: *${esc(fmtMc(t.liquidityUsd))}*` : null,
+    t.secHoneypot === true ? `⚠️ Honeypot flag` : null,
+    t.secMint === false || t.secFreeze === false
+      ? `Auth: mint ${t.secMint === true ? "renounced" : "OPEN"} · freeze ${t.secFreeze === true ? "renounced" : "OPEN"}`
+      : null,
     ``,
     `\`${t.address}\``,
-    ``,
-    `🔗 [View on GMGN](${gmgnLink(t.chain, t.address)})`,
+    `🔗 [GMGN](${gmgnLink(t.chain, t.address)})`,
     ...(() => {
-      const s = socialLines(extractSocials(t.rawMetadata));
+      const s = socialBlock(socials);
+      return s.length ? ["", ...s] : [];
+    })(),
+  ].filter((x): x is string => x != null);
+  return lines.join("\n");
+}
+
+function buildMilestoneMessage(t: ProAlertToken, tier: number): string {
+  const name = esc(t.name ?? "Unknown");
+  const symbol = esc(t.symbol ?? "?");
+  const called = parseFloat(t.calledMcUsd ?? "0") || 0;
+  const current = parseFloat(t.currentMc ?? "0") || 0;
+  const athX = t.athMultiple ?? (called > 0 ? current / called : 1);
+  const gain = called > 0 ? ((current - called) / called) * 100 : null;
+  const athMc = called > 0 ? called * athX : null;
+  const emoji: Record<number, string> = { 2: "🔥", 5: "🚀", 10: "💎", 20: "👑" };
+  const socials = extractSocials(t.rawMetadata);
+  const kolDelta = t.liveKol - t.calledKol;
+  const smartDelta = t.liveSmart - t.calledSmart;
+
+  const lines = [
+    `${emoji[tier] ?? "🏆"} *${name}* \\(${symbol}\\) hit *${tier}×*`,
+    ``,
+    `Entry *${esc(fmtMc(t.calledMcUsd))}* → Now *${esc(fmtMc(t.currentMc))}* \\(${esc(fmtPct(gain))}\\)`,
+    `ATH *${esc(athX.toFixed(1))}×* \\(~${esc(fmtMc(athMc))}\\)`,
+    `Pro *${Math.round(t.proScore ?? 0)}* · Survive *${Math.round(t.survivalScore ?? 0)}* · HV *${Math.round(t.liveHv ?? t.calledHv ?? 0)}*`,
+    `KOL ${t.calledKol}→${t.liveKol}${kolDelta !== 0 ? ` \\(${kolDelta >= 0 ? "+" : ""}${kolDelta}\\)` : ""} · Smart ${t.calledSmart}→${t.liveSmart}${smartDelta !== 0 ? ` \\(${smartDelta >= 0 ? "+" : ""}${smartDelta}\\)` : ""}`,
+    ``,
+    `\`${t.address}\``,
+    `🔗 [GMGN](${gmgnLink(t.chain, t.address)})`,
+    ...(() => {
+      const s = socialBlock(socials);
       return s.length ? ["", ...s] : [];
     })(),
   ];
   return lines.join("\n");
 }
-
-function buildMilestoneMessage(t: QualityToken, tier: number): string {
-  const name   = esc(t.name   ?? "Unknown");
-  const symbol = esc(t.symbol ?? "?");
-  const athMc  = t.calledMcUsd ? parseFloat(t.calledMcUsd) * tier : null;
-
-  const tierEmoji: Record<number, string> = { 2: "🔥", 5: "🚀", 10: "💎" };
-  const emoji = tierEmoji[tier] ?? "🏆";
-
-  const lines = [
-    `${emoji} *${name}* \\(${symbol}\\) hit *${tier}×* from call\\!`,
-    ``,
-    `Called: *${esc(fmtMc(t.calledMcUsd))}* → ATH est\\.: *${esc(fmtMc(athMc))}*`,
-    `Intel: *${Math.round(t.calledIntelScore ?? t.intelligenceScore ?? 0)}* · KOL: ${t.calledKolCount} · Smart: ${t.calledSmartCount}`,
-    ``,
-    `\`${t.address}\``,
-    ``,
-    `🔗 [View on GMGN](${gmgnLink(t.chain, t.address)})`,
-    ...(() => {
-      const s = socialLines(extractSocials(t.rawMetadata));
-      return s.length ? ["", ...s] : [];
-    })(),
-  ];
-  return lines.join("\n");
-}
-
-// ── Main check loop ───────────────────────────────────────────────────────────
 
 async function checkAndAlert(): Promise<void> {
   const creds = await getTelegramCreds();
@@ -174,109 +197,118 @@ async function checkAndAlert(): Promise<void> {
     return;
   }
 
-  // Fetch quality tokens with their pro_calls data.
-  // ath_multiple is relative to called_mc_usd (correct base for milestone detection).
   const rows = await db.execute(sql`
     SELECT
-      t.id,
+      pc.id                    AS "proCallId",
+      pc.token_id              AS "tokenId",
       t.address,
       t.chain,
       t.name,
       t.symbol,
-      t.intelligence_score    AS "intelligenceScore",
-      t.holder_kol_count      AS "holderKolCount",
-      t.holder_smart_count    AS "holderSmartCount",
-      t.last_alerted_label    AS "lastAlertedLabel",
-      t.ath_alert_multiple    AS "athAlertMultiple",
-      t.raw_metadata          AS "rawMetadata",
-      pc.called_at            AS "calledAt",
-      pc.called_mc_usd        AS "calledMcUsd",
-      pc.called_intel_score   AS "calledIntelScore",
-      pc.called_kol_count     AS "calledKolCount",
-      pc.called_smart_count   AS "calledSmartCount",
-      pc.ath_multiple         AS "athMultiple",
-      pc.pro_score            AS "proScore",
-      pc.quality_label        AS "qualityLabel"
+      t.raw_metadata           AS "rawMetadata",
+      pc.called_at             AS "calledAt",
+      pc.called_mc_usd         AS "calledMcUsd",
+      pc.called_intel_score    AS "calledIntel",
+      COALESCE(pc.called_kol_count, 0)   AS "calledKol",
+      COALESCE(pc.called_smart_count, 0) AS "calledSmart",
+      pc.called_holder_velocity AS "calledHv",
+      pc.ath_multiple          AS "athMultiple",
+      pc.pro_score             AS "proScore",
+      pc.survival_score        AS "survivalScore",
+      pc.quality_label         AS "qualityLabel",
+      pc.entry_tier            AS "entryTier",
+      pc.call_alert_sent_at    AS "callAlertSentAt",
+      pc.milestone_alerts_sent AS "milestoneAlertsSent",
+      t.market_cap_usd         AS "currentMc",
+      COALESCE(t.holder_kol_count, 0)   AS "liveKol",
+      COALESCE(t.holder_smart_count, 0) AS "liveSmart",
+      t.intelligence_score     AS "liveIntel",
+      t.holder_velocity_score  AS "liveHv",
+      t.liquidity_usd          AS "liquidityUsd",
+      t.holder_count           AS "holderCount",
+      t.sec_mint_renounced     AS "secMint",
+      t.sec_freeze_renounced   AS "secFreeze",
+      t.sec_is_honeypot        AS "secHoneypot"
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     WHERE pc.quality_label IN ('very_good', 'good')
+      AND (
+        pc.call_alert_sent_at IS NULL
+        OR COALESCE(pc.ath_multiple, 1) >= 2
+      )
+    ORDER BY pc.called_at DESC
+    LIMIT 200
   `);
 
-  const tokens = rows.rows as QualityToken[];
-
-  let newCallSent   = 0;
+  const tokens = rows.rows as unknown as ProAlertToken[];
+  let firstCallSent = 0;
   let milestoneSent = 0;
 
   for (const t of tokens) {
-    // ── Alert 1: New Call — very_good only, fires exactly once ──────────────
-    // lastAlertedLabel = null  → call alert not yet sent → fire now (very_good only)
-    // lastAlertedLabel = any   → already sent → skip entirely (no label-change alerts)
-    if (t.lastAlertedLabel === null && t.qualityLabel === "very_good") {
+    // ── 1. First Pro call alert ────────────────────────────────────────────
+    if (!t.callAlertSentAt) {
       try {
-        await sendTelegram(creds, buildNewCallMessage(t));
-        await db.update(tracked_tokens)
-          .set({ lastAlertedLabel: "__NEW_CALL__", lastAlertedAt: new Date() })
-          .where(eq(tracked_tokens.id, t.id));
-        newCallSent++;
+        await sendTelegram(creds, buildFirstCallMessage(t));
+        await db.execute(sql`
+          UPDATE pro_calls
+          SET call_alert_sent_at = NOW()
+          WHERE id = ${t.proCallId} AND call_alert_sent_at IS NULL
+        `);
+        firstCallSent++;
         log.info(
-          { tokenId: t.id, symbol: t.symbol, proScore: t.proScore },
-          "New pro call alert sent",
+          { proCallId: t.proCallId, symbol: t.symbol, quality: t.qualityLabel, proScore: t.proScore },
+          "Pro first-call alert sent",
         );
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 350));
       } catch (err) {
-        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send new call alert");
+        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "First-call alert failed");
       }
-      // Skip milestone check this cycle — handle next cycle
+      // Milestones next cycle so first-call stands alone
       continue;
     }
 
-    // If call alert never sent for a 'good' token (or still null), mark sentinel
-    // silently so it doesn't keep re-evaluating and never sends a 'good' call alert.
-    if (t.lastAlertedLabel === null && t.qualityLabel === "good") {
-      await db.update(tracked_tokens)
-        .set({ lastAlertedLabel: "__NEW_CALL__" })
-        .where(eq(tracked_tokens.id, t.id))
-        .catch(() => {});
-      // Still process milestones below
-    }
+    // ── 2. Milestone alerts — fire every newly crossed tier ────────────────
+    const athX = t.athMultiple ?? 1;
+    const already = parseSentTiers(t.milestoneAlertsSent);
+    const due = ALERT_MILESTONES.filter(tier => athX >= tier && !already.has(tier));
 
-    // ── Alert 2: Milestones — 2×, 5×, 10×, fires once per tier ─────────────
-    const athX     = t.athMultiple ?? 1;
-    const nextTier = [...ALERT_MILESTONES]
-      .filter(tier => tier > (t.athAlertMultiple ?? 0) && athX >= tier)
-      .sort((a, b) => b - a)[0];
-
-    if (nextTier) {
+    for (const tier of due) {
       try {
-        await sendTelegram(creds, buildMilestoneMessage(t, nextTier));
-        await db.update(tracked_tokens)
-          .set({ athAlertMultiple: nextTier })
-          .where(eq(tracked_tokens.id, t.id));
+        await sendTelegram(creds, buildMilestoneMessage(t, tier));
+        already.add(tier);
+        const joined = [...already].sort((a, b) => a - b).join(",");
+        await db.execute(sql`
+          UPDATE pro_calls
+          SET milestone_alerts_sent = ${joined}
+          WHERE id = ${t.proCallId}
+        `);
         milestoneSent++;
         log.info(
-          { tokenId: t.id, symbol: t.symbol, tier: nextTier, athX },
-          "Milestone alert sent",
+          { proCallId: t.proCallId, symbol: t.symbol, tier, athX },
+          "Pro milestone alert sent",
         );
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 350));
       } catch (err) {
-        log.warn({ err, tokenId: t.id, symbol: t.symbol }, "Failed to send milestone alert");
+        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");
+        break; // don't mark further tiers if Telegram is failing
       }
     }
   }
 
-  if (newCallSent > 0 || milestoneSent > 0) {
-    log.info({ newCallSent, milestoneSent }, "Alerts cycle complete");
+  if (firstCallSent > 0 || milestoneSent > 0) {
+    log.info({ firstCallSent, milestoneSent }, "Pro alerts cycle complete");
   }
 }
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 
 export function startCallerAlerts(): void {
   const loop = () => {
     checkAndAlert()
-      .catch(err => log.warn({ err }, "Caller alerts check failed"))
+      .catch(err => log.warn({ err }, "Pro alerts check failed"))
       .finally(() => setTimeout(loop, CHECK_INTERVAL_MS));
   };
-  setTimeout(loop, 35_000);
-  log.info("Caller alerts ready (5 min cycle · very_good new calls + 2×/5×/10× milestones)");
+  setTimeout(loop, STARTUP_DELAY_MS);
+  log.info(
+    { intervalMs: CHECK_INTERVAL_MS, milestones: ALERT_MILESTONES },
+    "Pro alerts ready (first-call + 2×/5×/10×/20× milestones, state on pro_calls)",
+  );
 }
