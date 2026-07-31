@@ -8,7 +8,9 @@ services:
   - type: web
     name: crypsor-api
     runtime: node
-    # free = spins down after idle (ok for first bring-up). Upgrade to starter for always-on pipeline.
+    # IMPORTANT: free spins down after idle → Dex Autopilot setInterval dies.
+    # Upgrade to starter for true 24/7, OR hit GET /api/trader/tick every minute
+    # from an external cron (cron-job.org / Render Cron) to wake + run the agent.
     plan: free
     region: oregon
     buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter @workspace/api-server run build

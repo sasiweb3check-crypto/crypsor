@@ -22,6 +22,8 @@ export const dex_agent_state = pgTable("dex_agent_state", {
   tradesOpened: integer("trades_opened").default(0).notNull(),
   tradesClosed: integer("trades_closed").default(0).notNull(),
   hits3x: integer("hits_3x").default(0).notNull(),
+  /** Last successful agent tick — health for 24/7 monitoring */
+  lastTickAt: timestamp("last_tick_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -51,6 +53,10 @@ export const dex_positions = pgTable(
     exitAt: timestamp("exit_at"),
     exitReason: text("exit_reason"),
     realizedPnlUsd: real("realized_pnl_usd").default(0),
+    /** Full factor dump at entry (reasons, blockers, MC, tags, pattern edge…) */
+    entryFeedback: text("entry_feedback"),
+    /** Full factor dump at exit / take-profit (why left, tape state…) */
+    exitFeedback: text("exit_feedback"),
   },
   (t) => [
     index("dex_positions_status_idx").on(t.status),

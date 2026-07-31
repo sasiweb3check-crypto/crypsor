@@ -2,18 +2,20 @@
  * Dex Autopilot API — automated paper agent status / book / patterns / events
  * Envelope: { ok, data, meta }
  */
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { apiFail, apiOk } from "../lib/api-envelope";
 import { toIsoUtc } from "../lib/pro-cache";
+import { runDexAgentTick } from "../pipeline/dex-agent";
 
 const router = Router();
 
 router.get("/trader/status", async (_req, res) => {
   try {
     const st = await db.execute(sql`
-      SELECT id, enabled, bankroll_usd, realized_pnl_usd, trades_opened, trades_closed, hits_3x, updated_at
+      SELECT id, enabled, bankroll_usd, realized_pnl_usd, trades_opened, trades_closed, hits_3x,
+             last_tick_at, updated_at
       FROM dex_agent_state ORDER BY id ASC LIMIT 1
     `);
     const row = st.rows[0] as Record<string, unknown> | undefined;
@@ -58,11 +60,37 @@ router.get("/trader/status", async (_req, res) => {
         observationSnaps: 5,
         maxOpen: 3,
       },
+      lastTickAt: row ? toIsoUtc(row.last_tick_at) : null,
+      tickAgeSec: row?.last_tick_at
+        ? Math.round((Date.now() - new Date(String(row.last_tick_at)).getTime()) / 1000)
+        : null,
+      runtimeNote:
+        "In-process every 20s while API is awake. On Render free, add external cron → GET /api/trader/tick every 1m.",
       updatedAt: row ? toIsoUtc(row.updated_at) : null,
     }));
   } catch (err) {
     console.error("trader status error", err);
     res.status(500).json(apiFail("Internal server error", "trader_status"));
+  }
+});
+
+/** Wake + run one agent tick (cron-safe). Use when Render free spins down. */
+router.get("/trader/tick", async (_req: Request, res: Response) => {
+  try {
+    const result = await runDexAgentTick();
+    res.json(apiOk(result));
+  } catch (err) {
+    console.error("trader tick error", err);
+    res.status(500).json(apiFail("Internal server error", "trader_tick"));
+  }
+});
+router.post("/trader/tick", async (_req: Request, res: Response) => {
+  try {
+    const result = await runDexAgentTick();
+    res.json(apiOk(result));
+  } catch (err) {
+    console.error("trader tick error", err);
+    res.status(500).json(apiFail("Internal server error", "trader_tick"));
   }
 });
 
@@ -94,6 +122,7 @@ router.get("/trader/positions", async (_req, res) => {
         dp.entry_phase, dp.entry_score, dp.entry_velocity, dp.entry_snap_count,
         dp.pattern_key, dp.peak_multiple, dp.moon_bag_taken, dp.status,
         dp.exit_mc_usd, dp.exit_at, dp.exit_reason, dp.realized_pnl_usd,
+        dp.entry_feedback, dp.exit_feedback,
         NULLIF(t.market_cap_usd, '')::numeric AS live_mc,
         t.logo_uri, t.image_path, pc.runner_phase
       FROM dex_positions dp
@@ -134,6 +163,12 @@ router.get("/trader/positions", async (_req, res) => {
         exitAt: toIsoUtc(r.exit_at),
         realizedPnlUsd: Number(r.realized_pnl_usd ?? 0),
         runnerPhase: r.runner_phase != null ? String(r.runner_phase) : null,
+        entryFeedback: r.entry_feedback
+          ? (() => { try { return JSON.parse(String(r.entry_feedback)); } catch { return null; } })()
+          : null,
+        exitFeedback: r.exit_feedback
+          ? (() => { try { return JSON.parse(String(r.exit_feedback)); } catch { return null; } })()
+          : null,
       };
     });
 
