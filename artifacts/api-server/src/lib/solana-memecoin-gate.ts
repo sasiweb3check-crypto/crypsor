@@ -54,8 +54,11 @@ export const BLOCKED_SYMBOLS = new Set([
 export const MAX_DISCOVERY_MC_USD = 2_000_000;
 /** Absolute absurd MC — treat as bad data (cbBTC-class). */
 export const MAX_ABSURD_MC_USD = 50_000_000;
-/** Pro surface entry MC cap (sweet spot was $5–15K). */
-export const MAX_PRO_ENTRY_MC_USD = 40_000;
+/**
+ * Pro / Runner qualify upper band — not an alert sweet-spot.
+ * Alerts are MC-agnostic; this only keeps majors out of the radar pool.
+ */
+export const MAX_PRO_ENTRY_MC_USD = 150_000;
 /** Pro min liquidity when known (at call). $8K starved the $5–15K MC band. */
 export const MIN_PRO_LIQ_USD = 4_500;
 

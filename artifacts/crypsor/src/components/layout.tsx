@@ -3,7 +3,7 @@ import { Settings, Activity, Zap, Bell } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { getApiBase } from "@/lib/api-base";
-import { ALERTS_QUERY_KEY, fetchProAlerts } from "@/pages/alerts";
+import { RUNNER_ALERTS_KEY, fetchRunnerAlerts } from "@/lib/runner-api";
 
 type NavItem = {
   href: string;
@@ -14,12 +14,11 @@ type NavItem = {
   prefetch?: "alerts";
 };
 
-/** Pro desk + Alerts tracker — Logs + Settings for ops. */
 const NAV: NavItem[] = [
-  { href: "/",        label: "Pro",      icon: Zap,      desc: "Caller desk", pro: true },
-  { href: "/alerts",  label: "Alerts",   icon: Bell,     desc: "Sent · confidence", prefetch: "alerts" },
-  { href: "/ops",     label: "Logs",     icon: Activity, desc: "Buys · pipeline" },
-  { href: "/settings",label: "Settings", icon: Settings, desc: "Keys · Telegram" },
+  { href: "/",        label: "Runner",  icon: Zap,      desc: "Radar · entry", pro: true },
+  { href: "/alerts",  label: "Alerts",  icon: Bell,     desc: "ENTRY pings", prefetch: "alerts" },
+  { href: "/ops",     label: "Logs",    icon: Activity, desc: "Buys · pipeline" },
+  { href: "/settings",label: "Settings",icon: Settings, desc: "Keys · Telegram" },
 ];
 
 function isActive(location: string, href: string) {
@@ -44,9 +43,9 @@ function usePrefetchAlerts() {
   const qc = useQueryClient();
   return () => {
     void qc.prefetchQuery({
-      queryKey: ALERTS_QUERY_KEY,
-      queryFn: fetchProAlerts,
-      staleTime: 8_000,
+      queryKey: RUNNER_ALERTS_KEY,
+      queryFn: fetchRunnerAlerts,
+      staleTime: 6_000,
     });
   };
 }
@@ -75,10 +74,8 @@ function NavLink({ href, label, icon: Icon, desc, pro, prefetch }: NavItem) {
           <div className="flex items-center gap-2">
             <span className="font-display text-[12px] font-bold tracking-wide uppercase">{label}</span>
             {pro && (
-              <span
-                className="text-[8px] font-bold tracking-wider uppercase px-1.5 py-0.5"
-                style={{ color: "var(--cryp-teal)", background: "rgba(61,154,139,0.12)" }}
-              >
+              <span className="text-[8px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                style={{ color: "var(--cryp-teal)", background: "rgba(61,154,139,0.12)" }}>
                 Live
               </span>
             )}
@@ -101,7 +98,7 @@ function Sidebar() {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[10px] tracking-[0.22em] uppercase mt-1">
-              Pro Caller
+              Runner Entry
             </div>
           </div>
         </Link>
