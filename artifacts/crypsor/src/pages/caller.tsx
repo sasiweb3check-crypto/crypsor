@@ -187,18 +187,26 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
           style={{ borderTop: "1px solid var(--cryp-line)" }}
         >
           <div>
-            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">Smart hold</div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">
+              {c ? "Smart hold" : "Smart at call"}
+            </div>
             <div className="font-mono-num text-sm font-semibold mt-0.5">
-              {holdSmart}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledSmart || "—"}</span>
+              {c
+                ? <>{holdSmart}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledSmart || "—"}</span></>
+                : (t.calledSmart || "—")}
               {c?.smartHoldRate != null && (
                 <span className="text-[10px] text-[var(--cryp-mute)] ml-1">{pct(c.smartHoldRate)}</span>
               )}
             </div>
           </div>
           <div>
-            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">KOL hold</div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">
+              {c ? "KOL hold" : "KOL at call"}
+            </div>
             <div className="font-mono-num text-sm font-semibold mt-0.5">
-              {holdKol}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledKol || "—"}</span>
+              {c
+                ? <>{holdKol}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledKol || "—"}</span></>
+                : (t.calledKol || "—")}
             </div>
           </div>
           <div>

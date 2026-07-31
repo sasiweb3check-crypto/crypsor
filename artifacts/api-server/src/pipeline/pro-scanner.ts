@@ -88,24 +88,30 @@ function holdingCounts(verify: GmgnProVerifyResult | null): { kol: number; smart
   return { kol: verify.holdingKol, smart: verify.holdingSmart };
 }
 
+/**
+ * Surface gate for the Pro desk / alerts.
+ * Liquidity is enforced at INSERT (call-time). Do NOT re-check live liq here —
+ * that was demoting 75–85 scores to `below` when pool liq dipped after entry
+ * (main reason the desk looked empty for ~2 days).
+ */
 function shouldSurface(opts: {
   qualityLabel: string;
   score: number;
   smart: number;
   hv: number | null;
   honeypot: boolean | null;
-  liquidityUsd: number | null;
   calledMc: number;
 }): boolean {
   if (opts.honeypot === true) return false;
   if (opts.calledMc < MIN_MC || opts.calledMc > MAX_MC) return false;
-  if (opts.liquidityUsd != null && opts.liquidityUsd > 0 && opts.liquidityUsd < MIN_PRO_LIQ_USD) {
-    return false;
-  }
   if (opts.smart < 1) return false;
+  // Elite scores always surface once smart≥1 at call
   if (opts.qualityLabel === "very_good" || opts.score >= SURFACE_VERY_GOOD) return true;
-  const hv = opts.hv ?? 0;
-  return opts.score >= SURFACE_GOOD_STRICT && hv >= 80 && opts.smart >= 1;
+  // Soft good: prefer HV≥80, but missing HV must not hard-block (common on fresh calls)
+  if (opts.score >= SURFACE_GOOD_STRICT && opts.smart >= 1) {
+    if (opts.hv == null || opts.hv >= 70) return true;
+  }
+  return false;
 }
 
 async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candidate[]> {
@@ -330,14 +336,15 @@ async function upgradeStrongToVeryStrong(): Promise<number> {
       const verify = await verifyTokenKolSmart(row.chain || "sol", row.address);
       if (!verify.ok) continue;
       await applyVerifyToTrackedToken(row.token_id, verify);
-      if (verify.kolCount < 1 && verify.smartCount < 1) continue;
+      const held = holdingCounts(verify);
+      if (held.smart < 1) continue;
 
       await db.execute(sql`
         UPDATE pro_calls
         SET
           scanner_label      = 'very_strong',
-          called_kol_count   = ${verify.kolCount},
-          called_smart_count = ${verify.smartCount},
+          called_kol_count   = ${held.kol},
+          called_smart_count = ${held.smart},
           kol_smart_source   = 'gmgn_live',
           verified_at        = ${verify.fetchedAt},
           verified_wallets   = ${JSON.stringify(walletsPayload(verify))}
@@ -373,11 +380,13 @@ async function reverifyUnsourcedCalls(): Promise<number> {
       const verify = await verifyTokenKolSmart(row.chain || "sol", row.address);
       if (!verify.ok) continue;
       await applyVerifyToTrackedToken(row.token_id, verify);
+      const held = holdingCounts(verify);
+      // Only stamp holding counts — never overwrite with tag totals
       await db.execute(sql`
         UPDATE pro_calls
         SET
-          called_kol_count   = ${verify.kolCount},
-          called_smart_count = ${verify.smartCount},
+          called_kol_count   = ${held.kol},
+          called_smart_count = ${held.smart},
           kol_smart_source   = 'gmgn_live',
           verified_at        = ${verify.fetchedAt},
           verified_wallets   = ${JSON.stringify(walletsPayload(verify))}
@@ -427,135 +436,182 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         t.sec_rat_trader_amt_rate
       FROM pro_calls pc
       JOIN tracked_tokens t ON t.id = pc.token_id
-      WHERE (pc.pro_score IS NULL OR pc.score_version IS DISTINCT FROM 'v2'
-             OR pc.quality_label IS NULL OR pc.surfaced_at IS NULL)
+      WHERE (
+          pc.pro_score IS NULL
+          OR pc.quality_label IS NULL
+          OR pc.surfaced_at IS NULL
+          OR (pc.quality_label = 'below' AND pc.pro_score >= ${SURFACE_GOOD_STRICT}
+              AND COALESCE(pc.called_smart_count, 0) >= 1
+              AND pc.called_at >= NOW() - INTERVAL '3 days')
+        )
         ${tokenId ? sql`AND pc.token_id = ${tokenId}` : sql``}
       ORDER BY pc.called_at DESC
       LIMIT ${tokenId ? 1 : 80}
     `);
 
+    const list = (rows as { rows?: Array<Record<string, unknown>> }).rows
+      ?? (Array.isArray(rows) ? rows as Array<Record<string, unknown>> : []);
     let n = 0;
-    for (const r of rows.rows as Array<Record<string, unknown>>) {
-      const calledMc = parseFloat(String(r.called_mc_usd ?? "0")) || 0;
-      const currentMc = parseFloat(String(r.current_mc ?? "0")) || 0;
-      const athMc = parseFloat(String(r.ath_mc_usd ?? "0")) || currentMc;
-      const prevAth = Number(r.ath_multiple ?? 1) || 1;
-      const athFromPipeline = calledMc > 0 ? athMc / calledMc : 1;
-      const athMultiple = Math.max(prevAth, calledMc > 0 ? currentMc / calledMc : 1, athFromPipeline);
-      const gainPct = calledMc > 0 ? ((currentMc - calledMc) / calledMc) * 100 : 0;
-      const ageHours = r.called_at
-        ? (Date.now() - new Date(String(r.called_at)).getTime()) / 3_600_000
-        : 0;
-      const runStatus = deriveRunStatus(currentMc || null, calledMc || null, athMultiple);
+    let errors = 0;
 
-      let conviction: ReturnType<typeof convictionFromPayload> = null;
-      let quality: ReturnType<typeof qualitySignalsFromPayload> | null = null;
-      if (r.verified_wallets) {
-        try {
-          const raw = typeof r.verified_wallets === "string"
-            ? JSON.parse(String(r.verified_wallets))
-            : r.verified_wallets;
-          conviction = convictionFromPayload(raw);
-          quality = qualitySignalsFromPayload(raw);
-        } catch { /* ignore */ }
+    for (const r of list) {
+      try {
+        const calledMc = parseFloat(String(r.called_mc_usd ?? "0")) || 0;
+        const currentMc = parseFloat(String(r.current_mc ?? "0")) || 0;
+        const athMc = parseFloat(String(r.ath_mc_usd ?? "0")) || currentMc;
+        const prevAth = Number(r.ath_multiple ?? 1) || 1;
+        const athFromPipeline = calledMc > 0 ? athMc / calledMc : 1;
+        const athMultiple = Math.max(prevAth, calledMc > 0 ? currentMc / calledMc : 1, athFromPipeline);
+        const gainPct = calledMc > 0 ? ((currentMc - calledMc) / calledMc) * 100 : 0;
+        const ageHours = r.called_at
+          ? (Date.now() - new Date(String(r.called_at)).getTime()) / 3_600_000
+          : 0;
+        const runStatus = deriveRunStatus(currentMc || null, calledMc || null, athMultiple);
+
+        let conviction: ReturnType<typeof convictionFromPayload> = null;
+        let quality: ReturnType<typeof qualitySignalsFromPayload> | null = null;
+        if (r.verified_wallets) {
+          try {
+            const raw = typeof r.verified_wallets === "string"
+              ? JSON.parse(String(r.verified_wallets))
+              : r.verified_wallets;
+            conviction = convictionFromPayload(raw);
+            quality = qualitySignalsFromPayload(raw);
+          } catch { /* ignore */ }
+        }
+
+        const smart = Number(r.called_smart_count ?? 0);
+        const prevScore = r.pro_score != null ? Number(r.pro_score) : null;
+        // First-time score: if re-verify already shows 0% hold but call had smart≥1,
+        // don't apply the "sold out" demotion — that dumps elite calls before they surface.
+        const rawShr = conviction?.smart.holdRate ?? null;
+        const smartHoldRate = (prevScore == null && smart >= 1 && rawShr === 0)
+          ? null
+          : rawShr;
+
+        const result = computeProScore({
+          calledIntelScore: Number(r.called_intel_score ?? 60),
+          calledKolCount: Number(r.called_kol_count ?? 0),
+          calledSmartCount: smart,
+          calledMcUsd: calledMc || null,
+          calledHolderVelocity: r.called_holder_velocity != null ? Number(r.called_holder_velocity) : null,
+          calledMcGrowth: r.called_mc_growth != null ? Number(r.called_mc_growth) : null,
+          calledVolumeIntensity: r.called_volume_intensity != null ? Number(r.called_volume_intensity) : null,
+          smartHoldRate,
+          kolHoldRate: conviction?.kol.holdRate ?? null,
+          smartPaperHands: conviction?.smart.paperHands ?? null,
+          diamondHands: (conviction?.smart.diamondHands ?? 0) + (conviction?.kol.diamondHands ?? 0),
+          smartKolSupplyPct:
+            (conviction?.smart.supplyPctHeld ?? 0) + (conviction?.kol.supplyPctHeld ?? 0),
+          currentMcUsd: currentMc || null,
+          athMultiple,
+          gainSinceCall: gainPct,
+          runStatus,
+          liquidityUsd: parseFloat(String(r.liquidity_usd ?? "0")) || null,
+          ageHoursSinceCall: ageHours,
+          holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+          secIsHoneypot: r.sec_is_honeypot as boolean | null,
+          secMintRenounced: r.sec_mint_renounced as boolean | null,
+          secFreezeRenounced: r.sec_freeze_renounced as boolean | null,
+          secTop10HolderRate: r.sec_top10_holder_rate != null ? Number(r.sec_top10_holder_rate) : null,
+          secLpLocked: r.sec_lp_locked as boolean | null,
+          secRatTraderAmtRate: r.sec_rat_trader_amt_rate != null
+            ? Number(r.sec_rat_trader_amt_rate)
+            : (quality?.ratPct ?? null),
+          bundlerPct: quality?.bundlerPct ?? null,
+          sniperHoldRate: quality?.sniperHoldRate ?? null,
+          freshWalletRate: quality?.freshWalletRate ?? null,
+          botDegenRate: quality?.botDegenRate ?? null,
+          entrapmentPct: quality?.entrapmentPct ?? null,
+        });
+
+        const ban = isProBannedToken({
+          address: r.address != null ? String(r.address) : null,
+          symbol: r.symbol != null ? String(r.symbol) : null,
+          calledMcUsd: calledMc || null,
+          currentMcUsd: currentMc || null,
+        });
+        const hv = r.called_holder_velocity != null
+          ? Number(r.called_holder_velocity)
+          : (r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null);
+
+        // Rescue stuck elite rows that were demoted by the old live-liq gate
+        const effectiveScore = Math.max(result.score, prevScore ?? 0);
+
+        let qualityLabel: "very_good" | "good" | "below" = ban.banned
+          ? "below"
+          : result.qualityLabel;
+        if (!ban.banned && runStatus === "DEAD" && athMultiple < 2) {
+          qualityLabel = "below";
+        } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_VERY_GOOD) {
+          qualityLabel = "very_good";
+        } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_GOOD_STRICT) {
+          if (qualityLabel === "below") qualityLabel = "good";
+        }
+
+        const finalSurface = !ban.banned && qualityLabel !== "below" && shouldSurface({
+          qualityLabel,
+          score: effectiveScore,
+          smart,
+          hv,
+          honeypot: r.sec_is_honeypot as boolean | null,
+          calledMc,
+        });
+        if (!finalSurface && qualityLabel !== "below") qualityLabel = "below";
+
+        const entryTier: EntryTier = result.entryTier;
+        const surfacedMc = String(currentMc || calledMc || 0);
+        const callId = Number(r.pro_call_id);
+        const scoreToStore = effectiveScore > result.score && prevScore != null
+          ? effectiveScore
+          : result.score;
+
+        // Simple UPDATE — avoid brittle CASE param comparisons that were failing silently
+        if (finalSurface) {
+          await db.execute(sql`
+            UPDATE pro_calls
+            SET
+              ath_multiple = GREATEST(COALESCE(ath_multiple, 1), ${athMultiple}),
+              pro_score = ${scoreToStore},
+              survival_score = ${result.survivalScore},
+              last_survival_at = NOW(),
+              entry_tier = ${entryTier},
+              score_version = 'v2',
+              quality_label = ${qualityLabel},
+              surfaced_at = COALESCE(surfaced_at, NOW()),
+              surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${surfacedMc})
+            WHERE id = ${callId}
+          `);
+        } else {
+          await db.execute(sql`
+            UPDATE pro_calls
+            SET
+              ath_multiple = GREATEST(COALESCE(ath_multiple, 1), ${athMultiple}),
+              pro_score = ${scoreToStore},
+              survival_score = ${result.survivalScore},
+              last_survival_at = NOW(),
+              entry_tier = ${entryTier},
+              score_version = 'v2',
+              quality_label = ${qualityLabel}
+            WHERE id = ${callId}
+          `);
+        }
+        n++;
+      } catch (rowErr) {
+        errors++;
+        log.warn(
+          { err: rowErr, proCallId: r.pro_call_id, symbol: r.symbol },
+          "scoreAndSurfacePending row failed",
+        );
       }
-
-      const result = computeProScore({
-        calledIntelScore: Number(r.called_intel_score ?? 60),
-        calledKolCount: Number(r.called_kol_count ?? 0),
-        calledSmartCount: Number(r.called_smart_count ?? 0),
-        calledMcUsd: calledMc || null,
-        calledHolderVelocity: r.called_holder_velocity != null ? Number(r.called_holder_velocity) : null,
-        calledMcGrowth: r.called_mc_growth != null ? Number(r.called_mc_growth) : null,
-        calledVolumeIntensity: r.called_volume_intensity != null ? Number(r.called_volume_intensity) : null,
-        smartHoldRate: conviction?.smart.holdRate ?? null,
-        kolHoldRate: conviction?.kol.holdRate ?? null,
-        smartPaperHands: conviction?.smart.paperHands ?? null,
-        diamondHands: (conviction?.smart.diamondHands ?? 0) + (conviction?.kol.diamondHands ?? 0),
-        smartKolSupplyPct:
-          (conviction?.smart.supplyPctHeld ?? 0) + (conviction?.kol.supplyPctHeld ?? 0),
-        currentMcUsd: currentMc || null,
-        athMultiple,
-        gainSinceCall: gainPct,
-        runStatus,
-        liquidityUsd: parseFloat(String(r.liquidity_usd ?? "0")) || null,
-        ageHoursSinceCall: ageHours,
-        holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
-        secIsHoneypot: r.sec_is_honeypot as boolean | null,
-        secMintRenounced: r.sec_mint_renounced as boolean | null,
-        secFreezeRenounced: r.sec_freeze_renounced as boolean | null,
-        secTop10HolderRate: r.sec_top10_holder_rate != null ? Number(r.sec_top10_holder_rate) : null,
-        secLpLocked: r.sec_lp_locked as boolean | null,
-        secRatTraderAmtRate: r.sec_rat_trader_amt_rate != null
-          ? Number(r.sec_rat_trader_amt_rate)
-          : (quality?.ratPct ?? null),
-        bundlerPct: quality?.bundlerPct ?? null,
-        sniperHoldRate: quality?.sniperHoldRate ?? null,
-        freshWalletRate: quality?.freshWalletRate ?? null,
-        botDegenRate: quality?.botDegenRate ?? null,
-        entrapmentPct: quality?.entrapmentPct ?? null,
-      });
-
-      const ban = isProBannedToken({
-        address: r.address != null ? String(r.address) : null,
-        symbol: r.symbol != null ? String(r.symbol) : null,
-        calledMcUsd: calledMc || null,
-        currentMcUsd: currentMc || null,
-      });
-      const smart = Number(r.called_smart_count ?? 0);
-      const hv = r.called_holder_velocity != null
-        ? Number(r.called_holder_velocity)
-        : (r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null);
-      const liq = parseFloat(String(r.liquidity_usd ?? "0")) || null;
-      // Start from model label, then demote anything that fails strict surface.
-      let qualityLabel = ban.banned ? "below" : result.qualityLabel;
-      const surfacingNow = !ban.banned && shouldSurface({
-        qualityLabel: result.qualityLabel,
-        score: result.score,
-        smart,
-        hv,
-        honeypot: r.sec_is_honeypot as boolean | null,
-        liquidityUsd: liq,
-        calledMc,
-      });
-      if (!surfacingNow) qualityLabel = "below";
-      const entryTier: EntryTier = result.entryTier;
-
-      // surfaced_mc = MC when first visible in UI (audit), NOT entry price.
-      await db.execute(sql`
-        UPDATE pro_calls
-        SET
-          ath_multiple = GREATEST(COALESCE(ath_multiple, 1), ${athMultiple}),
-          pro_score = ${result.score},
-          survival_score = ${result.survivalScore},
-          last_survival_at = NOW(),
-          entry_tier = ${entryTier},
-          score_version = 'v2',
-          quality_label = CASE
-            WHEN ${ban.banned} THEN 'below'
-            WHEN ${runStatus} = 'DEAD' AND ${athMultiple} < 2 THEN 'below'
-            WHEN ${qualityLabel} = 'below' THEN 'below'
-            WHEN quality_label = 'very_good' THEN 'very_good'
-            WHEN quality_label = 'good' AND ${qualityLabel} = 'very_good' THEN 'very_good'
-            WHEN ${qualityLabel} = 'very_good' THEN 'very_good'
-            WHEN ${qualityLabel} = 'good' THEN 'good'
-            ELSE ${qualityLabel}
-          END,
-          surfaced_at = CASE
-            WHEN ${surfacingNow} THEN COALESCE(surfaced_at, NOW())
-            ELSE surfaced_at
-          END,
-          surfaced_mc_usd = CASE
-            WHEN ${surfacingNow} THEN COALESCE(surfaced_mc_usd, ${String(currentMc || calledMc || 0)})
-            ELSE surfaced_mc_usd
-          END
-        WHERE id = ${Number(r.pro_call_id)}
-      `);
-      n++;
+    }
+    if (errors > 0) {
+      opsLog("pro_qualify", "warn", `Scorer row errors ${errors}/${list.length}`, { errors, n });
     }
     return n;
   } catch (err) {
     log.warn({ err }, "scoreAndSurfacePending error (non-fatal)");
+    opsLog("pro_qualify", "error", `Scorer failed: ${String(err).slice(0, 180)}`);
     return 0;
   }
 }
