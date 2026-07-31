@@ -54,6 +54,8 @@ interface ProToken {
   lastSnapshotAt: string | null;
   surfacedAt: string | null;
   surfacedMcUsd: number | null;
+  kolSmartSource?: string | null;
+  verifiedAt?: string | null;
   secMintRenounced: boolean | null;
   secFreezeRenounced: boolean | null;
   secIsHoneypot: boolean | null;
@@ -339,22 +341,20 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
         <div>
           <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Entry → Now</div>
           <div className="text-[9px] text-[#8b949e] tabular-nums truncate">
-            {t.surfacedMcUsd != null && t.surfacedMcUsd !== t.calledMcUsd ? (
-              <>
-                <span style={{ color: "#f59e0b88" }}>⚑</span>{" "}
-                {formatCompactUsd(t.surfacedMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
-              </>
-            ) : (
-              <>{formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}</>
-            )}
+            {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
           </div>
         </div>
         <div>
-          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Smart / KOL</div>
+          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Smart / KOL @ call</div>
           <div className="text-[9px] font-bold tabular-nums">
-            <span style={{ color: "#06b6d4" }}>S{t.currentSmart}</span>
+            <span style={{ color: "#06b6d4" }}>S{t.calledSmart}</span>
             <span className="text-[#30363d]"> · </span>
-            <span style={{ color: "#a855f7" }}>K{t.currentKol}</span>
+            <span style={{ color: "#a855f7" }}>K{t.calledKol}</span>
+            {(t.currentSmart !== t.calledSmart || t.currentKol !== t.calledKol) && (
+              <span className="text-[#484f58] font-normal">
+                {" "}(now S{t.currentSmart}·K{t.currentKol})
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right">

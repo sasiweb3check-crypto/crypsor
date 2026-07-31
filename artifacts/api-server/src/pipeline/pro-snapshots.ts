@@ -139,15 +139,42 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         hit_10x:  r.hit_10x,
         hit_100x: r.hit_100x,
       };
-      const milestoneUpdates: string[] = [];
-      for (const m of MILESTONES) {
-        if (!existingFlags[m.hitCol] && newAth >= m.mult) {
-          milestoneUpdates.push(`${m.hitCol} = true, ${m.atCol} = NOW()`);
+
+      // Prefer first real MC cross from price history; fall back to NOW().
+      const firstCrossAt = new Map<number, Date | null>();
+      if (calledMc > 0) {
+        for (const m of MILESTONES) {
+          if (existingFlags[m.hitCol] || newAth < m.mult) continue;
+          const threshold = calledMc * m.mult;
+          try {
+            const cross = await db.execute(sql`
+              SELECT snapshot_at
+              FROM token_price_snapshots
+              WHERE token_id = ${r.token_id}
+                AND NULLIF(market_cap_usd, '')::numeric >= ${threshold}
+                AND snapshot_at >= ${r.called_at}
+              ORDER BY snapshot_at ASC
+              LIMIT 1
+            `);
+            const at = (cross.rows[0] as { snapshot_at?: string | Date } | undefined)?.snapshot_at;
+            firstCrossAt.set(m.mult, at ? new Date(at) : null);
+          } catch {
+            firstCrossAt.set(m.mult, null);
+          }
         }
       }
-      const milestoneClause = milestoneUpdates.length > 0
-        ? ", " + milestoneUpdates.join(", ")
-        : "";
+
+      const milestoneParts: ReturnType<typeof sql>[] = [];
+      for (const m of MILESTONES) {
+        if (!existingFlags[m.hitCol] && newAth >= m.mult) {
+          const at = firstCrossAt.get(m.mult);
+          if (at) {
+            milestoneParts.push(sql`, ${sql.raw(m.hitCol)} = true, ${sql.raw(m.atCol)} = ${at}`);
+          } else {
+            milestoneParts.push(sql`, ${sql.raw(m.hitCol)} = true, ${sql.raw(m.atCol)} = NOW()`);
+          }
+        }
+      }
 
       await db.execute(sql`
         INSERT INTO pro_snapshots (
@@ -181,7 +208,6 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           entry_tier       = ${entryTier},
           score_version    = 'v2',
           quality_label    = CASE
-            -- Allow demotion when dead without a real print (ath < 2)
             WHEN ${runStatus} = 'DEAD' AND ${newAth} < 2 THEN ${qualityLabel}
             WHEN quality_label = 'very_good'                        THEN 'very_good'
             WHEN quality_label = 'good' AND ${qualityLabel} = 'very_good' THEN 'very_good'
@@ -190,7 +216,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
             ELSE ${qualityLabel}
           END
           ${surfacedClause}
-          ${sql.raw(milestoneClause)}
+          ${sql.join(milestoneParts, sql``)}
         WHERE id = ${r.pro_call_id}
       `);
 

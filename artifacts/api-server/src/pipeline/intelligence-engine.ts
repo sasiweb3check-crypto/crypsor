@@ -505,11 +505,12 @@ export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promi
           mcGrowthScore, volumeIntensityScore, holderVelocityScore, kolSmartScore, liquidityHealthScore,
           ageMultiplier: ageMult, tokenAgeHours: r1(ageHrs),
           marketCapUsd: t.marketCapUsd, volume24hUsd: t.volume24hUsd, liquidityUsd: t.liquidityUsd, peakMcUsd: newPeak,
-          // Use effectiveKolCount so the pro-scanner (which checks holder_kol_count >= 1)
-          // can see the signal from tracked wallet buys even before GMGN holder data arrives.
+          // Log raw GMGN counts only. Pro qualify does a live GMGN verify and must
+          // not treat Crypsor tracked-wallet buys as KOL (that inflated MarsCoin etc.).
+          // distinctTracked still feeds kolSmartScore via computeKolSmartScore above.
           holderCount: t.holderCount,
-          holderKolCount: Math.max(t.holderKolCount ?? 0, distinctTracked),
-          holderSmartCount: t.holderSmartCount,
+          holderKolCount: t.holderKolCount ?? 0,
+          holderSmartCount: t.holderSmartCount ?? 0,
           totalBuys, smartBuys, labeledFraction: r1(labeledFraction),
           ageGroup: group, cohortSize: cohortVolumes[group].length,
           cohortVolumePercentile: r1(volResult.percentile), holderVelocityPerHour: r1(holderVelResult.velocityPerHour),
@@ -526,7 +527,7 @@ export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promi
           tokenId: t.id,
           tokenAddress: t.address,
           intelligenceScore,
-          holderKolCount: Math.max(t.holderKolCount ?? 0, distinctTracked),
+          holderKolCount: t.holderKolCount ?? 0,
           holderSmartCount: t.holderSmartCount ?? 0,
           marketCapUsd: t.marketCapUsd,
           holderVelocityScore,

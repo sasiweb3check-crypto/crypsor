@@ -36,6 +36,14 @@ export const pro_calls = pgTable(
     calledSmartCount: integer("called_smart_count").default(0),
     calledKolSmartScore: real("called_kol_smart_score"),
 
+    // ── Live GMGN verify freeze (set at qualify / upgrade) ───────────────────
+    // Counts above are overwritten from GMGN live verify when available.
+    // kol_smart_source: 'gmgn_live' | 'intel_log' | 'tracked_tokens'
+    kolSmartSource:   text("kol_smart_source"),
+    verifiedAt:       timestamp("verified_at", { withTimezone: true }),
+    // { source, fetchedAt, holderStat, tagsStat, kol[], smart[] }
+    verifiedWallets:  text("verified_wallets"), // JSON string for pg text/jsonb compat
+
     // ── Running ATH tracker (updated by snapshot worker) ────────────────────
     athMultiple:      real("ath_multiple").default(1), // max(current_mc / called_mc) ever seen
     lastSnapshotAt:   timestamp("last_snapshot_at"),
@@ -56,10 +64,8 @@ export const pro_calls = pgTable(
 
     // ── Surfaced tracking — when the token first became visible in Pro Intel ──
     // Set once the first time quality_label transitions out of 'below'/null to
-    // 'good' or 'very_good'.  Null for tokens that qualified immediately at call
-    // time or for historical records predating this field.
-    // Use surfaced_mc_usd as the real "entry" price shown to users; fall back to
-    // called_mc_usd only when this is null.
+    // 'good' or 'very_good'.  This is "first seen in UI", NOT the entry price.
+    // Entry / ATH / gain always use called_mc_usd (MC at first qualify).
     surfacedAt:       timestamp("surfaced_at", { withTimezone: true }),
     surfacedMcUsd:    text("surfaced_mc_usd"),
 
