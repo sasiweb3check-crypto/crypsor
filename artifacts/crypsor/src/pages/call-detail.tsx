@@ -1,12 +1,13 @@
 /**
  * FOMO-style call detail — opened from Best Calls cards.
- * Shows CALL/CURRENT/ATH, your tracked wallet buyers, CTO/creator, snap tape.
+ * Shows CALL/CURRENT/ATH, your tracked wallet buyers, Crypsor holder intel,
+ * CTO/creator, snap tape.
  */
 import { useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import {
-  ArrowLeft, Copy, ExternalLink, Flame, Users, Shield,
+  ArrowLeft, Copy, ExternalLink, Flame, Users, Shield, Brain,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -15,8 +16,64 @@ import {
 } from "@/lib/utils";
 import {
   CALLS_TOKEN_KEY, fetchCallDetail,
-  type CallBuyer, type CallCard,
+  type CallBuyer, type CallCard, type CrypsorWalletRow,
 } from "@/lib/calls-api";
+
+function crypsorLabelColor(label: string): string {
+  switch (label) {
+    case "diamond": return "text-[var(--cryp-mint)]";
+    case "accumulator": return "text-[var(--cryp-teal)]";
+    case "solid": return "text-[var(--cryp-text)]";
+    case "whale": return "text-[var(--cryp-warn)]";
+    case "flipper":
+    case "dump": return "text-[var(--cryp-loss)]";
+    default: return "text-[var(--cryp-mute)]";
+  }
+}
+
+function CrypsorWalletRowView({ w }: { w: CrypsorWalletRow }) {
+  const { toast } = useToast();
+  return (
+    <li
+      className="py-2.5 space-y-1"
+      style={{ borderBottom: "1px solid var(--cryp-line)" }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          className="text-[12px] font-mono-num text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)] truncate"
+          onClick={() => {
+            void navigator.clipboard.writeText(w.address);
+            toast({ title: "Copied wallet", description: truncateAddress(w.address) });
+          }}
+        >
+          {truncateAddress(w.address)}
+        </button>
+        <span className={cn("text-[11px] font-bold uppercase tracking-wider shrink-0", crypsorLabelColor(w.ourLabel))}>
+          {w.ourLabel}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-mono-num text-[var(--cryp-mute)]">
+        <span>Score {Math.round(w.behaviourScore)}</span>
+        <span>Wt {w.weightage.toFixed(1)}</span>
+        {w.holdPct != null && <span>Hold {w.holdPct < 0.01 ? w.holdPct.toFixed(3) : w.holdPct.toFixed(2)}%</span>}
+        {w.buyCount != null && <span>B{w.buyCount}</span>}
+        {w.sellCount != null && <span>S{w.sellCount}</span>}
+        {w.winRate != null ? (
+          <span className="text-[var(--cryp-mint)]">
+            WR {(w.winRate * 100).toFixed(0)}% ({w.wins}W/{w.losses}L)
+          </span>
+        ) : (
+          <span>WR — ({w.wins}W/{w.losses}L)</span>
+        )}
+        <span>{w.tokensSeen} tokens</span>
+      </div>
+      {w.reason && (
+        <div className="text-[10px] text-[var(--cryp-mute)] leading-snug">{w.reason}</div>
+      )}
+    </li>
+  );
+}
 
 function LiveBar({ now, peak }: { now: number; peak: number }) {
   const max = Math.max(peak, now, 1);
@@ -236,6 +293,7 @@ export default function CallDetailPage() {
   const card = data?.card ?? null;
   const buyers = data?.buyers ?? [];
   const snaps = data?.snaps ?? [];
+  const crypsorWallets = data?.crypsorWallets ?? [];
   const uniqueBuyers = useMemo(() => {
     const seen = new Set<number>();
     return buyers.filter(b => {
@@ -296,6 +354,34 @@ export default function CallDetailPage() {
         ) : (
           <ul>
             {uniqueBuyers.map(b => <BuyerRow key={`${b.walletId}-${b.boughtAt}`} b={b} />)}
+          </ul>
+        )}
+      </section>
+
+      {/* Crypsor holder intel — OWN labels, not GMGN KOL/smart */}
+      <section className="call-card">
+        <div className="flex items-center gap-2 mb-1">
+          <Brain className="w-4 h-4 text-[var(--cryp-mint)]" />
+          <h2 className="font-display text-[13px] font-bold uppercase tracking-widest">
+            Crypsor wallet intel
+          </h2>
+          <span className="ml-auto text-[11px] font-mono-num text-[var(--cryp-mute)]">
+            {crypsorWallets.length}
+          </span>
+        </div>
+        <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed mb-2">
+          {data?.crypsorNote
+            ?? "Our background labelling of this token’s holders (behaviour, weightage, Crypsor win-rate). Not GMGN KOL / smart tags."}
+        </p>
+        {crypsorWallets.length === 0 ? (
+          <div className="text-[12px] text-[var(--cryp-mute)] py-6 text-center">
+            Judging holders in the background — refresh shortly after holder snapshots land
+          </div>
+        ) : (
+          <ul>
+            {crypsorWallets.map(w => (
+              <CrypsorWalletRowView key={w.address} w={w} />
+            ))}
           </ul>
         )}
       </section>

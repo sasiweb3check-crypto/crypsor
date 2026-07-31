@@ -30,6 +30,7 @@ import { startCallerAlerts } from "../pipeline/caller-alerts";
 import { startProScanner }  from "../pipeline/pro-scanner";
 import { startProSnapshots } from "../pipeline/pro-snapshots";
 import { startDexAgent } from "../pipeline/dex-agent";
+import { startWalletIntel } from "../pipeline/wallet-intel";
 import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
@@ -606,6 +607,7 @@ export function startMonitor(): void {
   startProScanner();
   startProSnapshots();
   startDexAgent();
+  startWalletIntel();
   healthMonitor.startWatchdog();
 
   logger.info("Token Intelligence Pipeline started");
