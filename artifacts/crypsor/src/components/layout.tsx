@@ -1,202 +1,16 @@
 import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { Settings, Activity, Zap, Bell, Crosshair } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Settings, Activity } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/lib/api-fetch";
-import { RUNNER_ALERTS_KEY, fetchRunnerAlerts } from "@/lib/runner-api";
-import {
-  OPS_LOG_KEY,
-  OPS_PING_KEY,
-  OPS_SUMMARY_KEY,
-  fetchOpsLog,
-  fetchOpsPing,
-  fetchOpsSummary,
-} from "@/lib/ops-api";
-import {
-  DEX_EVENTS_KEY,
-  DEX_POSITIONS_KEY,
-  DEX_STATUS_KEY,
-  fetchDexEvents,
-  fetchDexPositions,
-  fetchDexStatus,
-} from "@/lib/trader-api";
-
-type PrefetchKind = "alerts" | "ops" | "trader";
-
-type NavItem = {
-  href: string;
-  label: string;
-  icon: React.ElementType;
-  desc: string;
-  pro?: boolean;
-  prefetch?: PrefetchKind;
-};
-
-const NAV: NavItem[] = [
-  { href: "/",        label: "Runner",  icon: Zap,       desc: "Radar · entry", pro: true },
-  { href: "/alerts",  label: "Alerts",  icon: Bell,      desc: "ENTRY pings", prefetch: "alerts" },
-  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Autopilot · 3×", prefetch: "trader" },
-  { href: "/ops",     label: "Logs",    icon: Activity,  desc: "Buys · pipeline", prefetch: "ops" },
-  { href: "/settings",label: "Settings",icon: Settings,  desc: "Keys · Telegram" },
-];
-
-function isActive(location: string, href: string) {
-  if (href === "/") {
-    return location === "/" || location === "/pro" || location === "/caller"
-      || location.startsWith("/tokens/");
-  }
-  return location === href || location.startsWith(`${href}/`);
-}
-
-function useHeliusOk() {
-  const { data } = useQuery<{ running: boolean; heliusConfigured: boolean }>({
-    queryKey: ["monitor-status-mini"],
-    queryFn: () => apiFetch<{ running: boolean; heliusConfigured: boolean }>("api/monitor/status"),
-    refetchInterval: 60_000,
-    staleTime: 45_000,
-    retry: 2,
-  });
-  return data?.heliusConfigured;
-}
-
-function usePrefetchNav() {
-  const qc = useQueryClient();
-  return (kind?: PrefetchKind) => {
-    if (kind === "alerts") {
-      void qc.prefetchQuery({
-        queryKey: RUNNER_ALERTS_KEY,
-        queryFn: fetchRunnerAlerts,
-        staleTime: 6_000,
-      });
-    } else if (kind === "ops") {
-      void qc.prefetchQuery({ queryKey: OPS_PING_KEY, queryFn: fetchOpsPing, staleTime: 15_000 });
-      void qc.prefetchQuery({ queryKey: OPS_SUMMARY_KEY, queryFn: fetchOpsSummary, staleTime: 8_000 });
-      void qc.prefetchQuery({ queryKey: OPS_LOG_KEY("all"), queryFn: () => fetchOpsLog("all"), staleTime: 8_000 });
-    } else if (kind === "trader") {
-      void qc.prefetchQuery({ queryKey: DEX_STATUS_KEY, queryFn: fetchDexStatus, staleTime: 6_000 });
-      void qc.prefetchQuery({ queryKey: DEX_POSITIONS_KEY, queryFn: fetchDexPositions, staleTime: 6_000 });
-      void qc.prefetchQuery({ queryKey: DEX_EVENTS_KEY, queryFn: () => fetchDexEvents(50), staleTime: 6_000 });
-    }
-  };
-}
-
-function NavLink({ href, label, icon: Icon, desc, pro, prefetch }: NavItem) {
-  const [location] = useLocation();
-  const active = isActive(location, href);
-  const prefetchNav = usePrefetchNav();
-  return (
-    <Link href={href}>
-      <div
-        className={cn(
-          "relative flex items-center gap-3 px-3 py-2.5 cursor-pointer select-none transition-colors",
-          active ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
-        )}
-        style={{
-          borderLeft: active ? "2px solid var(--cryp-teal)" : "2px solid transparent",
-          background: active ? "rgba(61,154,139,0.08)" : "transparent",
-        }}
-        onMouseEnter={() => prefetchNav(prefetch)}
-        onFocus={() => prefetchNav(prefetch)}
-        onTouchStart={() => prefetchNav(prefetch)}
-      >
-        <Icon className="w-4 h-4 shrink-0" />
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-display text-[12px] font-bold tracking-wide uppercase">{label}</span>
-            {pro && (
-              <span className="text-[8px] font-bold tracking-wider uppercase px-1.5 py-0.5"
-                style={{ color: "var(--cryp-teal)", background: "rgba(61,154,139,0.12)" }}>
-                Live
-              </span>
-            )}
-          </div>
-          <div className="text-[10px] mt-0.5 opacity-60">{desc}</div>
-        </div>
-      </div>
-    </Link>
-  );
-}
-
-function Sidebar() {
-  const heliusOk = useHeliusOk();
-  return (
-    <div className="flex flex-col h-full" style={{ background: "rgba(5,10,15,0.96)", borderRight: "1px solid var(--cryp-line)" }}>
-      <div className="px-4 py-6" style={{ borderBottom: "1px solid var(--cryp-line)" }}>
-        <Link href="/">
-          <div className="cursor-pointer select-none">
-            <div className="font-display text-[var(--cryp-mint)] font-extrabold tracking-[0.18em] text-sm uppercase">
-              Crypsor
-            </div>
-            <div className="text-[var(--cryp-mute)] text-[10px] tracking-[0.22em] uppercase mt-1">
-              Runner Entry
-            </div>
-          </div>
-        </Link>
-      </div>
-      <nav className="flex-1 py-3">
-        {NAV.map(item => <NavLink key={item.href} {...item} />)}
-      </nav>
-      <div className="px-4 py-4" style={{ borderTop: "1px solid var(--cryp-line)" }}>
-        <div className="flex items-center gap-2">
-          <span className={cn("w-1.5 h-1.5 rounded-full", heliusOk ? "bg-[var(--cryp-gain)] pulse-dot" : "bg-[var(--cryp-warn)]")} />
-          <span className="text-[10px] text-[var(--cryp-mute)] tracking-widest uppercase">
-            {heliusOk ? "Scanning" : "No Helius"}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BottomNav() {
-  const [location] = useLocation();
-  const prefetchNav = usePrefetchNav();
-  return (
-    <nav
-      className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
-      style={{
-        background: "rgba(5,10,15,0.92)",
-        backdropFilter: "blur(14px)",
-        borderTop: "1px solid var(--cryp-line)",
-      }}
-    >
-      <div className="flex items-stretch justify-around px-2 pt-1.5 pb-safe">
-        {NAV.map(({ href, label, icon: Icon, pro, prefetch }) => {
-          const active = isActive(location, href);
-          return (
-            <Link key={href} href={href} className="flex-1">
-              <div
-                className={cn(
-                  "relative flex flex-col items-center gap-0.5 py-1.5",
-                  active ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)]",
-                )}
-                onTouchStart={() => prefetchNav(prefetch)}
-              >
-                <Icon className="w-[18px] h-[18px]" />
-                <span className="text-[9px] font-bold tracking-widest uppercase">{label}</span>
-                {active && (
-                  <div className="absolute bottom-0 w-6 h-0.5" style={{ background: "var(--cryp-teal)" }} />
-                )}
-                {pro && !active && (
-                  <span className="absolute top-1 right-[28%] w-1 h-1 rounded-full" style={{ background: "var(--cryp-teal)" }} />
-                )}
-              </div>
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
-  );
-}
+import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const qc = useQueryClient();
-  const title = NAV.find(n => isActive(location, n.href))?.label
-    ?? (location.startsWith("/tokens/") ? "Token" : "Crypsor");
+  const onUtility = location === "/ops" || location === "/settings"
+    || location.startsWith("/ops/") || location.startsWith("/settings/");
 
-  // Warm the API on first paint so Logs/Trader don't flash "unreachable" on cold start
   useEffect(() => {
     void qc.prefetchQuery({
       queryKey: OPS_PING_KEY,
@@ -207,32 +21,71 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative min-h-screen w-full desk-surface">
-      <aside className="hidden md:flex flex-col w-48 lg:w-52 fixed inset-y-0 z-50">
-        <Sidebar />
-      </aside>
-
       <header
-        className="fixed top-0 left-0 right-0 z-50 flex md:hidden items-center justify-between px-4 h-12"
-        style={{ background: "rgba(5,10,15,0.85)", backdropFilter: "blur(10px)", borderBottom: "1px solid var(--cryp-line)" }}
+        className="sticky top-0 z-50 flex items-center justify-between px-4 h-14"
+        style={{
+          background: "rgba(5,8,12,0.88)",
+          backdropFilter: "blur(16px)",
+          borderBottom: "1px solid var(--cryp-line)",
+        }}
       >
         <Link href="/">
-          <div className="cursor-pointer">
-            <div className="font-display text-[var(--cryp-mint)] font-extrabold tracking-[0.16em] text-xs uppercase">Crypsor</div>
-            <div className="text-[var(--cryp-mute)] text-[8px] tracking-widest uppercase">{title}</div>
+          <div className="cursor-pointer select-none">
+            <div className="font-display text-[var(--cryp-mint)] font-extrabold tracking-[0.18em] text-[13px] uppercase">
+              Crypsor
+            </div>
+            <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
+              Best Calls
+            </div>
           </div>
         </Link>
-        <Link href="/settings">
-          <Settings className="w-4 h-4 text-[var(--cryp-mute)]" />
-        </Link>
+
+        <div className="flex items-center gap-1">
+          <span className="hidden sm:inline-flex items-center gap-1.5 mr-2 text-[10px] uppercase tracking-widest text-[var(--cryp-gain)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--cryp-gain)] pulse-dot" />
+            Live
+          </span>
+          <Link href="/ops">
+            <button
+              type="button"
+              aria-label="Logs"
+              className={cn(
+                "w-10 h-10 flex items-center justify-center rounded-xl transition-colors",
+                location.startsWith("/ops")
+                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
+              )}
+            >
+              <Activity className="w-[18px] h-[18px]" />
+            </button>
+          </Link>
+          <Link href="/settings">
+            <button
+              type="button"
+              aria-label="Settings"
+              className={cn(
+                "w-10 h-10 flex items-center justify-center rounded-xl transition-colors",
+                location.startsWith("/settings")
+                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
+              )}
+            >
+              <Settings className="w-[18px] h-[18px]" />
+            </button>
+          </Link>
+        </div>
       </header>
 
-      <main className="relative z-10 min-h-screen flex flex-col md:pl-48 lg:pl-52 pt-12 md:pt-0">
-        <div className="flex-1 flex flex-col min-w-0 w-full max-w-screen-2xl mx-auto pb-24 md:pb-8">
+      <main className="relative z-10 min-h-[calc(100vh-3.5rem)] flex flex-col">
+        <div
+          className={cn(
+            "flex-1 flex flex-col min-w-0 w-full mx-auto",
+            onUtility ? "max-w-3xl" : "max-w-lg",
+          )}
+        >
           {children}
         </div>
       </main>
-
-      <BottomNav />
     </div>
   );
 }

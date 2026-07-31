@@ -137,6 +137,64 @@ body {
   border: 1px solid var(--cryp-line);
 }
 
+/* Best Calls — FOMO-style mobile cards */
+.call-card {
+  background: linear-gradient(165deg, rgba(14, 22, 30, 0.98), rgba(8, 14, 20, 0.96));
+  border: 1px solid rgba(125, 180, 170, 0.14);
+  border-radius: 18px;
+  padding: 1rem 1.05rem 0.9rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+.call-stat {
+  background: rgba(12, 20, 28, 0.92);
+  border: 1px solid rgba(125, 180, 170, 0.12);
+  border-radius: 16px;
+  padding: 0.9rem 1rem;
+}
+.wallet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #ffb070;
+  background: rgba(180, 90, 30, 0.22);
+  border: 1px solid rgba(255, 160, 90, 0.28);
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  white-space: nowrap;
+}
+.ath-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #04120c;
+  background: #3ecf8e;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+}
+.call-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cryp-mute);
+  border: 1px solid var(--cryp-line);
+  border-radius: 10px;
+  padding: 0.4rem 0.7rem;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.call-action:hover {
+  color: var(--cryp-mint);
+  border-color: rgba(61, 154, 139, 0.45);
+  background: rgba(61, 154, 139, 0.1);
+}
+
 @keyframes shimmer-slide {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }

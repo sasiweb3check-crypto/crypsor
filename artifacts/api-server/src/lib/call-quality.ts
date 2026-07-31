@@ -1,0 +1,91 @@
+/**
+ * Call quality — FOMO-style ranking, MC-agnostic.
+ *
+ * Goal: from ~hundreds of tracked tokens, surface a handful of “best calls”
+ * using wallet multiplicity + tagged holders + our own wallet win-rate memory.
+ */
+
+export type CallQualityLabel = "elite" | "strong" | "watch" | "noise";
+
+export type CallQualityInput = {
+  walletBuys: number;
+  calledKol: number;
+  calledSmart: number;
+  liveKol: number;
+  liveSmart: number;
+  holderQualityScore: number | null;
+  holderVelocityScore: number | null;
+  avgWalletWinRate: number | null; // 0–1
+  proScore: number;
+  qualityLabel: string;
+  athMultiple: number;
+  honeypot: boolean | null;
+};
+
+export type CallQualityResult = {
+  score: number;
+  label: CallQualityLabel;
+  reasons: string[];
+  taggedWallets: number;
+};
+
+export function computeCallQuality(input: CallQualityInput): CallQualityResult {
+  const reasons: string[] = [];
+  let score = 0;
+
+  if (input.honeypot === true) {
+    return { score: 0, label: "noise", reasons: ["Honeypot"], taggedWallets: 0 };
+  }
+
+  const wallets = Math.max(0, input.walletBuys);
+  const walletPts = Math.min(wallets, 12) * 7;
+  score += walletPts;
+  if (wallets >= 2) reasons.push(`${wallets} tracked wallets bought`);
+  if (wallets >= 4) reasons.push("Multi-buy cluster");
+
+  const tagged = Math.max(0, input.calledKol) + Math.max(0, input.calledSmart);
+  const liveTagged = Math.max(0, input.liveKol) + Math.max(0, input.liveSmart);
+  const taggedPts = Math.min(tagged, 8) * 6 + Math.min(liveTagged, 8) * 2;
+  score += taggedPts;
+  if (tagged >= 1) reasons.push(`Tagged ${input.calledSmart} smart · ${input.calledKol} KOL`);
+
+  const hq = input.holderQualityScore ?? 0;
+  const hv = input.holderVelocityScore ?? 0;
+  score += Math.min(hq, 100) * 0.18;
+  score += Math.min(hv, 100) * 0.12;
+  if (hq >= 55) reasons.push("Holder quality solid");
+
+  const wr = input.avgWalletWinRate;
+  if (wr != null && wr > 0) {
+    score += Math.min(wr, 1) * 28;
+    if (wr >= 0.45) reasons.push(`Buyers win-rate ${(wr * 100).toFixed(0)}%`);
+  }
+
+  score += Math.min(Math.max(input.proScore, 0), 100) * 0.22;
+  if (input.qualityLabel === "very_good") {
+    score += 8;
+    reasons.push("Pro very_good");
+  } else if (input.qualityLabel === "good") {
+    score += 3;
+  }
+
+  // Proof of runners — reward realized ATH without requiring it for entry
+  if (input.athMultiple >= 10) {
+    score += 10;
+    reasons.push(`${input.athMultiple.toFixed(1)}× ATH`);
+  } else if (input.athMultiple >= 5) {
+    score += 6;
+  } else if (input.athMultiple >= 2) {
+    score += 3;
+  }
+
+  const rounded = Math.round(Math.min(score, 100));
+  let label: CallQualityLabel = "noise";
+  if (rounded >= 72 && wallets >= 2 && tagged >= 1) label = "elite";
+  else if (rounded >= 58 && (wallets >= 2 || tagged >= 1)) label = "strong";
+  else if (rounded >= 42) label = "watch";
+
+  if (reasons.length === 0) reasons.push("Building conviction");
+
+  return { score: rounded, label, reasons: reasons.slice(0, 4), taggedWallets: tagged };
+}
