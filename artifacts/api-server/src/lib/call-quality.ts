@@ -26,6 +26,12 @@ export type CallQualityInput = {
   creatorClose?: boolean | null;
   /** How many tokens this creator has launched (serial farmer risk) */
   creatorCreatedCount?: number | null;
+  /** Crypsor-owned holder memory (not GMGN) — avg win-rate 0–1 */
+  crypsorAvgWinRate?: number | null;
+  /** Count of Crypsor-labeled quality holders observed on this token */
+  crypsorQualityHolders?: number | null;
+  /** Sum of Crypsor weightage for observed holders on this token */
+  crypsorWeightage?: number | null;
 };
 
 export type CallQualityResult = {
@@ -110,10 +116,24 @@ export function computeCallQuality(input: CallQualityInput): CallQualityResult {
     }
   }
 
+  // Crypsor wallet intel weightage (our labels / win-rate — not GMGN KOL/smart)
+  const cq = input.crypsorQualityHolders ?? 0;
+  const cwr = input.crypsorAvgWinRate;
+  const cw = input.crypsorWeightage ?? 0;
+  if (cq >= 1) {
+    score += Math.min(cq, 8) * 2;
+    if (cq >= 3) reasons.push(`${cq} Crypsor-quality holders`);
+  }
+  if (cwr != null && cwr > 0) {
+    score += Math.min(cwr, 1) * 18;
+    if (cwr >= 0.5) reasons.push(`Crypsor WR ${(cwr * 100).toFixed(0)}%`);
+  }
+  if (cw > 0) score += Math.min(cw, 20) * 0.35;
+
   const rounded = Math.round(Math.min(score, 100));
   let label: CallQualityLabel = "noise";
   if (rounded >= 72 && wallets >= 2 && tagged >= 1) label = "elite";
-  else if (rounded >= 58 && (wallets >= 2 || tagged >= 1)) label = "strong";
+  else if (rounded >= 58 && (wallets >= 2 || tagged >= 1 || cq >= 2)) label = "strong";
   else if (rounded >= 42) label = "watch";
 
   if (reasons.length === 0) reasons.push("Building conviction");

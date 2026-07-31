@@ -73,7 +73,7 @@ export type CallCard = {
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v4:${limit}`;
+  const cacheKey = `calls:feed:v5:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -113,7 +113,10 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.first_detected_at,
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       NULL::float8 AS buy_notional,
-      buys.avg_win_rate AS avg_win_rate
+      buys.avg_win_rate AS avg_win_rate,
+      cryp.crypsor_avg_wr,
+      cryp.crypsor_quality_n,
+      cryp.crypsor_weight
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     LEFT JOIN LATERAL (
@@ -125,6 +128,17 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
       WHERE tb.token_id = pc.token_id
     ) buys ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        AVG(i.win_rate) FILTER (WHERE i.win_rate IS NOT NULL) AS crypsor_avg_wr,
+        COUNT(*) FILTER (
+          WHERE e.our_label_at IN ('diamond', 'accumulator', 'solid')
+        )::int AS crypsor_quality_n,
+        COALESCE(SUM(i.weightage), 0)::float8 AS crypsor_weight
+      FROM crypsor_wallet_token_events e
+      JOIN crypsor_wallet_intel i ON i.wallet_address = e.wallet_address
+      WHERE e.token_id = pc.token_id AND e.role = 'observed'
+    ) cryp ON TRUE
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND (
         pc.surfaced_at IS NOT NULL
@@ -157,6 +171,10 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       ? Number(r.sec_creator_created_count)
       : null;
 
+    const crypsorAvgWr = r.crypsor_avg_wr != null ? Number(r.crypsor_avg_wr) : null;
+    const crypsorQualityN = r.crypsor_quality_n != null ? Number(r.crypsor_quality_n) : 0;
+    const crypsorWeight = r.crypsor_weight != null ? Number(r.crypsor_weight) : 0;
+
     const q = computeCallQuality({
       walletBuys,
       calledKol: Number(r.called_kol_count ?? 0),
@@ -173,6 +191,9 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       ctoFlag,
       creatorClose,
       creatorCreatedCount,
+      crypsorAvgWinRate: crypsorAvgWr != null && Number.isFinite(crypsorAvgWr) ? crypsorAvgWr : null,
+      crypsorQualityHolders: crypsorQualityN,
+      crypsorWeightage: crypsorWeight,
     });
 
     const ageSrc = r.token_created_at ?? r.first_detected_at;
@@ -491,6 +512,25 @@ export type CallSnap = {
   smart: number | null;
 };
 
+/** Crypsor-owned holder judgment — not GMGN KOL/smart. */
+export type CrypsorWalletRow = {
+  address: string;
+  ourLabel: string;
+  behaviourScore: number;
+  weightage: number;
+  winRate: number | null;
+  wins: number;
+  losses: number;
+  tokensSeen: number;
+  sightings: number;
+  holdPct: number | null;
+  buyCount: number | null;
+  sellCount: number | null;
+  realizedPnl: number | null;
+  reason: string | null;
+  lastSeenAt: string | null;
+};
+
 router.get("/calls/token/:tokenId", async (req, res) => {
   try {
     const tokenId = parseInt(req.params.tokenId, 10);
@@ -579,13 +619,84 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       card = { ...card, walletBuys: new Set(buyers.map(b => b.walletId)).size };
     }
 
+    // Crypsor wallet intel for holders on THIS token (background-labeled)
+    let crypsorWallets: CrypsorWalletRow[] = [];
+    try {
+      const intelRows = await db.execute(sql`
+        SELECT
+          e.wallet_address,
+          e.our_label_at,
+          e.behaviour_score_at,
+          e.hold_pct,
+          e.buy_count,
+          e.sell_count,
+          e.realized_pnl,
+          i.our_label,
+          i.behaviour_score,
+          i.weightage,
+          i.win_rate,
+          i.wins,
+          i.losses,
+          i.tokens_seen,
+          i.sightings,
+          i.last_reason,
+          i.last_seen_at
+        FROM crypsor_wallet_token_events e
+        JOIN crypsor_wallet_intel i ON i.wallet_address = e.wallet_address
+        WHERE e.token_id = ${tokenId} AND e.role = 'observed'
+        ORDER BY
+          CASE e.our_label_at
+            WHEN 'diamond' THEN 0
+            WHEN 'accumulator' THEN 1
+            WHEN 'solid' THEN 2
+            WHEN 'whale' THEN 3
+            WHEN 'watch' THEN 4
+            ELSE 5
+          END,
+          COALESCE(i.weightage, 0) DESC,
+          COALESCE(e.hold_pct, 0) DESC
+        LIMIT 40
+      `);
+      crypsorWallets = (intelRows.rows as Array<Record<string, unknown>>).map(r => ({
+        address: String(r.wallet_address),
+        ourLabel: String(r.our_label ?? r.our_label_at ?? "noise"),
+        behaviourScore: Number(r.behaviour_score ?? r.behaviour_score_at ?? 0),
+        weightage: Number(r.weightage ?? 0),
+        winRate: r.win_rate != null ? Number(r.win_rate) : null,
+        wins: Number(r.wins ?? 0),
+        losses: Number(r.losses ?? 0),
+        tokensSeen: Number(r.tokens_seen ?? 0),
+        sightings: Number(r.sightings ?? 0),
+        holdPct: r.hold_pct != null ? Number(r.hold_pct) : null,
+        buyCount: r.buy_count != null ? Number(r.buy_count) : null,
+        sellCount: r.sell_count != null ? Number(r.sell_count) : null,
+        realizedPnl: r.realized_pnl != null ? Number(r.realized_pnl) : null,
+        reason: r.last_reason != null ? String(r.last_reason) : null,
+        lastSeenAt: toIsoUtc(r.last_seen_at),
+      }));
+    } catch (err) {
+      console.warn("calls token crypsor intel query failed", err);
+      crypsorWallets = [];
+    }
+
+    // Kick background labeling if we have holders but no intel yet
+    if (crypsorWallets.length === 0) {
+      try {
+        const { enqueueWalletIntel } = await import("../pipeline/wallet-intel");
+        enqueueWalletIntel(tokenId);
+      } catch { /* non-fatal */ }
+    }
+
     res.setHeader("Cache-Control", "private, max-age=6");
     res.json(apiOk({
       card,
       buyers,
       snaps,
+      crypsorWallets,
       walletBuysNote:
         "Wallet buys = distinct wallets from YOUR tracked list (walletdatasource) that bought this token via Helius scan → token_buys. Not GMGN holders.",
+      crypsorNote:
+        "Crypsor wallet intel = our background labelling of token holders from holder snapshots (behaviour score, weightage, Crypsor win-rate). Separate from GMGN KOL / smart tags.",
     }));
   } catch (err) {
     console.error("calls token error", err);

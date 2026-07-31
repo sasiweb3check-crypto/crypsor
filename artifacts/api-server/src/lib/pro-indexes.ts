@@ -88,6 +88,44 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE dex_agent_state ADD COLUMN IF NOT EXISTS last_tick_at timestamptz`,
   `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS entry_feedback text`,
   `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS exit_feedback text`,
+  // Crypsor-owned wallet intel (separate from GMGN KOL/smart)
+  `CREATE TABLE IF NOT EXISTS crypsor_wallet_intel (
+     wallet_address text PRIMARY KEY,
+     our_label text NOT NULL DEFAULT 'noise',
+     behaviour_score real NOT NULL DEFAULT 0,
+     weightage real NOT NULL DEFAULT 0,
+     win_rate real,
+     wins integer NOT NULL DEFAULT 0,
+     losses integer NOT NULL DEFAULT 0,
+     tokens_seen integer NOT NULL DEFAULT 0,
+     sightings integer NOT NULL DEFAULT 0,
+     avg_hold_pct real,
+     last_token_id integer,
+     last_reason text,
+     first_seen_at timestamptz NOT NULL DEFAULT NOW(),
+     last_seen_at timestamptz NOT NULL DEFAULT NOW(),
+     updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE TABLE IF NOT EXISTS crypsor_wallet_token_events (
+     id serial PRIMARY KEY,
+     wallet_address text NOT NULL,
+     token_id integer NOT NULL,
+     role text NOT NULL,
+     our_label_at text,
+     behaviour_score_at real,
+     hold_pct real,
+     buy_count integer,
+     sell_count integer,
+     realized_pnl real,
+     snapshot_id integer,
+     created_at timestamptz NOT NULL DEFAULT NOW(),
+     updated_at timestamptz NOT NULL DEFAULT NOW(),
+     CONSTRAINT crypsor_wte_wallet_token_role UNIQUE (wallet_address, token_id, role)
+   )`,
+  `CREATE INDEX IF NOT EXISTS crypsor_wallet_intel_label_idx ON crypsor_wallet_intel (our_label)`,
+  `CREATE INDEX IF NOT EXISTS crypsor_wallet_intel_weight_idx ON crypsor_wallet_intel (weightage)`,
+  `CREATE INDEX IF NOT EXISTS crypsor_wte_token_idx ON crypsor_wallet_token_events (token_id)`,
+  `CREATE INDEX IF NOT EXISTS crypsor_wte_wallet_idx ON crypsor_wallet_token_events (wallet_address)`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */

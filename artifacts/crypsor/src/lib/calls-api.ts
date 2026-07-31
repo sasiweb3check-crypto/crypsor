@@ -109,6 +109,25 @@ export type CallSnap = {
   smart: number | null;
 };
 
+/** Crypsor-owned labels — not GMGN KOL/smart */
+export type CrypsorWalletRow = {
+  address: string;
+  ourLabel: string;
+  behaviourScore: number;
+  weightage: number;
+  winRate: number | null;
+  wins: number;
+  losses: number;
+  tokensSeen: number;
+  sightings: number;
+  holdPct: number | null;
+  buyCount: number | null;
+  sellCount: number | null;
+  realizedPnl: number | null;
+  reason: string | null;
+  lastSeenAt: string | null;
+};
+
 export const CALLS_TOKEN_KEY = (id: number) => ["calls-token", id] as const;
 
 export function fetchCallDetail(tokenId: number) {
@@ -116,6 +135,8 @@ export function fetchCallDetail(tokenId: number) {
     card: CallCard | null;
     buyers: CallBuyer[];
     snaps: CallSnap[];
+    crypsorWallets?: CrypsorWalletRow[];
     walletBuysNote?: string;
+    crypsorNote?: string;
   }>(`api/calls/token/${tokenId}`);
 }
