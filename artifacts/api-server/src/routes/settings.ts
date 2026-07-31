@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { settings } from "@workspace/db";
-import { eq } from "drizzle-orm";
 import { UpsertSettingBody } from "@workspace/api-zod";
 
 const router = Router();
@@ -29,7 +28,13 @@ router.put("/", async (req, res) => {
     res.status(400).json({ error: "Invalid body" });
     return;
   }
-  const { key, value } = parsed.data;
+  const { key } = parsed.data;
+  // Trim Telegram credentials — whitespace caused false config failures
+  const value =
+    typeof parsed.data.value === "string" &&
+    (key === "telegram_bot_token" || key === "telegram_chat_id")
+      ? parsed.data.value.trim()
+      : parsed.data.value;
   try {
     const [row] = await db
       .insert(settings)

@@ -423,27 +423,50 @@ router.post("/caller/telegram/test", async (req, res) => {
   try {
     const rows = await db.select().from(settings)
       .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id')`);
-    const botToken = rows.find(r => r.key === "telegram_bot_token")?.value ?? "";
-    const chatId   = rows.find(r => r.key === "telegram_chat_id")?.value   ?? "";
-    if (!botToken || !chatId) {
+    const botToken = (rows.find(r => r.key === "telegram_bot_token")?.value ?? "").trim();
+    const chatIdRaw = (rows.find(r => r.key === "telegram_chat_id")?.value ?? "").trim();
+    if (!botToken || !chatIdRaw) {
       res.status(400).json({ error: "Save bot token and chat ID first." });
       return;
     }
-    const text = "✅ *Crypsor Caller* — test message\\. Runner alerts are configured correctly\\.";
-    const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "MarkdownV2" }),
-    });
+    // Telegram accepts numeric chat ids as numbers; keep string for @channel
+    const chat_id = /^-?\d+$/.test(chatIdRaw) ? Number(chatIdRaw) : chatIdRaw;
+
+    // Plain text first — MarkdownV2 is brittle and caused false "server error" failures
+    const text = "Crypsor Caller — test OK. Alerts are configured.";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    let tgRes: Response;
+    try {
+      tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id, text, disable_web_page_preview: true }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const bodyText = await tgRes.text().catch(() => "");
     if (!tgRes.ok) {
-      const body = await tgRes.text();
-      res.status(400).json({ error: `Telegram: ${body}` });
+      let detail = bodyText.slice(0, 400);
+      try {
+        const j = JSON.parse(bodyText) as { description?: string };
+        if (j.description) detail = j.description;
+      } catch { /* keep raw */ }
+      res.status(400).json({ error: `Telegram: ${detail}` });
       return;
     }
     res.json({ ok: true });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error("telegram test error", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({
+      error: msg.includes("abort")
+        ? "Telegram request timed out — check outbound network from the API host."
+        : `Telegram test failed: ${msg}`,
+    });
   }
 });
 

@@ -43,19 +43,38 @@ async function sendTelegram(
   creds: { botToken: string; chatId: string },
   text: string,
 ): Promise<void> {
-  const resp = await fetch(`https://api.telegram.org/bot${creds.botToken}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: creds.chatId,
-      text,
-      parse_mode: "MarkdownV2",
-      disable_web_page_preview: false,
-    }),
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`Telegram ${resp.status}: ${body.slice(0, 300)}`);
+  const chat_id = /^-?\d+$/.test(creds.chatId) ? Number(creds.chatId) : creds.chatId;
+  const url = `https://api.telegram.org/bot${creds.botToken}/sendMessage`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    let resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id,
+        text,
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: false,
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      // MarkdownV2 is brittle — retry as plain text so alerts still deliver
+      const plain = text.replace(/\\([_*[\]()~`>#+=|{}.!\-\\])/g, "$1");
+      resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id, text: plain, disable_web_page_preview: false }),
+        signal: controller.signal,
+      });
+    }
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`Telegram ${resp.status}: ${body.slice(0, 300)}`);
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
