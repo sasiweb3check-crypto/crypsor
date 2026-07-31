@@ -1,12 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Route, Switch, Router as WouterRouter } from 'wouter';
+import { useEffect } from 'react';
+import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { AppShell } from '@/components/layout';
 import Caller from '@/pages/caller';
-import Settings from '@/pages/settings';
+import Dashboard from '@/pages/dashboard';
+import Tokens from '@/pages/tokens';
 import TokenDetail from '@/pages/token-detail';
+import Settings from '@/pages/settings';
+import Wallets from '@/pages/wallets';
+import Holders from '@/pages/holders';
+import IntelLog from '@/pages/intel-log';
 import NotFound from '@/pages/not-found';
 import { useLiveTokens } from '@/hooks/use-live-tokens';
 
@@ -24,13 +30,31 @@ function LiveBridge() {
   return null;
 }
 
+/** Legacy aliases → Pro home */
+function RedirectToPro() {
+  const [, setLocation] = useLocation();
+  useEffect(() => {
+    setLocation('/');
+  }, [setLocation]);
+  return null;
+}
+
 function Router() {
   return (
     <AppShell>
       <Switch>
+        {/* Pro Intel — primary surface */}
         <Route path="/" component={Caller} />
-        <Route path="/settings" component={Settings} />
+        <Route path="/pro" component={RedirectToPro} />
+        <Route path="/caller" component={RedirectToPro} />
+
+        <Route path="/dashboard" component={Dashboard} />
+        <Route path="/tokens" component={Tokens} />
         <Route path="/tokens/:id" component={TokenDetail} />
+        <Route path="/wallets" component={Wallets} />
+        <Route path="/holders" component={Holders} />
+        <Route path="/intel-log" component={IntelLog} />
+        <Route path="/settings" component={Settings} />
         <Route component={NotFound} />
       </Switch>
     </AppShell>

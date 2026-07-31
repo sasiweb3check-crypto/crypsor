@@ -242,133 +242,186 @@ function SortBtn({
   );
 }
 
-// ── Token row ─────────────────────────────────────────────────────────────────
+// ── Pro Score bar ─────────────────────────────────────────────────────────────
+
+function ProScoreBar({ score }: { score: number }) {
+  const isVG = score >= 75;
+  const isG  = score >= 55;
+  const color = isVG ? "#f59e0b" : isG ? "#3b82f6" : "#484f58";
+  return (
+    <div className="h-0.5 rounded-full overflow-hidden" style={{ background: "#21262d", width: 40 }}>
+      <div
+        className="h-full rounded-full transition-all duration-500"
+        style={{ width: `${Math.min(100, score)}%`, background: color }}
+      />
+    </div>
+  );
+}
+
+// ── Token card ────────────────────────────────────────────────────────────────
 
 function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
   const { toast } = useToast();
   const sym = safeSymbol(t.symbol, t.address);
 
   const isVeryGood = t.qualityLabel === "very_good";
-  const borderColor = isVeryGood ? "#f59e0b22" : "#3b82f618";
+  const borderColor = isVeryGood ? "rgba(245,158,11,0.28)" : "rgba(59,130,246,0.22)";
   const accentColor = isVeryGood ? "#f59e0b" : "#3b82f6";
-  const bgGlow     = isVeryGood ? "#f59e0b06" : "transparent";
+  const bgGlow = isVeryGood
+    ? "linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(3,6,15,0.4) 55%)"
+    : "linear-gradient(135deg, rgba(59,130,246,0.06) 0%, rgba(3,6,15,0.35) 55%)";
 
   return (
     <div
       onClick={onNavigate}
-      className="relative flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer transition-all duration-150 group"
+      className="relative flex flex-col gap-2.5 px-3 py-3 rounded-xl cursor-pointer transition-all duration-150 group active:scale-[0.995]"
       style={{
         background: bgGlow,
         border: `1px solid ${borderColor}`,
+        boxShadow: isVeryGood ? "0 0 24px rgba(245,158,11,0.06)" : "none",
       }}
-      onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + "55")}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + "88")}
       onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}
     >
       {/* Quality accent strip */}
       <div
-        className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r"
-        style={{ background: isVeryGood
-          ? "linear-gradient(180deg,#f59e0b,#22c55e)"
-          : "linear-gradient(180deg,#3b82f6,#6366f1)" }}
+        className="absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-r"
+        style={{
+          background: isVeryGood
+            ? "linear-gradient(180deg,#f59e0b,#22c55e)"
+            : "linear-gradient(180deg,#3b82f6,#6366f1)",
+        }}
       />
 
-      {/* Logo */}
-      <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
+      {/* Top row: identity + quality */}
+      <div className="flex items-start gap-3 pl-1">
+        <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
 
-      {/* Name + badges */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[11px] font-bold text-white truncate max-w-[100px]">{sym}</span>
-          <RunBadge status={t.runStatus} />
-          <QualityBadge label={t.qualityLabel} score={t.proScore} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[12px] font-black text-white truncate max-w-[140px]">{sym}</span>
+            <RunBadge status={t.runStatus} />
+          </div>
+          <div className="mt-1 flex items-center gap-2 flex-wrap">
+            <QualityBadge label={t.qualityLabel} score={t.proScore} />
+            <ProScoreBar score={t.proScore} />
+          </div>
         </div>
-        <div className="flex items-center gap-2 mt-0.5">
-          {/* Show surfaced MC (when token first appeared in Pro Intel) as the
-              real entry price. Fall back to calledMcUsd for tokens that
-              qualified immediately or predating this field. */}
-          {t.surfacedMcUsd != null && t.surfacedMcUsd !== t.calledMcUsd ? (
-            <span className="text-[9px] text-[#484f58]" title={`First detected at ${formatCompactUsd(t.calledMcUsd)}`}>
-              <span style={{ color: "#f59e0b88" }}>⚑</span>{" "}
-              {formatCompactUsd(t.surfacedMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
-            </span>
-          ) : (
-            <span className="text-[9px] text-[#484f58]">
-              MC {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
-            </span>
-          )}
-          {/* KOL / Smart indicators */}
-          {t.currentKol > 0 && (
-            <span className="text-[8px] font-bold" style={{ color: "#a855f7" }}>
-              K{t.currentKol}
-            </span>
-          )}
-          {t.currentSmart > 0 && (
-            <span className="text-[8px] font-bold" style={{ color: "#06b6d4" }}>
-              S{t.currentSmart}
-            </span>
-          )}
-          <SecurityIcons
-            mint={t.secMintRenounced}
-            freeze={t.secFreezeRenounced}
-            honeypot={t.secIsHoneypot}
-          />
-        </div>
-      </div>
 
-      {/* Gain + ATH + age (right column) */}
-      <div className="flex flex-col items-end gap-0.5 shrink-0">
-        {/* ATH multiple */}
-        <div className="flex items-center gap-1">
-          <span className="text-[8px] text-[#484f58] uppercase tracking-widest">ATH</span>
-          <span
-            className="text-[11px] font-black"
-            style={{ color: t.athMultiple != null && t.athMultiple >= 2 ? "#f59e0b" : "#8b949e" }}
-          >
-            {fmtAth(t.athMultiple)}
+        {/* Primary metrics — always visible */}
+        <div className="flex flex-col items-end gap-0.5 shrink-0">
+          <div className="flex items-center gap-1">
+            <span className="text-[8px] text-[#484f58] uppercase tracking-widest">ATH</span>
+            <span
+              className="text-[13px] font-black tabular-nums"
+              style={{ color: t.athMultiple != null && t.athMultiple >= 2 ? "#f59e0b" : "#c9d1d9" }}
+            >
+              {fmtAth(t.athMultiple)}
+            </span>
+          </div>
+          <span className={cn("text-[11px] font-bold tabular-nums", gainColor(t.gainSinceCall))}>
+            {fmtGain(t.gainSinceCall)}
           </span>
         </div>
-        {/* Gain since call */}
-        <span className={cn("text-[10px] font-bold", gainColor(t.gainSinceCall))}>
-          {fmtGain(t.gainSinceCall)}
-        </span>
-        {/* Called age */}
-        <div className="flex items-center gap-1">
-          <span className="text-[7px] text-[#484f58] uppercase tracking-widest">Age</span>
-          <span className="text-[8px]" style={{ color: "#484f58" }}>{formatTimeAgo(t.calledAt)}</span>
+      </div>
+
+      {/* Metrics strip */}
+      <div
+        className="grid grid-cols-3 gap-2 pl-1 rounded-lg px-2 py-1.5"
+        style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.04)" }}
+      >
+        <div>
+          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Entry → Now</div>
+          <div className="text-[9px] text-[#8b949e] tabular-nums truncate">
+            {t.surfacedMcUsd != null && t.surfacedMcUsd !== t.calledMcUsd ? (
+              <>
+                <span style={{ color: "#f59e0b88" }}>⚑</span>{" "}
+                {formatCompactUsd(t.surfacedMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
+              </>
+            ) : (
+              <>{formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}</>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Smart / KOL</div>
+          <div className="text-[9px] font-bold tabular-nums">
+            <span style={{ color: "#06b6d4" }}>S{t.currentSmart}</span>
+            <span className="text-[#30363d]"> · </span>
+            <span style={{ color: "#a855f7" }}>K{t.currentKol}</span>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Age</div>
+          <div className="flex items-center justify-end gap-1">
+            <span className="text-[9px] text-[#8b949e]">{formatTimeAgo(t.calledAt)}</span>
+            <SecurityIcons
+              mint={t.secMintRenounced}
+              freeze={t.secFreezeRenounced}
+              honeypot={t.secIsHoneypot}
+            />
+          </div>
         </div>
       </div>
 
-      {/* External link + copy — visible on hover */}
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+      {/* Actions — always visible on touch devices, hover-enhanced on desktop */}
+      <div className="flex items-center gap-1 pl-1 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         <button
+          type="button"
           onClick={e => {
             e.stopPropagation();
             navigator.clipboard.writeText(t.address);
             toast({ title: "Copied", description: t.address.slice(0, 20) + "…" });
           }}
-          className="p-1 rounded hover:bg-white/5"
+          className="p-1.5 rounded-md hover:bg-white/5"
+          aria-label="Copy address"
         >
-          <Copy className="w-3 h-3 text-[#484f58]" />
+          <Copy className="w-3.5 h-3.5 text-[#484f58]" />
         </button>
         <a
-          href={getGmgnUrl(t.chain, t.address)} target="_blank" rel="noopener noreferrer"
+          href={getGmgnUrl(t.chain, t.address)}
+          target="_blank"
+          rel="noopener noreferrer"
           onClick={e => e.stopPropagation()}
-          className="p-1 rounded hover:bg-white/5"
+          className="p-1.5 rounded-md hover:bg-white/5"
+          aria-label="Open on GMGN"
         >
-          <ExternalLink className="w-3 h-3 text-[#484f58]" />
+          <ExternalLink className="w-3.5 h-3.5 text-[#484f58]" />
         </a>
         {t.socials.twitter && (
-          <a href={t.socials.twitter} target="_blank" rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()} className="p-1 rounded hover:bg-white/5">
-            <Twitter className="w-3 h-3 text-[#484f58]" />
+          <a
+            href={t.socials.twitter}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="p-1.5 rounded-md hover:bg-white/5"
+          >
+            <Twitter className="w-3.5 h-3.5 text-[#484f58]" />
           </a>
         )}
         {t.socials.telegram && (
-          <a href={t.socials.telegram} target="_blank" rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()} className="p-1 rounded hover:bg-white/5">
-            <Send className="w-3 h-3 text-[#484f58]" />
+          <a
+            href={t.socials.telegram}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="p-1.5 rounded-md hover:bg-white/5"
+          >
+            <Send className="w-3.5 h-3.5 text-[#484f58]" />
           </a>
         )}
+        {t.socials.website && (
+          <a
+            href={t.socials.website}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="p-1.5 rounded-md hover:bg-white/5"
+          >
+            <Globe className="w-3.5 h-3.5 text-[#484f58]" />
+          </a>
+        )}
+        <span className="ml-auto text-[8px] uppercase tracking-widest text-[#30363d]">Tap for detail</span>
       </div>
     </div>
   );
@@ -402,22 +455,6 @@ function FilterTab({
         </span>
       )}
     </button>
-  );
-}
-
-// ── Pro Score bar ─────────────────────────────────────────────────────────────
-
-function ProScoreBar({ score }: { score: number }) {
-  const isVG = score >= 75;
-  const isG  = score >= 55;
-  const color = isVG ? "#f59e0b" : isG ? "#3b82f6" : "#484f58";
-  return (
-    <div className="h-0.5 rounded-full overflow-hidden" style={{ background: "#21262d", width: 40 }}>
-      <div
-        className="h-full rounded-full transition-all duration-500"
-        style={{ width: `${Math.min(100, score)}%`, background: color }}
-      />
-    </div>
   );
 }
 
@@ -486,13 +523,13 @@ export default function Caller() {
   const winRate    = stats?.winRate ?? 0;
 
   return (
-    <div className="flex flex-col min-h-0 flex-1 gap-3 px-3 py-3 max-w-2xl mx-auto w-full">
+    <div className="flex flex-col min-h-0 flex-1 gap-3 px-3 py-3 md:px-6 md:py-5 max-w-2xl mx-auto w-full">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4" style={{ color: "#f59e0b" }} />
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Zap className="w-4 h-4 shrink-0" style={{ color: "#f59e0b" }} />
             <span className="text-[13px] font-black uppercase tracking-widest text-white">
               Pro Intel
             </span>
@@ -500,45 +537,54 @@ export default function Caller() {
               className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider"
               style={{ background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b30" }}
             >
-              Very Good + Good only
+              Very Good + Good
             </span>
           </div>
           <p className="text-[9px] text-[#484f58] mt-0.5">
-            Quality only — stats, alerts &amp; list scoped to Very Good + Good
+            Quality calls only — ranked by Pro Score
           </p>
         </div>
-        <div className="text-right">
-          <div className="text-[11px] font-black text-white">{totalCalled}</div>
-          <div className="text-[8px] text-[#484f58] uppercase tracking-widest">quality</div>
+        <div
+          className="text-right px-2.5 py-1.5 rounded-xl shrink-0"
+          style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}
+        >
+          <div className="text-[14px] font-black text-[#f59e0b] tabular-nums">{totalCalled}</div>
+          <div className="text-[7px] text-[#f59e0b]/70 uppercase tracking-widest">quality</div>
         </div>
       </div>
 
       {/* ── Stats row ─────────────────────────────────────────────────────── */}
-      <div className="flex gap-1.5 flex-wrap">
+      <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5 -mx-0.5 px-0.5">
         <StatChip label="Win Rate" value={`${winRate}%`} accent="#22c55e" large />
         <StatChip label="Very Good" value={veryGoodCt} accent="#f59e0b" />
         <StatChip label="Good" value={goodCt} accent="#3b82f6" />
-        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
+        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
         <StatChip label="2×" value={stats?.x2Count ?? "—"} sub="ATH" />
         <StatChip label="3×" value={stats?.x3Count ?? "—"} />
         <StatChip label="5×" value={stats?.x5Count ?? "—"} />
         <StatChip label="10×" value={stats?.x10Count ?? "—"} accent={stats?.x10Count ? "#f59e0b" : undefined} />
         <StatChip label="100×" value={stats?.x100Count ?? "—"} accent={stats?.x100Count ? "#ef4444" : undefined} />
-        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
+        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
         <StatChip label="Best ATH" value={bestAth != null ? `${bestAth.toFixed(1)}×` : "—"} accent="#f59e0b" large />
       </div>
 
-      {/* ── Filter + Sort row ─────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        {/* Quality filter tabs — only Very Good + Good tokens shown */}
-        <div className="flex items-center gap-1.5 flex-wrap">
+      {/* ── Sticky filter + sort (mobile-friendly) ─────────────────────────── */}
+      <div
+        className="sticky top-12 md:top-0 z-20 -mx-3 px-3 py-2 space-y-2"
+        style={{
+          background: "rgba(3,6,15,0.88)",
+          backdropFilter: "blur(10px)",
+          borderBottom: "1px solid rgba(255,255,255,0.04)",
+        }}
+      >
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
           <FilterTab
-            label="⭐ Very Good" active={qualityFilter === "very_good"}
+            label="Very Good" active={qualityFilter === "very_good"}
             count={veryGoodCt}
             onClick={() => setQF("very_good")}
           />
           <FilterTab
-            label="✅ Good" active={qualityFilter === "good"}
+            label="Good" active={qualityFilter === "good"}
             count={goodCt}
             onClick={() => setQF("good")}
           />
@@ -548,44 +594,48 @@ export default function Caller() {
             onClick={() => setQF("quality")}
           />
           <FilterTab
-            label="🕐 Recently Added" active={qualityFilter === "recent"}
+            label="Recent" active={qualityFilter === "recent"}
             count={recentCt}
             onClick={() => setQF("recent")}
           />
         </div>
 
-        {/* Sort buttons */}
-        <div className="flex items-center gap-1">
-          {([
-            { key: "proScore" as SortKey, label: "Score" },
-            { key: "calledAt" as SortKey, label: "Age" },
-            { key: "ath"      as SortKey, label: "ATH" },
-            { key: "gain"     as SortKey, label: "Gain" },
-            { key: "intel"    as SortKey, label: "Intel" },
-          ]).map(s => (
-            <SortBtn key={s.key} label={s.label}
-              active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
-              onClick={() => setSort(s.key)} />
-          ))}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[8px] uppercase tracking-widest text-[#30363d] shrink-0">Sort</span>
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            {([
+              { key: "proScore" as SortKey, label: "Score" },
+              { key: "calledAt" as SortKey, label: "Age" },
+              { key: "ath"      as SortKey, label: "ATH" },
+              { key: "gain"     as SortKey, label: "Gain" },
+              { key: "intel"    as SortKey, label: "Intel" },
+            ]).map(s => (
+              <SortBtn key={s.key} label={s.label}
+                active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
+                onClick={() => setSort(s.key)} />
+            ))}
+          </div>
         </div>
       </div>
 
       {/* ── Pro Score legend ───────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 px-3 py-2 rounded-lg"
-        style={{ background: "#0d1117", border: "1px solid #21262d" }}>
-        <div className="flex items-center gap-1.5">
+      <div
+        className="flex items-center gap-3 px-3 py-2 rounded-xl overflow-x-auto no-scrollbar"
+        style={{ background: "rgba(13,17,23,0.8)", border: "1px solid #21262d" }}
+      >
+        <div className="flex items-center gap-1.5 shrink-0">
           <Star className="w-2.5 h-2.5" style={{ color: "#f59e0b" }} fill="#f59e0b" />
           <span className="text-[8px] font-bold" style={{ color: "#f59e0b" }}>Very Good</span>
           <span className="text-[7px] text-[#484f58]">≥ 75</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           <BarChart2 className="w-2.5 h-2.5" style={{ color: "#3b82f6" }} />
           <span className="text-[8px] font-bold" style={{ color: "#3b82f6" }}>Good</span>
           <span className="text-[7px] text-[#484f58]">55–74</span>
         </div>
-        <div className="w-px self-stretch" style={{ background: "#21262d" }} />
-        <span className="text-[7px] text-[#30363d]">
-          Intel strength · MC/Liq · ATH · Gain momentum · Run status · Risk
+        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
+        <span className="text-[7px] text-[#30363d] whitespace-nowrap">
+          Intel · MC/Liq · ATH · Momentum · Run · Risk
         </span>
       </div>
 
