@@ -88,8 +88,10 @@ function CallCardView({ c }: { c: CallCard }) {
   const [open, setOpen] = useState(true);
   const imgSrc = safeImageUrl(c.logoUri, c.address, c.symbol);
   const sym = safeSymbol(c.symbol, c.address) || "?";
-  const athBadge = c.athMultiple >= 2
-    ? `${c.athMultiple >= 10 ? Math.round(c.athMultiple) : c.athMultiple.toFixed(1)}x ATH`
+  const athX = Number.isFinite(c.athMultiple) ? c.athMultiple : 1;
+  const nowX = Number.isFinite(c.nowMultiple) ? c.nowMultiple : 1;
+  const athBadge = athX >= 2
+    ? `${athX >= 10 ? Math.round(athX) : athX.toFixed(1)}x ATH`
     : null;
 
   const walletLabel = c.walletBuys > 0
@@ -220,7 +222,7 @@ function CallCardView({ c }: { c: CallCard }) {
 
       {open && (
         <div className="pb-1">
-          <LiveBar now={c.nowMultiple} peak={Math.max(c.athMultiple, c.nowMultiple)} />
+          <LiveBar now={nowX} peak={Math.max(athX, nowX)} />
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px] text-[var(--cryp-mute)]">
             {c.avgWalletWinRate != null && (
               <span>Buyer WR {(c.avgWalletWinRate * 100).toFixed(0)}%</span>
