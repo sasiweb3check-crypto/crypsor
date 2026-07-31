@@ -1,8 +1,8 @@
-# Crypsor API — always-on Render web service (Express + intelligence pipeline)
+# Crypsor — API (always-on Node) + frontend (static CDN) on Render
 # Blueprint: https://render.com/docs/blueprint-spec
 #
-# After first deploy, set secrets in the Render dashboard (sync: false vars).
-# Then set CORS_ORIGIN to your Vercel frontend URL and redeploy if needed.
+# After first deploy, set secrets on crypsor-api in the dashboard (sync: false vars).
+# Set CORS_ORIGIN on crypsor-api to the crypsor-web URL (e.g. https://crypsor-web.onrender.com).
 
 services:
   - type: web
@@ -31,3 +31,25 @@ services:
         generateValue: true
       - key: CORS_ORIGIN
         sync: false
+
+  - type: web
+    name: crypsor-web
+    runtime: static
+    plan: free
+    region: oregon
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter @workspace/crypsor run build
+    staticPublishPath: artifacts/crypsor/dist/public
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /index.html
+        name: Cache-Control
+        value: no-cache, no-store, must-revalidate
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    envVars:
+      - key: VITE_API_URL
+        value: https://crypsor-api.onrender.com

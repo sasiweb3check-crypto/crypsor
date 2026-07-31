@@ -50,3 +50,5 @@ Thumbs.db
 
 # Imported source archives are not part of the runnable project
 /zipFile.zip
+
+.vercel
