@@ -11,7 +11,7 @@ export const OPS_GMGN_KEY = ["opsGmgnCheck"] as const;
 export type OpsLevel = "info" | "warn" | "error";
 export type OpsKind =
   | "helius" | "wallet_buy" | "scan" | "pro_qualify"
-  | "telegram" | "blocker" | "api" | "all";
+  | "telegram" | "blocker" | "api" | "cto" | "runner" | "all";
 
 export interface OpsEvent {
   id: number;

@@ -17,7 +17,7 @@
 
 import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
-import { eq, or, isNull, lt, and } from "drizzle-orm";
+import { eq, or, isNull, lt, and, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { eventBus, type TokenBoughtEvent } from "./event-bus";
 import {
@@ -33,6 +33,8 @@ const REFRESH_INTERVAL_MS = 5 * 60_000;   // 5 min between refresh cycles
 const STARTUP_DELAY_MS    = 60_000;        // wait 60 s after boot
 const INITIAL_FETCH_DELAY = 15_000;        // 15 s after token:bought
 const STALE_AFTER_MS      = 30 * 60_000;  // re-fetch security if older than 30 min
+/** Desk (good/very_good) — keep CTO / creator fresher than the general pool. */
+const DESK_STALE_AFTER_MS = 8 * 60_000;
 
 const log = logger.child({ module: "security-service" });
 
@@ -161,35 +163,62 @@ async function fetchCreatorProfile(
 
 async function refreshCycle(): Promise<void> {
   const staleThreshold = new Date(Date.now() - STALE_AFTER_MS);
+  const deskStale = new Date(Date.now() - DESK_STALE_AFTER_MS);
 
-  const tokens = await db
-    .select({
-      id:           tracked_tokens.id,
-      address:      tracked_tokens.address,
-      chain:        tracked_tokens.chain,
-      name:         tracked_tokens.name,
-      symbol:       tracked_tokens.symbol,
-      marketCapUsd: tracked_tokens.marketCapUsd,
-    })
-    .from(tracked_tokens)
-    .where(
-      and(
-        or(
-          eq(tracked_tokens.status, "active"),
-          eq(tracked_tokens.status, "watch"),
-          eq(tracked_tokens.status, "new"),
-        ),
-        or(
-          isNull(tracked_tokens.secFetchedAt),
-          lt(tracked_tokens.secFetchedAt, staleThreshold),
-        ),
-      ),
-    )
-    .limit(20); // cap per cycle to stay within rate limits
+  // Prefer desk tokens (good/very_good) that need fresher CTO checks
+  const desk = await db.execute(sql`
+    SELECT t.id, t.address, t.chain, t.name, t.symbol, t.market_cap_usd AS "marketCapUsd"
+    FROM tracked_tokens t
+    JOIN pro_calls pc ON pc.token_id = t.id
+    WHERE pc.quality_label IN ('good', 'very_good')
+      AND COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+      AND (t.sec_fetched_at IS NULL OR t.sec_fetched_at < ${deskStale})
+    ORDER BY t.sec_fetched_at ASC NULLS FIRST
+    LIMIT 12
+  `).catch(() => null);
+
+  const deskTokens = ((desk?.rows ?? []) as Array<Record<string, unknown>>).map(r => ({
+    id: Number(r.id),
+    address: String(r.address),
+    chain: String(r.chain ?? "solana"),
+    name: (r.name as string | null) ?? null,
+    symbol: (r.symbol as string | null) ?? null,
+    marketCapUsd: r.marketCapUsd != null ? String(r.marketCapUsd) : null,
+  }));
+
+  const tokens = deskTokens.length >= 8
+    ? deskTokens
+    : [
+      ...deskTokens,
+      ...(await db
+        .select({
+          id:           tracked_tokens.id,
+          address:      tracked_tokens.address,
+          chain:        tracked_tokens.chain,
+          name:         tracked_tokens.name,
+          symbol:       tracked_tokens.symbol,
+          marketCapUsd: tracked_tokens.marketCapUsd,
+        })
+        .from(tracked_tokens)
+        .where(
+          and(
+            or(
+              eq(tracked_tokens.status, "active"),
+              eq(tracked_tokens.status, "watch"),
+              eq(tracked_tokens.status, "new"),
+            ),
+            or(
+              isNull(tracked_tokens.secFetchedAt),
+              lt(tracked_tokens.secFetchedAt, staleThreshold),
+            ),
+          ),
+        )
+        .limit(20 - deskTokens.length)),
+    ];
 
   if (tokens.length === 0) return;
 
-  log.debug({ count: tokens.length }, "Security refresh cycle: fetching stale tokens");
+  log.debug({ count: tokens.length, desk: deskTokens.length }, "Security refresh cycle: fetching stale tokens");
 
   // Process sequentially with a small delay to avoid hammering GMGN
   for (const token of tokens) {

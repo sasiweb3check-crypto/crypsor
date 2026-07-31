@@ -56,6 +56,8 @@ export const pro_calls = pgTable(
     runnerPhase:      text("runner_phase"),
     // First ENTRY-phase Telegram ping (MC-agnostic runner product)
     runnerAlertSentAt: timestamp("runner_alert_sent_at", { withTimezone: true }),
+    // First CTO detection Telegram ping (good / very_good desk)
+    ctoAlertSentAt: timestamp("cto_alert_sent_at", { withTimezone: true }),
     // Last snap MC — for momentum delta without joining snapshots
     lastSnapMcUsd:    text("last_snap_mc_usd"),
     // Momentum snaps collected toward ENTRY observation gate (≥5)

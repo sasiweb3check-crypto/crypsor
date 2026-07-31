@@ -145,6 +145,9 @@ function WaitingCardView({ c }: { c: CallCard }) {
             >
               {c.runnerLabel ?? phase} {c.runnerScore ?? ""}
             </span>
+            {c.ctoFlag && (
+              <span className="text-[9px] font-bold uppercase text-[var(--cryp-warn)]">CTO</span>
+            )}
             {c.alertEligible && (
               <span className="text-[9px] font-bold uppercase text-[var(--cryp-mint)]">Ready</span>
             )}
@@ -562,7 +565,7 @@ export default function CallsPage() {
       )}
       {mode === "waiting" && (
         <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed fade-up">
-          Ops “pending first calls” — very_good coins held for snaps / freshness / smart-hold before Telegram ENTRY.
+          Pending ENTRY + live CTOs (good/very_good). CTO tokens stay here even when other gates aren’t met — valued.
         </p>
       )}
 

@@ -452,10 +452,12 @@ async function loadWaitingCalls(limit: number): Promise<{
   cards: WaitingCallCard[];
   pendingFirstCalls: number;
 }> {
-  const cacheKey = `calls:waiting:v1:${limit}`;
+  const cacheKey = `calls:waiting:v2:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
+  // Waiting = very_good held for ENTRY, PLUS any good/very_good CTO not yet ENTRY-served
+  // (CTO is valued even when other gates aren't met yet).
   const rows = await db.execute(sql`
     SELECT
       pc.token_id, pc.called_at, pc.called_mc_usd,
@@ -481,10 +483,18 @@ async function loadWaitingCalls(limit: number): Promise<{
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
-      AND pc.quality_label = 'very_good'
       AND pc.call_alert_sent_at IS NULL
       AND pc.runner_alert_sent_at IS NULL
-    ORDER BY pc.called_at DESC NULLS LAST
+      AND (
+        pc.quality_label = 'very_good'
+        OR (
+          t.sec_cto_flag IS TRUE
+          AND pc.quality_label IN ('good', 'very_good')
+        )
+      )
+    ORDER BY
+      CASE WHEN t.sec_cto_flag IS TRUE THEN 0 ELSE 1 END,
+      pc.called_at DESC NULLS LAST
     LIMIT ${Math.min(Math.max(limit, 1), 40)}
   `);
 
@@ -561,16 +571,21 @@ async function loadWaitingCalls(limit: number): Promise<{
     });
 
     const snapsNeeded = Math.max(0, MIN_ENTRY_OBSERVATION_SNAPS - snapCount);
+    const isCto = r.sec_cto_flag === true || r.sec_cto_flag === 1 || r.sec_cto_flag === "1";
     const holdReason = runner.alertEligible && runner.phase === "entry"
       ? "Ready — next alert cycle should ping"
-      : runner.blockers[0]
-        ?? (!runner.signals.observationReady
-          ? `Observing ${snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS} snaps`
-          : runner.phase === "heating"
-            ? "Heating — waiting for ENTRY velocity"
-            : runner.phase === "radar"
-              ? "Radar — building structure"
-              : `Held · ${runner.label}`);
+      : isCto && !(runner.alertEligible && runner.phase === "entry")
+        ? (runner.blockers[0]
+          ? `CTO valued · hold: ${runner.blockers[0]}`
+          : "CTO valued — waiting on ENTRY gates")
+        : runner.blockers[0]
+          ?? (!runner.signals.observationReady
+            ? `Observing ${snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS} snaps`
+            : runner.phase === "heating"
+              ? "Heating — waiting for ENTRY velocity"
+              : runner.phase === "radar"
+                ? "Radar — building structure"
+                : `Held · ${runner.label}`);
 
     const base: CallCard = {
       id: Number(r.token_id),
@@ -636,10 +651,13 @@ async function loadWaitingCalls(limit: number): Promise<{
     };
   });
 
-  // Fresh / near-ENTRY first, then heating, then stale desk leftovers
+  // CTO valued first, then near-ENTRY, then heating / radar
   const phaseRank = (p: RunnerPhase) =>
     p === "entry" ? 0 : p === "heating" ? 1 : p === "radar" ? 2 : 3;
   cards.sort((a, b) => {
+    const ac = a.ctoFlag === true ? 0 : 1;
+    const bc = b.ctoFlag === true ? 0 : 1;
+    if (ac !== bc) return ac - bc;
     if (a.alertEligible !== b.alertEligible) return a.alertEligible ? -1 : 1;
     const pd = phaseRank(a.runnerPhase) - phaseRank(b.runnerPhase);
     if (pd !== 0) return pd;
