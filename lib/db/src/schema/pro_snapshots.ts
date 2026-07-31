@@ -34,6 +34,15 @@ export const pro_snapshots = pgTable(
 
     // ── ATH multiple at this snapshot (current_mc / called_mc) ──────────────
     athMultiple:  real("ath_multiple"),
+
+    // ── Pro Score v2 snapshot fields (survival / age tracking) ───────────────
+    survivalScore:        real("survival_score"),
+    proScore:             real("pro_score"),
+    qualityLabel:         text("quality_label"),
+    gainPct:              real("gain_pct"),
+    runStatus:            text("run_status"),
+    holderVelocityScore:  real("holder_velocity_score"),
+    ageHours:             real("age_hours"),
   },
   (t) => [
     index("pro_snapshots_call_snap_idx").on(t.proCallId, t.snapshotAt),

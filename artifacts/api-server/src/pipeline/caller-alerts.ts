@@ -23,7 +23,7 @@ import { extractSocials, type Socials } from "../lib/socials";
 
 const log = logger.child({ module: "caller-alerts" });
 
-const CHECK_INTERVAL_MS = 5 * 60 * 1_000;
+const CHECK_INTERVAL_MS = 60_000; // was 5 min — align with on-time Pro path
 
 // Only 2×, 5×, 10× — no 3× noise
 const ALERT_MILESTONES = [2, 5, 10] as const;

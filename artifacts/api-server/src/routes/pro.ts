@@ -5,10 +5,13 @@
  * GET /api/pro/history       — pro-called tokens with quality scores + run status
  * GET /api/pro/token/:id     — single token's pro call record (milestones, entry point)
  *
- * Quality labels  (Pro Score thresholds)
- *   very_good  ≥ 75
- *   good       55–74
- *   below      < 55
+ * Quality / ATH filters
+ *   very_good | good | quality | recent | all
+ *   x5        — 5 ≤ ATH < 10
+ *   x10       — 10 ≤ ATH < 20
+ *   x10plus   — ATH ≥ 20  ("10× more")
+ *
+ * Pro Score v2 labels: very_good ≥ 75 | good 55–74 | below < 55
  */
 
 import { Router } from "express";
@@ -30,11 +33,34 @@ function cachedJson(key: string, ttlMs: number, compute: () => Promise<unknown>)
   });
 }
 
+function qualityAthWhere(quality: string): SQL {
+  const base = sql`pc.quality_label IN ('very_good', 'good')`;
+  switch (quality) {
+    case "very_good":
+      return sql`pc.quality_label = 'very_good'`;
+    case "good":
+      return sql`pc.quality_label = 'good'`;
+    case "recent":
+      return sql`${base} AND pc.called_at >= NOW() - INTERVAL '24 hours'`;
+    case "all":
+      return sql`TRUE`;
+    case "x5":
+      return sql`${base} AND pc.ath_multiple >= 5 AND pc.ath_multiple < 10`;
+    case "x10":
+      return sql`${base} AND pc.ath_multiple >= 10 AND pc.ath_multiple < 20`;
+    case "x10plus":
+      return sql`${base} AND pc.ath_multiple >= 20`;
+    case "quality":
+    default:
+      return base;
+  }
+}
+
 // ── GET /api/pro/stats ────────────────────────────────────────────────────────
 
 router.get("/pro/stats", async (_req, res) => {
   try {
-    const body = await cachedJson("pro:stats", 15_000, async () => {
+    const body = await cachedJson("pro:stats", 10_000, async () => {
       const result = await db.execute(sql`
         SELECT
           COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int           AS total,
@@ -43,8 +69,9 @@ router.get("/pro/stats", async (_req, res) => {
           COUNT(CASE WHEN ath_multiple >= 1.5 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x1,
           COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x2,
           COUNT(CASE WHEN ath_multiple >= 3   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x3,
-          COUNT(CASE WHEN ath_multiple >= 5   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x5,
-          COUNT(CASE WHEN ath_multiple >= 10  AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x10,
+          COUNT(CASE WHEN ath_multiple >= 5 AND ath_multiple < 10 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x5,
+          COUNT(CASE WHEN ath_multiple >= 10 AND ath_multiple < 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10,
+          COUNT(CASE WHEN ath_multiple >= 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10_plus,
           COUNT(CASE WHEN ath_multiple >= 100 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x100,
           COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
           ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
@@ -53,7 +80,8 @@ router.get("/pro/stats", async (_req, res) => {
           COUNT(*) FILTER (
             WHERE quality_label IN ('very_good','good')
               AND called_at >= NOW() - INTERVAL '24 hours'
-          )::int                                                                         AS recent_count
+          )::int                                                                         AS recent_count,
+          ROUND(AVG(CASE WHEN quality_label IN ('very_good','good') THEN survival_score END)::numeric, 1) AS avg_survival
         FROM pro_calls
       `);
 
@@ -70,6 +98,7 @@ router.get("/pro/stats", async (_req, res) => {
         x3Count:        Number(row.x3   ?? 0),
         x5Count:        Number(row.x5   ?? 0),
         x10Count:       Number(row.x10  ?? 0),
+        x10PlusCount:   Number(row.x10_plus ?? 0),
         x100Count:      Number(row.x100 ?? 0),
         x200Count:      Number(row.x200 ?? 0),
         bestAth:        row.best_ath != null ? Number(row.best_ath) : null,
@@ -77,6 +106,7 @@ router.get("/pro/stats", async (_req, res) => {
         goodCount:      Number(row.good_count      ?? 0),
         qualityCount:   Number(row.very_good_count ?? 0) + Number(row.good_count ?? 0),
         recentCount:    Number(row.recent_count    ?? 0),
+        avgSurvival:    row.avg_survival != null ? Number(row.avg_survival) : null,
       };
     });
     res.json(body);
@@ -87,8 +117,6 @@ router.get("/pro/stats", async (_req, res) => {
 });
 
 // ── GET /api/pro/history ──────────────────────────────────────────────────────
-// Fast path: filter/sort/limit in SQL. Live MC/KOL/intel from tracked_tokens
-// (always current) — no per-row LATERAL into pro_snapshots.
 
 router.get("/pro/history", async (req, res) => {
   try {
@@ -98,21 +126,8 @@ router.get("/pro/history", async (req, res) => {
     const limit   = Math.min(Math.max(parseInt(String(req.query.limit ?? "150"), 10) || 150, 1), 300);
 
     const cacheKey = `pro:history:${quality}:${sort}:${order}:${limit}`;
-    const body = await cachedJson(cacheKey, 10_000, async () => {
-      let whereClause: SQL;
-      if (quality === "very_good") {
-        whereClause = sql`pc.quality_label = 'very_good'`;
-      } else if (quality === "good") {
-        whereClause = sql`pc.quality_label = 'good'`;
-      } else if (quality === "recent") {
-        whereClause = sql`pc.quality_label IN ('very_good', 'good')
-          AND pc.called_at >= NOW() - INTERVAL '24 hours'`;
-      } else if (quality === "all") {
-        whereClause = sql`TRUE`;
-      } else {
-        // default "quality" = very_good + good
-        whereClause = sql`pc.quality_label IN ('very_good', 'good')`;
-      }
+    const body = await cachedJson(cacheKey, 8_000, async () => {
+      const whereClause = qualityAthWhere(quality);
 
       const dir = order === "asc" ? sql`ASC` : sql`DESC`;
       let orderClause: SQL;
@@ -136,14 +151,15 @@ router.get("/pro/history", async (req, res) => {
         case "calledAt":
           orderClause = sql`pc.called_at ${dir}`;
           break;
+        case "survival":
+          orderClause = sql`pc.survival_score ${dir} NULLS LAST, pc.called_at DESC`;
+          break;
         case "proScore":
         default:
           orderClause = sql`pc.pro_score ${dir} NULLS LAST, pc.called_at DESC`;
           break;
       }
 
-      // Avoid COUNT(*) OVER() — it forces a full filtered scan before LIMIT.
-      // Run a cheap index-friendly count in parallel with the page query.
       const [countRows, callRows] = await Promise.all([
         db.execute(sql`
           SELECT COUNT(*)::int AS total_matching
@@ -160,10 +176,16 @@ router.get("/pro/history", async (req, res) => {
             pc.called_kol_count,
             pc.called_smart_count,
             pc.called_kol_smart_score,
+            pc.called_holder_velocity,
+            pc.called_mc_growth,
+            pc.called_volume_intensity,
             pc.ath_multiple,
             pc.last_snapshot_at AS snap_at,
             pc.pro_score,
             pc.quality_label,
+            pc.survival_score,
+            pc.entry_tier,
+            pc.score_version,
             pc.hit_2x,  pc.hit_2x_at,
             pc.hit_3x,  pc.hit_3x_at,
             pc.hit_5x,  pc.hit_5x_at,
@@ -181,6 +203,7 @@ router.get("/pro/history", async (req, res) => {
             t.intelligence_score AS live_intel,
             t.holder_kol_count   AS live_kol,
             t.holder_smart_count AS live_smart,
+            t.holder_velocity_score AS live_hv,
             t.sec_is_honeypot,
             t.sec_mint_renounced,
             t.sec_freeze_renounced,
@@ -201,8 +224,12 @@ router.get("/pro/history", async (req, res) => {
         called_intel_score: number | null;
         called_kol_count: number | null; called_smart_count: number | null;
         called_kol_smart_score: number | null;
+        called_holder_velocity: number | null;
+        called_mc_growth: number | null; called_volume_intensity: number | null;
         ath_multiple: number | null; snap_at: string | null;
         pro_score: number | null; quality_label: string | null;
+        survival_score: number | null; entry_tier: string | null;
+        score_version: string | null;
         hit_2x: boolean | null; hit_2x_at: string | null;
         hit_3x: boolean | null; hit_3x_at: string | null;
         hit_5x: boolean | null; hit_5x_at: string | null;
@@ -213,6 +240,7 @@ router.get("/pro/history", async (req, res) => {
         scanner_label: string | null;
         live_intel: number | null;
         live_kol: number | null; live_smart: number | null;
+        live_hv: number | null;
         address: string; chain: string; name: string | null; symbol: string | null;
         logo_uri: string | null; image_path: string | null;
         status: string; market_cap_usd: string | null;
@@ -235,10 +263,14 @@ router.get("/pro/history", async (req, res) => {
           ? ((currentMc - calledMc) / calledMc) * 100 : null;
         const athMultiple = call.ath_multiple ?? 1;
         const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
+        const ageHours = call.called_at
+          ? (Date.now() - new Date(call.called_at).getTime()) / 3_600_000
+          : null;
 
         let proScore: number;
         let qualityLabel: QualityLabel;
-        if (call.pro_score != null && call.quality_label != null) {
+        let survivalScore: number | null = call.survival_score;
+        if (call.pro_score != null && call.quality_label != null && call.score_version === "v2") {
           proScore = call.pro_score;
           qualityLabel = call.quality_label as QualityLabel;
         } else {
@@ -247,11 +279,16 @@ router.get("/pro/history", async (req, res) => {
             calledKolCount:      call.called_kol_count ?? 0,
             calledSmartCount:    call.called_smart_count ?? 0,
             calledMcUsd:         calledMc,
+            calledHolderVelocity: call.called_holder_velocity,
+            calledMcGrowth:      call.called_mc_growth,
+            calledVolumeIntensity: call.called_volume_intensity,
             currentMcUsd:        currentMc,
             athMultiple,
             gainSinceCall,
             runStatus,
             liquidityUsd,
+            ageHoursSinceCall:   ageHours,
+            holderVelocityScore: call.live_hv,
             secIsHoneypot:        call.sec_is_honeypot,
             secMintRenounced:     call.sec_mint_renounced,
             secFreezeRenounced:   call.sec_freeze_renounced,
@@ -261,6 +298,7 @@ router.get("/pro/history", async (req, res) => {
           });
           proScore = result.score;
           qualityLabel = result.qualityLabel;
+          survivalScore = result.survivalScore;
         }
 
         return {
@@ -277,12 +315,16 @@ router.get("/pro/history", async (req, res) => {
           calledKol:      call.called_kol_count ?? 0,
           calledSmart:    call.called_smart_count ?? 0,
           calledKolSmartScore: call.called_kol_smart_score,
+          calledHolderVelocity: call.called_holder_velocity,
           currentMcUsd:   currentMc,
           gainSinceCall,
           athMultiple,
           runStatus,
           proScore,
           qualityLabel,
+          survivalScore,
+          entryTier: call.entry_tier ?? null,
+          scoreVersion: call.score_version ?? "v2",
           currentKol:   Math.max(call.live_kol ?? 0, call.called_kol_count ?? 0),
           currentSmart: Math.max(call.live_smart ?? 0, call.called_smart_count ?? 0),
           currentIntel:   call.live_intel ?? call.called_intel_score,
@@ -313,8 +355,6 @@ router.get("/pro/history", async (req, res) => {
 });
 
 // ── GET /api/pro/token/:tokenId ───────────────────────────────────────────────
-// Returns the pro call record for a single token, including milestone data.
-// Used by the token detail page to render the milestone tracker.
 
 router.get("/pro/token/:tokenId", async (req, res) => {
   try {
@@ -336,6 +376,9 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         pc.ath_multiple,
         pc.pro_score,
         pc.quality_label,
+        pc.survival_score,
+        pc.entry_tier,
+        pc.score_version,
         pc.hit_2x,  pc.hit_2x_at,
         pc.hit_3x,  pc.hit_3x_at,
         pc.hit_5x,  pc.hit_5x_at,
@@ -364,6 +407,9 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         athMultiple:      r.ath_multiple != null ? Number(r.ath_multiple) : null,
         proScore:         r.pro_score != null ? Number(r.pro_score) : null,
         qualityLabel:     r.quality_label ?? null,
+        survivalScore:    r.survival_score != null ? Number(r.survival_score) : null,
+        entryTier:        r.entry_tier ?? null,
+        scoreVersion:     r.score_version ?? null,
         lastSnapshotAt:   r.last_snapshot_at ?? null,
         hit2x:    Boolean(r.hit_2x),    hit2xAt:  r.hit_2x_at   ?? null,
         hit3x:    Boolean(r.hit_3x),    hit3xAt:  r.hit_3x_at   ?? null,

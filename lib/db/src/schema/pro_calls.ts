@@ -63,6 +63,19 @@ export const pro_calls = pgTable(
     surfacedAt:       timestamp("surfaced_at", { withTimezone: true }),
     surfacedMcUsd:    text("surfaced_mc_usd"),
 
+    // ── Pro Score v2 call-time sub-signals + survival ─────────────────────────
+    // Captured from the qualifying intel-log row so scoring does not wait for
+    // a later snapshot cycle (the old call→surface median lag was ~25h).
+    calledHolderVelocity:   real("called_holder_velocity"),
+    calledMcGrowth:         real("called_mc_growth"),
+    calledVolumeIntensity:  real("called_volume_intensity"),
+    survivalScore:          real("survival_score"),
+    lastSurvivalAt:         timestamp("last_survival_at"),
+    // micro ($5-15k) | low ($15-30k) | mid ($30-75k) | high | outlier
+    entryTier:              text("entry_tier"),
+    // 'v1' legacy | 'v2' outcome-tuned (Jul 2026)
+    scoreVersion:           text("score_version").default("v2"),
+
     // ── Milestone tracker — set once, never cleared ───────────────────────────
     // Flags and timestamps for when ath_multiple first crossed each threshold.
     // Set by the pro-snapshots worker; immutable once true.
@@ -83,5 +96,7 @@ export const pro_calls = pgTable(
     index("pro_calls_quality_score_idx").on(t.qualityLabel, t.proScore),
     index("pro_calls_quality_called_idx").on(t.qualityLabel, t.calledAt),
     index("pro_calls_called_at_idx").on(t.calledAt),
+    index("pro_calls_ath_idx").on(t.athMultiple),
+    index("pro_calls_survival_idx").on(t.survivalScore),
   ],
 );

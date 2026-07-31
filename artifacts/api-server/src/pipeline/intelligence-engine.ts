@@ -29,6 +29,7 @@ import { logger } from "../lib/logger";
 import { healthMonitor } from "./health-monitor";
 import { eventBus } from "./event-bus";
 import { computeCompositeScore, type RawSignal } from "../lib/scoring-engine";
+import { pipelineQueue } from "../lib/job-queue";
 
 const log = logger.child({ module: "intelligence-engine" });
 
@@ -244,11 +245,28 @@ function computeLiquidityHealthScore(
 
 // ── Batch computation ──────────────────────────────────────────────────────────
 
-export async function refreshAllIntelligence(): Promise<void> {
+export interface RefreshIntelOpts {
+  /** Score only these token IDs (fast path). */
+  tokenIds?: number[];
+  /** Restrict to lifecycle statuses (default: all). */
+  statuses?: string[];
+}
+
+export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promise<void> {
   const t0 = Date.now();
   try {
     const pruneTs = new Date(Date.now() - PRUNE_OLDER_THAN_MS);
-    await db.delete(token_price_snapshots).where(lt(token_price_snapshots.snapshotAt, pruneTs));
+    // Only prune on full sweeps — skip on single-token fast path
+    if (!opts.tokenIds?.length) {
+      await db.delete(token_price_snapshots).where(lt(token_price_snapshots.snapshotAt, pruneTs));
+    }
+
+    const statusFilter = opts.statuses?.length
+      ? inArray(tracked_tokens.status, opts.statuses)
+      : undefined;
+    const idFilter = opts.tokenIds?.length
+      ? inArray(tracked_tokens.id, opts.tokenIds)
+      : undefined;
 
     const tokens = await db.select({
       id:                tracked_tokens.id,
@@ -268,7 +286,12 @@ export async function refreshAllIntelligence(): Promise<void> {
       intelligenceScore: tracked_tokens.intelligenceScore,
       gainPct:           tracked_tokens.gainPct,
       athGainPct:        tracked_tokens.athGainPct,
-    }).from(tracked_tokens);
+    }).from(tracked_tokens).where(
+      statusFilter && idFilter ? and(statusFilter, idFilter)
+        : statusFilter ? statusFilter
+        : idFilter ? idFilter
+        : undefined,
+    );
 
     if (tokens.length === 0) return;
 
@@ -366,6 +389,13 @@ export async function refreshAllIntelligence(): Promise<void> {
     }
 
     const logEntries: (typeof token_intel_log.$inferInsert)[] = [];
+    const scoredEvents: Array<{
+      tokenId: number; tokenAddress: string; intelligenceScore: number;
+      holderKolCount: number; holderSmartCount: number; marketCapUsd: string | null;
+      holderVelocityScore: number; mcGrowthScore: number; volumeIntensityScore: number;
+      status: string; trigger: "first" | "score_change" | "status_change" | "fast_path";
+    }> = [];
+    const isFastPath = Boolean(opts.tokenIds?.length);
 
     for (const { token: t, rawVelocity, group } of tokenRaws) {
       const pSnaps    = snapsByToken.get(t.id) ?? [];
@@ -490,6 +520,23 @@ export async function refreshAllIntelligence(): Promise<void> {
         log.info({ tokenId: t.id, trigger, intelligenceScore, prev: prevScore ?? null, ageMult, statusBefore: t.status, statusAfter }, "Intel score log entry");
       }
 
+      // Always emit for fast-path / high scores so Pro scanner can react in seconds
+      if (isFastPath || isFirst || scoreChangedEnough || intelligenceScore >= 75) {
+        scoredEvents.push({
+          tokenId: t.id,
+          tokenAddress: t.address,
+          intelligenceScore,
+          holderKolCount: Math.max(t.holderKolCount ?? 0, distinctTracked),
+          holderSmartCount: t.holderSmartCount ?? 0,
+          marketCapUsd: t.marketCapUsd,
+          holderVelocityScore,
+          mcGrowthScore,
+          volumeIntensityScore,
+          status: statusAfter,
+          trigger: isFastPath ? "fast_path" : (isFirst ? "first" : statusChanged ? "status_change" : "score_change"),
+        });
+      }
+
       // ── Composite score (holder-velocity-dominant, from scoringEngine.ts) ──
       const rawSignal: RawSignal = {
         tokenAddress:    t.address,
@@ -529,26 +576,72 @@ export async function refreshAllIntelligence(): Promise<void> {
       log.debug({ count: logEntries.length }, "Intel log entries written");
     }
 
+    for (const ev of scoredEvents) {
+      eventBus.emit("intel:scored", ev);
+    }
+
     healthMonitor.ok("intelligence-engine", Date.now() - t0);
-    log.debug({ count: tokens.length, ms: Date.now() - t0 }, "Intelligence refresh complete");
+    log.debug({ count: tokens.length, scored: scoredEvents.length, ms: Date.now() - t0, fastPath: isFastPath }, "Intelligence refresh complete");
   } catch (err) {
     healthMonitor.error("intelligence-engine", err);
     log.warn({ err }, "Intelligence refresh failed");
   }
 }
 
+/** Single-token / small-batch fast path used after buys + holder updates. */
+export async function refreshTokenIntelligence(tokenIds: number | number[]): Promise<void> {
+  const ids = Array.isArray(tokenIds) ? tokenIds : [tokenIds];
+  if (ids.length === 0) return;
+  await refreshAllIntelligence({ tokenIds: ids });
+}
+
 /**
  * Start the intelligence engine.
- * Periodic refresh runs every 5 minutes after the previous pass completes (no overlap).
+ *   • Full sweep every 3 min (was 5) — covers archive/watch catch-up
+ *   • Hot sweep (new/active/watch) every 60s — memecoin on-time path
+ *   • Event-driven fast path via intel queue on buy + holders:updated
  */
 export function startIntelligenceEngine() {
-  const loop = () => {
-    refreshAllIntelligence()
-      .catch(err => logger.warn({ err }, "Intelligence refresh failed"))
-      .finally(() => setTimeout(loop, 300_000));
+  pipelineQueue.register<{ tokenIds: number[] }>("intel", async (data) => {
+    await refreshTokenIntelligence(data.tokenIds);
+  });
+
+  const enqueueIntel = (tokenId: number, delayMs: number, reason: string) => {
+    pipelineQueue.enqueue(
+      "intel",
+      { tokenIds: [tokenId] },
+      { priority: 10, dedupKey: `intel:${tokenId}`, delayMs },
+    );
+    log.debug({ tokenId, delayMs, reason }, "Intel fast-path enqueued");
   };
-  setTimeout(loop, 300_000);
+
+  // After a tracked wallet buy: wait briefly for price+metadata, then score
+  eventBus.on("token:bought", (e) => {
+    enqueueIntel(e.tokenId, 8_000, "token:bought");
+  });
+
+  // After GMGN holders land (KOL/smart counts) — re-score immediately
+  eventBus.on("holders:updated", (e) => {
+    enqueueIntel(e.tokenId, 500, "holders:updated");
+  });
+
+  // Hot loop: new/active/watch only — every 60s
+  const hotLoop = () => {
+    refreshAllIntelligence({ statuses: ["new", "active", "watch"] })
+      .catch(err => logger.warn({ err }, "Intelligence hot refresh failed"))
+      .finally(() => setTimeout(hotLoop, 60_000));
+  };
+  setTimeout(hotLoop, 15_000);
+
+  // Full sweep every 3 min
+  const fullLoop = () => {
+    refreshAllIntelligence()
+      .catch(err => logger.warn({ err }, "Intelligence full refresh failed"))
+      .finally(() => setTimeout(fullLoop, 180_000));
+  };
+  setTimeout(fullLoop, 90_000);
+
   logger.info(
-    `Intelligence engine ready (5 min cycle) — weights: MC ${WEIGHTS.mcGrowth * 100}% | Vol ${WEIGHTS.volume * 100}% | HolderVel ${WEIGHTS.holderVel * 100}% | KOL/Smart ${WEIGHTS.kolSmart * 100}% | Liq ${WEIGHTS.liquidity * 100}%`,
+    `Intelligence engine ready (hot 60s / full 3m / event fast-path) — weights: MC ${WEIGHTS.mcGrowth * 100}% | Vol ${WEIGHTS.volume * 100}% | HolderVel ${WEIGHTS.holderVel * 100}% | KOL/Smart ${WEIGHTS.kolSmart * 100}% | Liq ${WEIGHTS.liquidity * 100}%`,
   );
 }
