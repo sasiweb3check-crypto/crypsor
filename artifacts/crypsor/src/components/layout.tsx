@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { Settings, Activity } from "lucide-react";
+import { Settings, Activity, Search } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
@@ -8,9 +8,10 @@ import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const qc = useQueryClient();
-  const onUtility = location === "/ops" || location === "/settings"
+  const onUtility = location === "/ops" || location === "/settings" || location.startsWith("/wallet")
     || location.startsWith("/ops/") || location.startsWith("/settings/");
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
+  const onWallet = location.startsWith("/wallet");
 
   useEffect(() => {
     void qc.prefetchQuery({
@@ -36,7 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
-              {onDetail ? "Call detail" : "Best Calls"}
+              {onWallet ? "Wallet intel" : onDetail ? "Call detail" : "Best Calls"}
             </div>
           </div>
         </Link>
@@ -46,6 +47,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--cryp-gain)] pulse-dot" />
             Live
           </span>
+          <Link href="/wallet">
+            <button
+              type="button"
+              aria-label="Wallet search"
+              className={cn(
+                "w-10 h-10 flex items-center justify-center rounded-xl transition-colors",
+                onWallet
+                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
+              )}
+            >
+              <Search className="w-[18px] h-[18px]" />
+            </button>
+          </Link>
           <Link href="/ops">
             <button
               type="button"
