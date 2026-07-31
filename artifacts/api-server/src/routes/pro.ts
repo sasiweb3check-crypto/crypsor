@@ -142,50 +142,58 @@ router.get("/pro/history", async (req, res) => {
           break;
       }
 
-      const callRows = await db.execute(sql`
-        SELECT
-          pc.id              AS pro_call_id,
-          pc.token_id,
-          pc.called_at,
-          pc.called_mc_usd,
-          pc.called_intel_score,
-          pc.called_kol_count,
-          pc.called_smart_count,
-          pc.called_kol_smart_score,
-          pc.ath_multiple,
-          pc.last_snapshot_at AS snap_at,
-          pc.pro_score,
-          pc.quality_label,
-          pc.hit_2x,  pc.hit_2x_at,
-          pc.hit_3x,  pc.hit_3x_at,
-          pc.hit_5x,  pc.hit_5x_at,
-          pc.hit_10x, pc.hit_10x_at,
-          pc.hit_100x,pc.hit_100x_at,
-          pc.surfaced_at,
-          pc.surfaced_mc_usd,
-          pc.scanner_label,
-          t.address, t.chain, t.name, t.symbol,
-          t.logo_uri, t.image_path,
-          t.status,
-          t.market_cap_usd,
-          t.liquidity_usd,
-          t.raw_metadata,
-          t.intelligence_score AS live_intel,
-          t.holder_kol_count   AS live_kol,
-          t.holder_smart_count AS live_smart,
-          t.sec_is_honeypot,
-          t.sec_mint_renounced,
-          t.sec_freeze_renounced,
-          t.sec_top10_holder_rate,
-          t.sec_lp_locked,
-          t.sec_rat_trader_amt_rate,
-          COUNT(*) OVER()::int AS total_matching
-        FROM pro_calls pc
-        JOIN tracked_tokens t ON t.id = pc.token_id
-        WHERE ${whereClause}
-        ORDER BY ${orderClause}
-        LIMIT ${limit}
-      `);
+      // Avoid COUNT(*) OVER() — it forces a full filtered scan before LIMIT.
+      // Run a cheap index-friendly count in parallel with the page query.
+      const [countRows, callRows] = await Promise.all([
+        db.execute(sql`
+          SELECT COUNT(*)::int AS total_matching
+          FROM pro_calls pc
+          WHERE ${whereClause}
+        `),
+        db.execute(sql`
+          SELECT
+            pc.id              AS pro_call_id,
+            pc.token_id,
+            pc.called_at,
+            pc.called_mc_usd,
+            pc.called_intel_score,
+            pc.called_kol_count,
+            pc.called_smart_count,
+            pc.called_kol_smart_score,
+            pc.ath_multiple,
+            pc.last_snapshot_at AS snap_at,
+            pc.pro_score,
+            pc.quality_label,
+            pc.hit_2x,  pc.hit_2x_at,
+            pc.hit_3x,  pc.hit_3x_at,
+            pc.hit_5x,  pc.hit_5x_at,
+            pc.hit_10x, pc.hit_10x_at,
+            pc.hit_100x,pc.hit_100x_at,
+            pc.surfaced_at,
+            pc.surfaced_mc_usd,
+            pc.scanner_label,
+            t.address, t.chain, t.name, t.symbol,
+            t.logo_uri, t.image_path,
+            t.status,
+            t.market_cap_usd,
+            t.liquidity_usd,
+            t.raw_metadata,
+            t.intelligence_score AS live_intel,
+            t.holder_kol_count   AS live_kol,
+            t.holder_smart_count AS live_smart,
+            t.sec_is_honeypot,
+            t.sec_mint_renounced,
+            t.sec_freeze_renounced,
+            t.sec_top10_holder_rate,
+            t.sec_lp_locked,
+            t.sec_rat_trader_amt_rate
+          FROM pro_calls pc
+          JOIN tracked_tokens t ON t.id = pc.token_id
+          WHERE ${whereClause}
+          ORDER BY ${orderClause}
+          LIMIT ${limit}
+        `),
+      ]);
 
       type CallRow = {
         pro_call_id: number; token_id: number;
@@ -212,11 +220,12 @@ router.get("/pro/history", async (req, res) => {
         sec_is_honeypot: boolean | null; sec_mint_renounced: boolean | null;
         sec_freeze_renounced: boolean | null; sec_top10_holder_rate: number | null;
         sec_lp_locked: boolean | null; sec_rat_trader_amt_rate: number | null;
-        total_matching: number;
       };
 
       const rows = callRows.rows as CallRow[];
-      const totalMatching = rows[0]?.total_matching ?? 0;
+      const totalMatching = Number(
+        (countRows.rows[0] as { total_matching?: number } | undefined)?.total_matching ?? rows.length,
+      );
 
       const tokens = rows.map(call => {
         const calledMc  = call.called_mc_usd ? parseFloat(call.called_mc_usd) : null;
