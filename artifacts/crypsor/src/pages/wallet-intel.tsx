@@ -2,8 +2,8 @@
  * Wallet intel report — search a wallet, enrich GMGN profile,
  * show Crypsor labels / win-rate / observed trades.
  */
-import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import {
   ArrowLeft, Copy, RefreshCw, Search, Brain,
@@ -11,7 +11,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { cn, truncateAddress, formatTimeAgo } from "@/lib/utils";
 import {
-  WALLET_INTEL_KEY, fetchWalletIntelReport,
+  WALLET_INTEL_KEY, fetchWalletIntelReport, enrichWalletIntelReport,
   type WalletIntelReport, type WalletTokenEvent,
 } from "@/lib/wallet-intel-api";
 
@@ -287,8 +287,10 @@ function ReportBody({ data, onRefresh, refreshing }: {
 export default function WalletIntelPage() {
   const params = useParams<{ address?: string }>();
   const [, setLocation] = useLocation();
+  const qc = useQueryClient();
   const [input, setInput] = useState(params.address ?? "");
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [enriching, setEnriching] = useState(false);
+  const enrichedFor = useRef<string | null>(null);
   const address = (params.address ?? "").trim();
   const valid = SOL_RE.test(address);
 
@@ -296,19 +298,52 @@ export default function WalletIntelPage() {
     if (params.address) setInput(params.address);
   }, [params.address]);
 
-  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
-    queryKey: [...WALLET_INTEL_KEY(address, true), refreshTick],
-    queryFn: () => fetchWalletIntelReport(address, true),
+  // Fast paint: DB only — do not wait on GMGN
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: WALLET_INTEL_KEY(address, false),
+    queryFn: () => fetchWalletIntelReport(address, false),
     enabled: valid,
-    staleTime: 30_000,
+    staleTime: 15_000,
     retry: 2,
   });
+
+  // After DB paints, enrich in background once per address
+  useEffect(() => {
+    if (!valid || !data) return;
+    if (enrichedFor.current === address) return;
+    const fetchedAt = data.gmgn?.profileFetchedAt;
+    const fresh = fetchedAt != null
+      && Date.now() - new Date(fetchedAt).getTime() < 30 * 60_000;
+    if (fresh) {
+      enrichedFor.current = address;
+      return;
+    }
+    let cancelled = false;
+    enrichedFor.current = address;
+    setEnriching(true);
+    void enrichWalletIntelReport(address)
+      .then((freshReport) => {
+        if (!cancelled) qc.setQueryData(WALLET_INTEL_KEY(address, false), freshReport);
+      })
+      .catch(() => { /* keep DB view */ })
+      .finally(() => { if (!cancelled) setEnriching(false); });
+    return () => { cancelled = true; };
+  }, [valid, address, data, qc]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
     const a = input.trim();
     if (!SOL_RE.test(a)) return;
+    enrichedFor.current = null;
     setLocation(`/wallet/${a}`);
+  };
+
+  const manualEnrich = () => {
+    setEnriching(true);
+    void enrichWalletIntelReport(address)
+      .then((freshReport) => qc.setQueryData(WALLET_INTEL_KEY(address, false), freshReport))
+      .catch(() => {})
+      .finally(() => setEnriching(false));
   };
 
   return (
@@ -327,7 +362,7 @@ export default function WalletIntelPage() {
           Wallet intel
         </h1>
         <p className="text-[12px] text-[var(--cryp-mute)] mt-1 leading-relaxed">
-          Search a wallet → GMGN enrich + Crypsor labels / win-rate / observed trades
+          DB report first · GMGN enrich runs after paint (no black wait)
         </p>
       </header>
 
@@ -364,7 +399,7 @@ export default function WalletIntelPage() {
         <div className="call-card text-center py-8 space-y-2">
           <div className="text-[13px] text-[var(--cryp-loss)]">Couldn’t load report</div>
           <div className="text-[11px] text-[var(--cryp-mute)]">
-            {error instanceof Error ? error.message : "Retry"}
+            {error instanceof Error ? error.message : "Retry — API may be waking up"}
           </div>
           <button type="button" className="call-action mx-auto" onClick={() => void refetch()}>
             Retry
@@ -372,14 +407,17 @@ export default function WalletIntelPage() {
         </div>
       )}
 
+      {enriching && data && (
+        <div className="text-[11px] uppercase tracking-widest text-[var(--cryp-mute)]">
+          Enriching GMGN profile…
+        </div>
+      )}
+
       {data && (
         <ReportBody
           data={data}
-          refreshing={isFetching}
-          onRefresh={() => {
-            setRefreshTick(t => t + 1);
-            void refetch();
-          }}
+          refreshing={enriching}
+          onRefresh={manualEnrich}
         />
       )}
     </div>

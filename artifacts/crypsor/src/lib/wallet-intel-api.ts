@@ -112,9 +112,17 @@ export type WalletIntelReport = {
 export const WALLET_INTEL_KEY = (address: string, refresh: boolean) =>
   ["wallet-intel", address, refresh ? "refresh" : "db"] as const;
 
-export function fetchWalletIntelReport(address: string, refresh = true) {
+/** Fast path — DB only (no GMGN wait). */
+export function fetchWalletIntelReport(address: string, refresh = false) {
   const q = refresh ? "?refresh=1" : "";
   return wiFetch<WalletIntelReport>(
     `api/wallet-intel/${encodeURIComponent(address)}${q}`,
+  );
+}
+
+/** Slow path — GMGN enrich + persist (call after UI already painted). */
+export function enrichWalletIntelReport(address: string) {
+  return wiFetch<WalletIntelReport>(
+    `api/wallet-intel/${encodeURIComponent(address)}?refresh=1`,
   );
 }
