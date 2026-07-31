@@ -17,8 +17,16 @@ import {
 import {
   CALLS_FEED_KEY, CALLS_STATS_KEY,
   fetchCallsFeed, fetchCallsStats,
-  type CallCard, type CallMode,
+  type CallCard, type CallMode, type StatsPeriod,
 } from "@/lib/calls-api";
+
+const STATS_PERIODS: { id: StatsPeriod; label: string }[] = [
+  { id: "1d", label: "1D" },
+  { id: "3d", label: "3D" },
+  { id: "5d", label: "5D" },
+  { id: "7d", label: "7D" },
+  { id: "30d", label: "30D" },
+];
 
 function fmtAge(min: number | null | undefined): string | null {
   if (min == null || !Number.isFinite(min)) return null;
@@ -292,10 +300,11 @@ function CallCardView({ c }: { c: CallCard }) {
 
 export default function CallsPage() {
   const [mode, setMode] = useState<CallMode>("best");
+  const [period, setPeriod] = useState<StatsPeriod>("7d");
 
   const { data: stats } = useQuery({
-    queryKey: CALLS_STATS_KEY,
-    queryFn: fetchCallsStats,
+    queryKey: CALLS_STATS_KEY(period),
+    queryFn: () => fetchCallsStats(period),
     refetchInterval: 20_000,
     placeholderData: keepPreviousData,
   });
@@ -332,16 +341,40 @@ export default function CallsPage() {
               ~{universe || "—"} tracked · surfacing quality wallets & holders · any MC
             </p>
           </div>
-          {isFetching && (
-            <span className="text-[10px] uppercase tracking-widest text-[var(--cryp-mute)]">sync</span>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {isFetching && (
+              <span className="text-[10px] uppercase tracking-widest text-[var(--cryp-mute)]">sync</span>
+            )}
+            <label className="relative inline-flex items-center">
+              <span className="sr-only">Stats period</span>
+              <select
+                value={period}
+                onChange={(e) => setPeriod(e.target.value as StatsPeriod)}
+                className="appearance-none pl-2.5 pr-7 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider"
+                style={{
+                  color: "var(--cryp-mint)",
+                  background: "rgba(16,27,36,0.95)",
+                  border: "1px solid var(--cryp-line)",
+                }}
+                aria-label="Win rate period"
+              >
+                {STATS_PERIODS.map(p => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+              <ChevronDown
+                className="w-3 h-3 absolute right-2 pointer-events-none"
+                style={{ color: "var(--cryp-mute)" }}
+              />
+            </label>
+          </div>
         </div>
       </header>
 
       <div className="grid grid-cols-2 gap-2.5">
         <StatTile
           icon={<TrendingUp className="w-4 h-4" />}
-          label="Win rate"
+          label={`Win rate · ${period.toUpperCase()}`}
           value={`${stats?.winRate ?? "—"}%`}
           hint={stats ? `${stats.wins}/${stats.signals} hit 2×` : "loading"}
           accent="var(--cryp-mint)"
@@ -357,13 +390,13 @@ export default function CallsPage() {
           icon={<Zap className="w-4 h-4" />}
           label="All signals"
           value={stats ? String(stats.signals) : "—"}
-          hint="quality desk"
+          hint={`${period.toUpperCase()} desk`}
         />
         <StatTile
           icon={<Flame className="w-4 h-4" />}
           label="Avg X"
           value={stats?.avgX ? `${stats.avgX.toFixed(2)}x` : "—"}
-          hint="performance"
+          hint={`${period.toUpperCase()} performance`}
           accent="var(--cryp-teal)"
         />
       </div>
