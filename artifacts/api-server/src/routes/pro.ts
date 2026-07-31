@@ -370,43 +370,68 @@ router.get("/pro/token/:tokenId", async (req, res) => {
       return;
     }
 
-    const result = await db.execute(sql`
-      SELECT
-        pc.id,
-        pc.token_id,
-        pc.called_at,
-        pc.called_mc_usd,
-        pc.called_intel_score,
-        pc.called_kol_count,
-        pc.called_smart_count,
-        pc.ath_multiple,
-        pc.pro_score,
-        pc.quality_label,
-        pc.survival_score,
-        pc.entry_tier,
-        pc.score_version,
-        pc.hit_2x,  pc.hit_2x_at,
-        pc.hit_3x,  pc.hit_3x_at,
-        pc.hit_5x,  pc.hit_5x_at,
-        pc.hit_10x, pc.hit_10x_at,
-        pc.hit_100x,pc.hit_100x_at,
-        pc.last_snapshot_at,
-        pc.kol_smart_source,
-        pc.verified_at,
-        pc.verified_wallets,
-        pc.surfaced_at,
-        pc.surfaced_mc_usd
-      FROM pro_calls pc
-      WHERE pc.token_id = ${tokenId}
-      LIMIT 1
-    `);
+    const [callResult, snapResult] = await Promise.all([
+      db.execute(sql`
+        SELECT
+          pc.id,
+          pc.token_id,
+          pc.called_at,
+          pc.called_mc_usd,
+          pc.called_intel_score,
+          pc.called_kol_count,
+          pc.called_smart_count,
+          pc.called_holder_velocity,
+          pc.called_mc_growth,
+          pc.called_volume_intensity,
+          pc.ath_multiple,
+          pc.pro_score,
+          pc.quality_label,
+          pc.survival_score,
+          pc.entry_tier,
+          pc.score_version,
+          pc.hit_2x,  pc.hit_2x_at,
+          pc.hit_3x,  pc.hit_3x_at,
+          pc.hit_5x,  pc.hit_5x_at,
+          pc.hit_10x, pc.hit_10x_at,
+          pc.hit_100x,pc.hit_100x_at,
+          pc.last_snapshot_at,
+          pc.kol_smart_source,
+          pc.verified_at,
+          pc.verified_wallets,
+          pc.surfaced_at,
+          pc.surfaced_mc_usd,
+          pc.call_alert_sent_at,
+          pc.milestone_alerts_sent,
+          t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+          t.market_cap_usd, t.liquidity_usd, t.holder_count,
+          t.holder_kol_count, t.holder_smart_count, t.intelligence_score,
+          t.holder_velocity_score, t.raw_metadata, t.status,
+          t.sec_mint_renounced, t.sec_freeze_renounced, t.sec_is_honeypot
+        FROM pro_calls pc
+        JOIN tracked_tokens t ON t.id = pc.token_id
+        WHERE pc.token_id = ${tokenId}
+        LIMIT 1
+      `),
+      db.execute(sql`
+        SELECT
+          snapshot_at, mc_usd, kol_count, smart_count, intel_score, ath_multiple,
+          survival_score, pro_score, quality_label, gain_pct, run_status,
+          holder_velocity_score, age_hours, holder_count,
+          mc_growth_score, volume_intensity_score, liquidity_usd,
+          kol_delta, smart_delta
+        FROM pro_snapshots
+        WHERE token_id = ${tokenId}
+        ORDER BY snapshot_at DESC
+        LIMIT 120
+      `),
+    ]);
 
-    if (!result.rows.length) {
-      res.json({ proCall: null });
+    if (!callResult.rows.length) {
+      res.json({ proCall: null, postmortem: null, snapshots: [] });
       return;
     }
 
-    const r = result.rows[0] as Record<string, unknown>;
+    const r = callResult.rows[0] as Record<string, unknown>;
     let verifiedWallets: unknown = null;
     if (r.verified_wallets) {
       try {
@@ -417,14 +442,89 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         verifiedWallets = null;
       }
     }
+
+    const calledMc = r.called_mc_usd ? parseFloat(String(r.called_mc_usd)) : null;
+    const currentMc = r.market_cap_usd ? parseFloat(String(r.market_cap_usd)) : null;
+    const socials = extractSocials(r.raw_metadata);
+    const runStatus = deriveRunStatus(currentMc, calledMc, Number(r.ath_multiple ?? 1));
+
+    const snapshots = (snapResult.rows as Array<Record<string, unknown>>).map(s => ({
+      snapshotAt: String(s.snapshot_at),
+      mcUsd: s.mc_usd != null ? parseFloat(String(s.mc_usd)) : null,
+      kolCount: Number(s.kol_count ?? 0),
+      smartCount: Number(s.smart_count ?? 0),
+      intelScore: s.intel_score != null ? Number(s.intel_score) : null,
+      athMultiple: s.ath_multiple != null ? Number(s.ath_multiple) : null,
+      survivalScore: s.survival_score != null ? Number(s.survival_score) : null,
+      proScore: s.pro_score != null ? Number(s.pro_score) : null,
+      qualityLabel: s.quality_label ?? null,
+      gainPct: s.gain_pct != null ? Number(s.gain_pct) : null,
+      runStatus: s.run_status != null ? String(s.run_status) : null,
+      holderVelocityScore: s.holder_velocity_score != null ? Number(s.holder_velocity_score) : null,
+      ageHours: s.age_hours != null ? Number(s.age_hours) : null,
+      holderCount: s.holder_count != null ? Number(s.holder_count) : null,
+      mcGrowthScore: s.mc_growth_score != null ? Number(s.mc_growth_score) : null,
+      volumeIntensityScore: s.volume_intensity_score != null ? Number(s.volume_intensity_score) : null,
+      liquidityUsd: s.liquidity_usd != null ? parseFloat(String(s.liquidity_usd)) : null,
+      kolDelta: Number(s.kol_delta ?? 0),
+      smartDelta: Number(s.smart_delta ?? 0),
+    })).reverse(); // chronological for charts
+
+    const { buildProPostmortem } = await import("../lib/postmortem");
+    const postmortem = buildProPostmortem({
+      calledAt: r.called_at as string | Date,
+      calledMcUsd: calledMc,
+      calledIntel: r.called_intel_score != null ? Number(r.called_intel_score) : null,
+      calledKol: Number(r.called_kol_count ?? 0),
+      calledSmart: Number(r.called_smart_count ?? 0),
+      calledHv: r.called_holder_velocity != null ? Number(r.called_holder_velocity) : null,
+      calledMcGrowth: r.called_mc_growth != null ? Number(r.called_mc_growth) : null,
+      calledVol: r.called_volume_intensity != null ? Number(r.called_volume_intensity) : null,
+      athMultiple: r.ath_multiple != null ? Number(r.ath_multiple) : null,
+      proScore: r.pro_score != null ? Number(r.pro_score) : null,
+      survivalScore: r.survival_score != null ? Number(r.survival_score) : null,
+      qualityLabel: r.quality_label != null ? String(r.quality_label) : null,
+      entryTier: r.entry_tier != null ? String(r.entry_tier) : null,
+      hit2x: Boolean(r.hit_2x),
+      hit5x: Boolean(r.hit_5x),
+      hit10x: Boolean(r.hit_10x),
+      hit2xAt: r.hit_2x_at != null ? String(r.hit_2x_at) : null,
+      hit5xAt: r.hit_5x_at != null ? String(r.hit_5x_at) : null,
+      hit10xAt: r.hit_10x_at != null ? String(r.hit_10x_at) : null,
+      currentMcUsd: currentMc,
+      liveKol: Number(r.holder_kol_count ?? 0),
+      liveSmart: Number(r.holder_smart_count ?? 0),
+      liveIntel: r.intelligence_score != null ? Number(r.intelligence_score) : null,
+      liveHv: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+      holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+      liquidityUsd: r.liquidity_usd ? parseFloat(String(r.liquidity_usd)) : null,
+      runStatus,
+      socials,
+      kolSmartSource: r.kol_smart_source != null ? String(r.kol_smart_source) : null,
+      snapshots: snapshots.slice(-48).map(s => ({
+        snapshotAt: s.snapshotAt,
+        mcUsd: s.mcUsd,
+        gainPct: s.gainPct,
+        athMultiple: s.athMultiple,
+        kolCount: s.kolCount,
+        smartCount: s.smartCount,
+        kolDelta: s.kolDelta,
+        smartDelta: s.smartDelta,
+        holderVelocityScore: s.holderVelocityScore,
+        survivalScore: s.survivalScore,
+        runStatus: s.runStatus,
+      })),
+    });
+
     res.json({
       proCall: {
         id:               Number(r.id),
         calledAt:         r.called_at,
-        calledMcUsd:      r.called_mc_usd ? parseFloat(String(r.called_mc_usd)) : null,
+        calledMcUsd:      calledMc,
         calledIntelScore: r.called_intel_score != null ? Number(r.called_intel_score) : null,
         calledKolCount:   Number(r.called_kol_count ?? 0),
         calledSmartCount: Number(r.called_smart_count ?? 0),
+        calledHolderVelocity: r.called_holder_velocity != null ? Number(r.called_holder_velocity) : null,
         athMultiple:      r.ath_multiple != null ? Number(r.ath_multiple) : null,
         proScore:         r.pro_score != null ? Number(r.pro_score) : null,
         qualityLabel:     r.quality_label ?? null,
@@ -437,12 +537,27 @@ router.get("/pro/token/:tokenId", async (req, res) => {
         verifiedWallets,
         surfacedAt:       r.surfaced_at ?? null,
         surfacedMcUsd:    r.surfaced_mc_usd ? parseFloat(String(r.surfaced_mc_usd)) : null,
+        callAlertSentAt:  r.call_alert_sent_at ?? null,
+        milestoneAlertsSent: r.milestone_alerts_sent ?? "",
         hit2x:    Boolean(r.hit_2x),    hit2xAt:  r.hit_2x_at   ?? null,
         hit3x:    Boolean(r.hit_3x),    hit3xAt:  r.hit_3x_at   ?? null,
         hit5x:    Boolean(r.hit_5x),    hit5xAt:  r.hit_5x_at   ?? null,
         hit10x:   Boolean(r.hit_10x),   hit10xAt: r.hit_10x_at  ?? null,
         hit100x:  Boolean(r.hit_100x),  hit100xAt:r.hit_100x_at ?? null,
+        currentMcUsd: currentMc,
+        liveKol: Number(r.holder_kol_count ?? 0),
+        liveSmart: Number(r.holder_smart_count ?? 0),
+        liveIntel: r.intelligence_score != null ? Number(r.intelligence_score) : null,
+        liveHv: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+        runStatus,
+        socials,
+        address: r.address,
+        chain: r.chain,
+        name: r.name,
+        symbol: r.symbol,
       },
+      postmortem,
+      snapshots,
     });
   } catch (err) {
     console.error("pro token error", err);

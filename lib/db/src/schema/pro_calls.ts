@@ -44,6 +44,12 @@ export const pro_calls = pgTable(
     // { source, fetchedAt, holderStat, tagsStat, kol[], smart[] }
     verifiedWallets:  text("verified_wallets"), // JSON string for pg text/jsonb compat
 
+    // ── Telegram alert bookkeeping (Pro alerts scratch rebuild) ──────────────
+    // call_alert_sent_at set once when first Pro call alert is delivered.
+    callAlertSentAt:  timestamp("call_alert_sent_at", { withTimezone: true }),
+    // Comma-separated tiers already alerted, e.g. "2,5,10"
+    milestoneAlertsSent: text("milestone_alerts_sent").default(""),
+
     // ── Running ATH tracker (updated by snapshot worker) ────────────────────
     athMultiple:      real("ath_multiple").default(1), // max(current_mc / called_mc) ever seen
     lastSnapshotAt:   timestamp("last_snapshot_at"),

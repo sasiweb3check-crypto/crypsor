@@ -1,11 +1,19 @@
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
 
-/** Idempotent schema patches for Pro GMGN verify freeze. */
+/** Idempotent schema patches for Pro GMGN verify freeze + alerts + snapshots. */
 const SCHEMA_STATEMENTS = [
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS kol_smart_source text`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_at timestamptz`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_wallets text`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS call_alert_sent_at timestamptz`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS milestone_alerts_sent text DEFAULT ''`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS holder_count integer`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS mc_growth_score real`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS volume_intensity_score real`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS liquidity_usd text`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS kol_delta integer DEFAULT 0`,
+  `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS smart_delta integer DEFAULT 0`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */

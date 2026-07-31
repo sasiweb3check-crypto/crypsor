@@ -38,6 +38,7 @@ export type GmgnProVerifyResult = {
   tagsSmart: number;
   holderCount: number | null;
   liquidityUsd: number | null;
+  socials: { twitter?: string; telegram?: string; website?: string };
   wallets: { kol: VerifiedWallet[]; smart: VerifiedWallet[] };
   source: "gmgn_live" | "failed";
   fetchedAt: Date;
@@ -116,13 +117,14 @@ export async function verifyTokenKolSmart(
     tagsSmart: 0,
     holderCount: null,
     liquidityUsd: null,
+    socials: {},
     wallets: { kol: [], smart: [] },
     source: "failed",
     fetchedAt,
   };
 
   try {
-    const [statRes, tagsRes, infoRes, kolRes, smartRes] = await Promise.all([
+    const [statRes, tagsRes, infoRes, kolRes, smartRes, linkRes] = await Promise.all([
       gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`, proxy),
       gmgnFetch(`https://gmgn.ai/api/v1/token_wallet_tags_stat/${c}/${address}`, proxy),
       gmgnFetch(`https://gmgn.ai/api/v1/token_info/${c}/${address}`, proxy),
@@ -134,6 +136,7 @@ export async function verifyTokenKolSmart(
         `https://gmgn.ai/vas/api/v1/token_holders/${c}/${address}?limit=20&offset=0&tag=smart_degen`,
         proxy,
       ),
+      gmgnFetch(`https://gmgn.ai/api/v1/token_link/${c}/${address}`, proxy),
     ]);
 
     const anyOk = statRes.ok || tagsRes.ok || kolRes.ok || smartRes.ok || infoRes.ok;
@@ -161,6 +164,21 @@ export async function verifyTokenKolSmart(
     const liquidityUsd = info.liquidity != null ? num(info.liquidity) : null;
     const holderCount = info.holder_count != null ? Math.round(num(info.holder_count)) : null;
 
+    const link = linkRes.ok ? unwrapData(linkRes.data) : {};
+    const socials: GmgnProVerifyResult["socials"] = {};
+    const tw = typeof link.twitter_username === "string" ? link.twitter_username.trim() : "";
+    const tg = typeof link.telegram === "string" ? link.telegram.trim() : "";
+    const web = typeof link.website === "string" ? link.website.trim() : "";
+    if (tw) {
+      socials.twitter = tw.startsWith("http")
+        ? tw
+        : tw.startsWith("i/communities/")
+          ? `https://x.com/${tw}`
+          : `https://x.com/${tw.replace(/^@/, "")}`;
+    }
+    if (tg) socials.telegram = tg.startsWith("http") ? tg : `https://t.me/${tg.replace(/^@/, "")}`;
+    if (web && web.startsWith("http")) socials.website = web;
+
     const result: GmgnProVerifyResult = {
       ok: true,
       kolCount: Math.max(kolCount, 0),
@@ -171,6 +189,7 @@ export async function verifyTokenKolSmart(
       tagsSmart,
       holderCount,
       liquidityUsd: liquidityUsd != null && liquidityUsd > 0 ? liquidityUsd : null,
+      socials,
       wallets: { kol: kolWallets, smart: smartWallets },
       source: "gmgn_live",
       fetchedAt,
@@ -204,6 +223,28 @@ export async function applyVerifyToTrackedToken(
   verify: GmgnProVerifyResult,
 ): Promise<void> {
   if (!verify.ok) return;
+
+  // Merge GMGN socials into raw_metadata without wiping Dex pairs
+  let rawPatch: Record<string, unknown> | undefined;
+  if (verify.socials.twitter || verify.socials.telegram || verify.socials.website) {
+    const existing = await db
+      .select({ rawMetadata: tracked_tokens.rawMetadata })
+      .from(tracked_tokens)
+      .where(eq(tracked_tokens.id, tokenId))
+      .limit(1);
+    const prev = existing[0]?.rawMetadata;
+    const base: Record<string, unknown> = Array.isArray(prev)
+      ? { pairs: prev }
+      : (prev && typeof prev === "object" ? { ...(prev as Record<string, unknown>) } : {});
+    rawPatch = {
+      ...base,
+      link: { ...(typeof base.link === "object" && base.link ? base.link as object : {}), ...verify.socials },
+      twitter: verify.socials.twitter ?? base.twitter,
+      telegram: verify.socials.telegram ?? base.telegram,
+      website: verify.socials.website ?? base.website,
+    };
+  }
+
   await db
     .update(tracked_tokens)
     .set({
@@ -211,6 +252,7 @@ export async function applyVerifyToTrackedToken(
       holderSmartCount: verify.smartCount,
       ...(verify.holderCount != null ? { holderCount: verify.holderCount } : {}),
       ...(verify.liquidityUsd != null ? { liquidityUsd: String(verify.liquidityUsd) } : {}),
+      ...(rawPatch ? { rawMetadata: rawPatch } : {}),
       lastHoldersUpdatedAt: verify.fetchedAt,
     })
     .where(eq(tracked_tokens.id, tokenId));

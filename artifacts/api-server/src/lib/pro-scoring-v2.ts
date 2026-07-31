@@ -130,14 +130,39 @@ function scoreHolderVelocity(
   return clamp(hv * 0.8);
 }
 
+/**
+ * Smart / KOL scoring from 14d quality Pro outcomes:
+ *   • Smart ≥1 lifts hit5 (≈32% vs 18% at 0); smart 2–5 best avg ATH
+ *   • KOL 1 is the volume sweet spot; raw KOL count alone is weak predictor
+ *   • Prefer smart conviction + modest KOL (1–3) over KOL spam (4–9 without smart)
+ */
 function scoreSmartMoney(kol: number, smart: number): number {
-  const combined = kol + smart;
-  if (combined <= 0) return 25; // strong track may still qualify without KOL yet
-  if (combined === 1) return 55;
-  if (combined <= 3) return 70;
-  if (combined <= 6) return 85;
-  if (combined <= 12) return 95;
-  return 100;
+  const k = Math.max(0, kol);
+  const s = Math.max(0, smart);
+
+  let smartScore: number;
+  if (s <= 0) smartScore = 20;
+  else if (s === 1) smartScore = 62;
+  else if (s <= 5) smartScore = 88;   // sweet band
+  else if (s <= 15) smartScore = 78;
+  else smartScore = 70;               // crowded / late
+
+  let kolScore: number;
+  if (k <= 0) kolScore = 30;
+  else if (k === 1) kolScore = 75;
+  else if (k <= 3) kolScore = 82;
+  else if (k <= 9) kolScore = 55;     // noisy without matching smart
+  else kolScore = 60;
+
+  // Smart carries more weight — data showed smart band moves hit rates more than KOL alone
+  let score = smartScore * 0.62 + kolScore * 0.38;
+
+  // Combo bonus: KOL 1–3 with smart 2–5 (MarsCoin-class early conviction)
+  if (k >= 1 && k <= 3 && s >= 2 && s <= 5) score += 10;
+  if (k >= 1 && s >= 1) score += 4;
+  if (k === 0 && s === 0) score = 22;
+
+  return clamp(score);
 }
 
 /**
