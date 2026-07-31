@@ -112,7 +112,10 @@ type SlimToken = {
     label: string;
     alertEligible: boolean;
     reasons: string[];
+    blockers: string[];
   };
+  /** When Telegram first-call alert was delivered (null if never). */
+  callAlertSentAt: string | null;
 };
 
 function parseVwSocials(raw: unknown): { twitter?: string; telegram?: string; website?: string } {
@@ -160,8 +163,8 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  // v7: sticky desk + entry confidence tier
-  const cacheKey = `pro:feed:v7:${limit}`;
+  // v8: sticky desk + confidence + callAlertSentAt
+  const cacheKey = `pro:feed:v8:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -209,6 +212,7 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       pc.scanner_label,
       pc.verified_wallets,
       pc.kol_smart_source,
+      pc.call_alert_sent_at,
       t.address, t.chain, t.name, t.symbol,
       t.logo_uri, t.image_path,
       t.status,
@@ -326,13 +330,135 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
         label: conf.label,
         alertEligible: conf.alertEligible,
         reasons: conf.reasons,
+        blockers: conf.blockers,
       },
+      callAlertSentAt: toIsoUtc(call.call_alert_sent_at),
     };
   });
 
   const payload = { tokens, total: qualityTotal };
   await proCacheSet(cacheKey, payload, FEED_CACHE_TTL_SEC);
   return payload;
+}
+
+type AlertTrackRow = {
+  id: number;
+  address: string;
+  chain: string;
+  name: string | null;
+  symbol: string | null;
+  logoUri: string | null;
+  calledAt: string | null;
+  callAlertSentAt: string | null;
+  calledMcUsd: number | null;
+  calledIntel: number | null;
+  calledKol: number;
+  calledSmart: number;
+  currentMcUsd: number | null;
+  gainSinceCall: number | null;
+  athMultiple: number;
+  runStatus: string;
+  proScore: number;
+  qualityLabel: string;
+  hit2x: boolean;
+  hit5x: boolean;
+  hit10x: boolean;
+  secMintRenounced: boolean | null;
+  secIsHoneypot: boolean | null;
+  outcome: OutcomeInfo;
+  confidence: {
+    score: number;
+    tier: ConfidenceResult["tier"];
+    label: string;
+    alertEligible: boolean;
+    reasons: string[];
+    blockers: string[];
+  };
+};
+
+function mapAlertRow(
+  call: Record<string, unknown>,
+  opts?: { ignoreFreshness?: boolean },
+): AlertTrackRow {
+  const calledMc = call.called_mc_usd ? parseFloat(String(call.called_mc_usd)) : null;
+  const currentMc = parseFloat(String(call.market_cap_usd ?? "0")) || null;
+  const gainSinceCall = calledMc && currentMc
+    ? ((currentMc - calledMc) / calledMc) * 100 : null;
+  const athMultiple = Number(call.ath_multiple ?? 1) || 1;
+  const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
+  const ban = isProBannedToken({
+    address: call.address != null ? String(call.address) : null,
+    symbol: call.symbol != null ? String(call.symbol) : null,
+    calledMcUsd: calledMc,
+    currentMcUsd: currentMc,
+  });
+  const outcome = deriveProOutcome({
+    calledMcUsd: calledMc,
+    currentMcUsd: currentMc,
+    athMultiple,
+    runStatus,
+    honeypot: call.sec_is_honeypot as boolean | null,
+    banned: ban.banned,
+  });
+  const vwFields = convictionFieldsFromVerified(call.verified_wallets);
+  const ageMin = opts?.ignoreFreshness
+    ? 0
+    : call.called_at
+      ? (Date.now() - new Date(String(call.called_at)).getTime()) / 60_000
+      : null;
+  const conf = computeConfidence({
+    calledIntelScore: call.called_intel_score != null ? Number(call.called_intel_score) : null,
+    calledSmartCount: Number(call.called_smart_count ?? 0),
+    calledKolCount: Number(call.called_kol_count ?? 0),
+    calledMcUsd: calledMc,
+    calledHolderVelocity: call.called_holder_velocity != null
+      ? Number(call.called_holder_velocity) : null,
+    smartHoldRate: vwFields.smartHoldRate,
+    diamondHands: vwFields.diamondHands,
+    paperHands: vwFields.paperHands,
+    top10HolderRate: vwFields.top10HolderRate,
+    bundlerPct: vwFields.bundlerPct,
+    secIsHoneypot: call.sec_is_honeypot as boolean | null,
+    secMintRenounced: call.sec_mint_renounced as boolean | null,
+    secFreezeRenounced: call.sec_freeze_renounced as boolean | null,
+    ageMinutes: ageMin,
+    gainSinceCallPct: opts?.ignoreFreshness ? 0 : gainSinceCall,
+  });
+
+  return {
+    id: Number(call.token_id),
+    address: String(call.address ?? ""),
+    chain: String(call.chain ?? "solana"),
+    name: (call.name as string | null) ?? null,
+    symbol: (call.symbol as string | null) ?? null,
+    logoUri: resolveLogoUri(call.image_path, call.logo_uri),
+    calledAt: toIsoUtc(call.called_at),
+    callAlertSentAt: toIsoUtc(call.call_alert_sent_at),
+    calledMcUsd: calledMc,
+    calledIntel: call.called_intel_score != null ? Number(call.called_intel_score) : null,
+    calledKol: Number(call.called_kol_count ?? 0),
+    calledSmart: Number(call.called_smart_count ?? 0),
+    currentMcUsd: currentMc,
+    gainSinceCall,
+    athMultiple,
+    runStatus,
+    proScore: Number(call.pro_score ?? 0),
+    qualityLabel: String(call.quality_label ?? "below"),
+    hit2x: Boolean(call.hit_2x),
+    hit5x: Boolean(call.hit_5x),
+    hit10x: Boolean(call.hit_10x),
+    secMintRenounced: call.sec_mint_renounced as boolean | null,
+    secIsHoneypot: call.sec_is_honeypot as boolean | null,
+    outcome,
+    confidence: {
+      score: conf.score,
+      tier: conf.tier,
+      label: conf.label,
+      alertEligible: conf.alertEligible,
+      reasons: conf.reasons,
+      blockers: conf.blockers,
+    },
+  };
 }
 
 function sortTokens(tokens: SlimToken[], sort: string, order: "asc" | "desc"): SlimToken[] {
@@ -546,6 +672,152 @@ router.get("/pro/history", async (req, res) => {
     });
   } catch (err) {
     console.error("pro history error", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/pro/alerts ───────────────────────────────────────────────────────
+// In-app alert tracker: Telegram-sent history + live alert/watch lanes.
+
+router.get("/pro/alerts", async (_req, res) => {
+  try {
+    const cacheKey = "pro:alerts:v1";
+    const cached = await proCacheGet<{
+      stats: Record<string, unknown>;
+      sent: AlertTrackRow[];
+      alert: AlertTrackRow[];
+      watch: AlertTrackRow[];
+    }>(cacheKey);
+    if (cached) {
+      res.setHeader("Cache-Control", "private, max-age=5");
+      res.json(cached);
+      return;
+    }
+
+    const sentRows = await db.execute(sql`
+      SELECT
+        pc.token_id,
+        pc.called_at,
+        pc.call_alert_sent_at,
+        pc.called_mc_usd,
+        pc.called_intel_score,
+        pc.called_kol_count,
+        pc.called_smart_count,
+        pc.called_holder_velocity,
+        pc.ath_multiple,
+        pc.pro_score,
+        pc.quality_label,
+        pc.hit_2x, pc.hit_5x, pc.hit_10x,
+        pc.verified_wallets,
+        t.address, t.chain, t.name, t.symbol,
+        t.logo_uri, t.image_path,
+        t.market_cap_usd,
+        t.sec_is_honeypot,
+        t.sec_mint_renounced,
+        t.sec_freeze_renounced
+      FROM pro_calls pc
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      WHERE pc.call_alert_sent_at IS NOT NULL
+      ORDER BY pc.call_alert_sent_at DESC NULLS LAST
+      LIMIT 120
+    `);
+
+    const sent = (sentRows.rows as Array<Record<string, unknown>>).map(r =>
+      mapAlertRow(r, { ignoreFreshness: true }),
+    );
+
+    const feed = await loadQualityFeed(300);
+    const alert: AlertTrackRow[] = [];
+    const watch: AlertTrackRow[] = [];
+    for (const t of feed.tokens) {
+      if (t.confidence.tier === "alert" || t.confidence.alertEligible) {
+        alert.push({
+          id: t.id,
+          address: t.address,
+          chain: t.chain,
+          name: t.name,
+          symbol: t.symbol,
+          logoUri: t.logoUri,
+          calledAt: t.calledAt,
+          callAlertSentAt: t.callAlertSentAt,
+          calledMcUsd: t.calledMcUsd,
+          calledIntel: t.calledIntel,
+          calledKol: t.calledKol,
+          calledSmart: t.calledSmart,
+          currentMcUsd: t.currentMcUsd,
+          gainSinceCall: t.gainSinceCall,
+          athMultiple: t.athMultiple,
+          runStatus: t.runStatus,
+          proScore: t.proScore,
+          qualityLabel: t.qualityLabel,
+          hit2x: t.hit2x,
+          hit5x: t.hit5x,
+          hit10x: t.hit10x,
+          secMintRenounced: t.secMintRenounced,
+          secIsHoneypot: t.secIsHoneypot,
+          outcome: t.outcome,
+          confidence: t.confidence,
+        });
+      } else if (t.confidence.tier === "watch") {
+        watch.push({
+          id: t.id,
+          address: t.address,
+          chain: t.chain,
+          name: t.name,
+          symbol: t.symbol,
+          logoUri: t.logoUri,
+          calledAt: t.calledAt,
+          callAlertSentAt: t.callAlertSentAt,
+          calledMcUsd: t.calledMcUsd,
+          calledIntel: t.calledIntel,
+          calledKol: t.calledKol,
+          calledSmart: t.calledSmart,
+          currentMcUsd: t.currentMcUsd,
+          gainSinceCall: t.gainSinceCall,
+          athMultiple: t.athMultiple,
+          runStatus: t.runStatus,
+          proScore: t.proScore,
+          qualityLabel: t.qualityLabel,
+          hit2x: t.hit2x,
+          hit5x: t.hit5x,
+          hit10x: t.hit10x,
+          secMintRenounced: t.secMintRenounced,
+          secIsHoneypot: t.secIsHoneypot,
+          outcome: t.outcome,
+          confidence: t.confidence,
+        });
+      }
+    }
+
+    const sentN = sent.length;
+    const x2 = sent.filter(t => t.hit2x || t.athMultiple >= 2).length;
+    const x5 = sent.filter(t => t.hit5x || t.athMultiple >= 5).length;
+    const x10 = sent.filter(t => t.hit10x || t.athMultiple >= 10).length;
+    const bestAth = sent.reduce((m, t) => Math.max(m, t.athMultiple || 1), 1);
+
+    const payload = {
+      stats: {
+        sent: sentN,
+        winRate2x: sentN ? Math.round((x2 / sentN) * 100) : 0,
+        winRate5x: sentN ? Math.round((x5 / sentN) * 100) : 0,
+        x2Count: x2,
+        x5Count: x5,
+        x10Count: x10,
+        bestAth: sentN ? bestAth : null,
+        alertLive: alert.length,
+        watchLive: watch.length,
+        pendingSend: alert.filter(t => !t.callAlertSentAt).length,
+      },
+      sent,
+      alert,
+      watch,
+    };
+
+    await proCacheSet(cacheKey, payload, FEED_CACHE_TTL_SEC);
+    res.setHeader("Cache-Control", "private, max-age=5");
+    res.json(payload);
+  } catch (err) {
+    console.error("pro alerts error", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });

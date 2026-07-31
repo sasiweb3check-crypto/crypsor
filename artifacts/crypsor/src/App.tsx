@@ -6,6 +6,7 @@ import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { AppShell } from '@/components/layout';
 import Caller from '@/pages/caller';
+import AlertsPage from '@/pages/alerts';
 import TokenDetail from '@/pages/token-detail';
 import Settings from '@/pages/settings';
 import OpsPage from '@/pages/ops';
@@ -15,8 +16,9 @@ import { useLiveTokens } from '@/hooks/use-live-tokens';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,
+      staleTime: 12_000,
       gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
     },
   },
 });
@@ -37,6 +39,7 @@ function Router() {
     <AppShell>
       <Switch>
         <Route path="/" component={Caller} />
+        <Route path="/alerts" component={AlertsPage} />
         <Route path="/pro" component={RedirectToPro} />
         <Route path="/caller" component={RedirectToPro} />
         {/* Detail kept for Pro drill-down; other surfaces redirected */}

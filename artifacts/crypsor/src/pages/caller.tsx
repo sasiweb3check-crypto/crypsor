@@ -4,10 +4,10 @@
  */
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Copy, ExternalLink, Twitter, Send, Globe,
-  TrendingUp, Shield, Diamond, Hand,
+  TrendingUp, Shield, Diamond, Hand, Radio,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiBase } from "@/lib/api-base";
@@ -78,6 +78,30 @@ interface ProToken {
   socials: { twitter?: string; telegram?: string; website?: string };
   outcome?: OutcomeInfo | null;
   confidence?: ConfidenceInfo | null;
+  callAlertSentAt?: string | null;
+}
+
+function DeskSkeleton() {
+  return (
+    <div className="desk-card p-4 md:p-5 shimmer-card">
+      <div className="flex items-start gap-3">
+        <div className="shimmer w-11 h-11 shrink-0" />
+        <div className="flex-1 space-y-2.5 min-w-0">
+          <div className="flex gap-2">
+            <div className="shimmer h-4 w-24" />
+            <div className="shimmer h-4 w-12" />
+          </div>
+          <div className="shimmer h-3 w-48 max-w-full" />
+          <div className="grid grid-cols-4 gap-2 pt-1">
+            <div className="shimmer h-8" />
+            <div className="shimmer h-8" />
+            <div className="shimmer h-8" />
+            <div className="shimmer h-8" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 interface ProStats {
@@ -166,7 +190,14 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-display text-[15px] font-bold truncate">{safeSymbol(t.symbol, t.address) || "—"}</h3>
-              {t.confidence?.tier === "alert" && (
+              {t.callAlertSentAt && (
+                <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                  style={{ color: "var(--cryp-ink)", background: "var(--cryp-teal)" }}
+                  title={`Alerted ${formatTimeAgo(t.callAlertSentAt)} ago`}>
+                  Sent
+                </span>
+              )}
+              {!t.callAlertSentAt && t.confidence?.tier === "alert" && (
                 <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
                   style={{ color: "#0b141c", background: "var(--cryp-mint)" }}
                   title={(t.confidence.reasons ?? []).join(" · ")}>
@@ -337,13 +368,17 @@ export default function Caller() {
     queryKey: ["pro-stats"],
     queryFn: () => fetch(`${getApiBase()}api/pro/stats`).then(r => r.json()),
     refetchInterval: 20_000,
+    placeholderData: keepPreviousData,
   });
 
-  const { data: hist, isLoading } = useQuery<{ tokens: ProToken[] }>({
+  const { data: hist, isLoading, isFetching, isPlaceholderData } = useQuery<{ tokens: ProToken[] }>({
     queryKey: ["pro-history"],
     queryFn: () => fetch(`${getApiBase()}api/pro/history?limit=200&sort=calledAt&order=desc`).then(r => r.json()),
     refetchInterval: 12_000,
+    staleTime: 8_000,
+    placeholderData: keepPreviousData,
   });
+  const showSkeleton = isLoading && !hist;
 
   const ageCounts = useMemo(() => {
     const list = hist?.tokens ?? [];
@@ -417,11 +452,25 @@ export default function Caller() {
         </h1>
         <p className="text-[var(--cryp-mute)] text-sm mt-2 max-w-xl leading-relaxed">
           Desk lists every surfaced call. Telegram alerts fire only on high-confidence entries
-          (cluster smart+KOL · intel≥90 · $5–15K · mint renounced · fresh).
+          (cluster smart+KOL · intel≥90 · $5–15K · mint renounced · fresh). Track sends in{" "}
+          <button
+            type="button"
+            className="text-[var(--cryp-mint)] underline-offset-2 hover:underline"
+            onClick={() => setLocation("/alerts")}
+          >
+            Alerts
+          </button>
+          .
           {latest?.symbol && (
             <span className="text-[var(--cryp-text)]">
               {" "}Latest · {safeSymbol(latest.symbol, latest.address)}
               {latestAge ? ` · ${latestAge} ago` : ""}
+            </span>
+          )}
+          {isFetching && hist && (
+            <span className="inline-flex items-center gap-1 ml-2 text-[10px] text-[var(--cryp-mute)]">
+              <Radio className="w-3 h-3 pulse-dot" />
+              syncing
             </span>
           )}
         </p>
@@ -501,10 +550,15 @@ export default function Caller() {
       </section>
 
       {/* Feed */}
-      <section className="space-y-3 fade-up fade-up-delay-3">
+      <section
+        className={cn(
+          "space-y-3 fade-up fade-up-delay-3 transition-opacity duration-200",
+          isPlaceholderData && "opacity-80",
+        )}
+      >
         <div className="flex items-center justify-between">
           <div className="text-[11px] tracking-[0.2em] uppercase text-[var(--cryp-mute)]">
-            {tokens.length} call{tokens.length === 1 ? "" : "s"}
+            {showSkeleton ? "Loading…" : `${tokens.length} call${tokens.length === 1 ? "" : "s"}`}
           </div>
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--cryp-mute)]">
             <TrendingUp className="w-3 h-3" />
@@ -512,10 +566,13 @@ export default function Caller() {
           </div>
         </div>
 
-        {isLoading && (
-          <div className="desk-card p-8 text-center text-[var(--cryp-mute)] text-sm">Loading desk…</div>
+        {showSkeleton && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {[0, 1, 2, 3, 4, 5].map(i => <DeskSkeleton key={i} />)}
+          </div>
         )}
-        {!isLoading && tokens.length === 0 && (
+
+        {!showSkeleton && tokens.length === 0 && (
           <div className="desk-card p-10 text-center">
             <div className="font-display text-lg font-bold">No calls in this window</div>
             <div className="text-sm text-[var(--cryp-mute)] mt-2 max-w-md mx-auto">
@@ -539,15 +596,17 @@ export default function Caller() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-          {tokens.map(t => (
-            <TokenCard
-              key={t.id}
-              t={t}
-              onOpen={() => setLocation(`/tokens/${t.id}`)}
-            />
-          ))}
-        </div>
+        {!showSkeleton && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {tokens.map(t => (
+              <TokenCard
+                key={t.id}
+                t={t}
+                onOpen={() => setLocation(`/tokens/${t.id}`)}
+              />
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

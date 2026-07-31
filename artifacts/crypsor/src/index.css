@@ -136,3 +136,20 @@ body {
   background: linear-gradient(165deg, rgba(16, 27, 36, 0.95), rgba(11, 20, 28, 0.9));
   border: 1px solid var(--cryp-line);
 }
+
+@keyframes shimmer-slide {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.shimmer {
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(125, 180, 170, 0.06) 0%,
+    rgba(125, 180, 170, 0.16) 45%,
+    rgba(125, 180, 170, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-slide 1.35s ease-in-out infinite;
+}
+.shimmer-card { position: relative; overflow: hidden; }

@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Settings, Activity, Zap } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { Settings, Activity, Zap, Bell } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { getApiBase } from "@/lib/api-base";
+import { ALERTS_QUERY_KEY, fetchProAlerts } from "@/pages/alerts";
 
 type NavItem = {
   href: string;
@@ -11,13 +11,15 @@ type NavItem = {
   icon: React.ElementType;
   desc: string;
   pro?: boolean;
+  prefetch?: "alerts";
 };
 
-/** Pro desk only — Logs + Settings kept for ops. */
+/** Pro desk + Alerts tracker — Logs + Settings for ops. */
 const NAV: NavItem[] = [
-  { href: "/",          label: "Pro",      icon: Zap,      desc: "Caller desk", pro: true },
-  { href: "/ops",       label: "Logs",     icon: Activity, desc: "Buys · pipeline" },
-  { href: "/settings",  label: "Settings", icon: Settings, desc: "Keys · Telegram" },
+  { href: "/",        label: "Pro",      icon: Zap,      desc: "Caller desk", pro: true },
+  { href: "/alerts",  label: "Alerts",   icon: Bell,     desc: "Sent · confidence", prefetch: "alerts" },
+  { href: "/ops",     label: "Logs",     icon: Activity, desc: "Buys · pipeline" },
+  { href: "/settings",label: "Settings", icon: Settings, desc: "Keys · Telegram" },
 ];
 
 function isActive(location: string, href: string) {
@@ -38,9 +40,21 @@ function useHeliusOk() {
   return data?.heliusConfigured;
 }
 
-function NavLink({ href, label, icon: Icon, desc, pro }: NavItem) {
+function usePrefetchAlerts() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.prefetchQuery({
+      queryKey: ALERTS_QUERY_KEY,
+      queryFn: fetchProAlerts,
+      staleTime: 8_000,
+    });
+  };
+}
+
+function NavLink({ href, label, icon: Icon, desc, pro, prefetch }: NavItem) {
   const [location] = useLocation();
   const active = isActive(location, href);
+  const prefetchAlerts = usePrefetchAlerts();
   return (
     <Link href={href}>
       <div
@@ -52,6 +66,9 @@ function NavLink({ href, label, icon: Icon, desc, pro }: NavItem) {
           borderLeft: active ? "2px solid var(--cryp-teal)" : "2px solid transparent",
           background: active ? "rgba(61,154,139,0.08)" : "transparent",
         }}
+        onMouseEnter={() => { if (prefetch === "alerts") prefetchAlerts(); }}
+        onFocus={() => { if (prefetch === "alerts") prefetchAlerts(); }}
+        onTouchStart={() => { if (prefetch === "alerts") prefetchAlerts(); }}
       >
         <Icon className="w-4 h-4 shrink-0" />
         <div className="min-w-0">
@@ -106,6 +123,7 @@ function Sidebar() {
 
 function BottomNav() {
   const [location] = useLocation();
+  const prefetchAlerts = usePrefetchAlerts();
   return (
     <nav
       className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
@@ -116,7 +134,7 @@ function BottomNav() {
       }}
     >
       <div className="flex items-stretch justify-around px-2 pt-1.5 pb-safe">
-        {NAV.map(({ href, label, icon: Icon, pro }) => {
+        {NAV.map(({ href, label, icon: Icon, pro, prefetch }) => {
           const active = isActive(location, href);
           return (
             <Link key={href} href={href} className="flex-1">
@@ -125,6 +143,7 @@ function BottomNav() {
                   "relative flex flex-col items-center gap-0.5 py-1.5",
                   active ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)]",
                 )}
+                onTouchStart={() => { if (prefetch === "alerts") prefetchAlerts(); }}
               >
                 <Icon className="w-[18px] h-[18px]" />
                 <span className="text-[9px] font-bold tracking-widest uppercase">{label}</span>
