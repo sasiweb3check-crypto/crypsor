@@ -405,17 +405,69 @@ const RUGCHECK_BASE = "https://api.rugcheck.xyz/v1";
 // The "null authority" address on Solana — signals renounced mint/freeze/update
 const NULL_AUTHORITY = "11111111111111111111111111111111";
 
+/** CTO flag — GMGN uses 1/0, true/false, or "1"/"0" on `dev.cto_flag`. */
+export function parseCtoFlag(raw: unknown): boolean | null {
+  if (raw === true || raw === 1 || raw === "1") return true;
+  if (raw === false || raw === 0 || raw === "0") return false;
+  return null;
+}
+
+/**
+ * Creator / CTO fields live on token_info.`dev` (+ `stat.creator_*`),
+ * NOT on `/v1/token/security` (that endpoint only has mint/freeze/tax/burn).
+ */
+export function extractCreatorDevStats(info: Record<string, unknown> | null | undefined): {
+  creatorAddress: string | null;
+  creatorClose: boolean | null;
+  creatorTokenStatus: string | null;
+  ctoFlag: boolean | null;
+  creatorCreatedCount: number | null;
+  creatorHoldRate: number | null;
+  creatorTokenBalance: number | null;
+} {
+  const root = info ?? {};
+  const dev = (root.dev && typeof root.dev === "object"
+    ? root.dev
+    : {}) as Record<string, unknown>;
+  const stat = (root.stat && typeof root.stat === "object"
+    ? root.stat
+    : {}) as Record<string, unknown>;
+
+  const statusRaw = String(dev.creator_token_status ?? root.creator_token_status ?? "");
+  const creatorTokenStatus = statusRaw || null;
+  const creatorClose = statusRaw.includes("close") ? true
+    : statusRaw.includes("hold") ? false
+      : null;
+
+  const addr = dev.creator_address ?? root.creator_address;
+  // Prefer per-creator open count (dev) over inflated platform-ish stat counts
+  const createdRaw = dev.creator_open_count ?? root.creator_created_count ?? stat.creator_created_count;
+  const created = createdRaw != null ? Number(createdRaw) : null;
+  const holdRaw = stat.creator_hold_rate ?? dev.creator_balance_rate;
+  const hold = holdRaw != null ? Number(holdRaw) : null;
+  const balRaw = dev.creator_token_balance;
+  const bal = balRaw != null ? Number(balRaw) : null;
+
+  return {
+    creatorAddress: typeof addr === "string" && addr.length > 8 ? addr : null,
+    creatorClose,
+    creatorTokenStatus,
+    ctoFlag: parseCtoFlag(dev.cto_flag ?? root.cto_flag),
+    creatorCreatedCount: created != null && Number.isFinite(created) ? Math.round(created) : null,
+    creatorHoldRate: hold != null && Number.isFinite(hold) ? hold : null,
+    creatorTokenBalance: bal != null && Number.isFinite(bal) ? bal : null,
+  };
+}
+
 /**
  * Fetch token security data.
  *
- * Primary source: RugCheck API (api.rugcheck.xyz) — returns on-chain
- * authority state, top-holder concentration, LP lock %, risk score, and
- * creator address.  No API key required; no Cloudflare, so native fetch works.
+ * OpenAPI path (preferred):
+ *   - `/v1/token/security` → mint/freeze/honeypot/tax/burn/top10
+ *   - `/v1/token/info` → `dev.cto_flag`, creator address/status/open_count
+ *     (security alone does NOT return CTO / creator stats)
  *
- * Supplementary: GMGN /vas/api/v1/token_holder_stat — returns sniper_count
- * and other wallet-category counts that RugCheck doesn't provide.
- *
- * The old GMGN /api/v1/token_security endpoint was retired (returns 404).
+ * Fallback: RugCheck (on-chain authorities + creator) + GMGN holder_stat / token_info scrape.
  */
 export async function fetchTokenSecurity(
   chain: string,
@@ -424,19 +476,39 @@ export async function fetchTokenSecurity(
 ): Promise<{ ok: boolean; security: GmgnSecurityData; raw: unknown }> {
   const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
 
-  // ── Official OpenAPI security (preferred when key present) ───────────────
+  // ── Official OpenAPI security + token info (CTO / creator on info.dev) ───
   try {
     const { hasGmgnOpenApiKey, gmgnOpenApiGet } = await import("./gmgn-openapi");
     if (hasGmgnOpenApiKey()) {
-      const open = await gmgnOpenApiGet("/v1/token/security", { chain: c, address });
-      if (open.ok) {
-        const d = ((open.data as { data?: Record<string, unknown> })?.data ?? {}) as Record<string, unknown>;
+      const [openSec, openInfo] = await Promise.all([
+        gmgnOpenApiGet("/v1/token/security", { chain: c, address }),
+        gmgnOpenApiGet("/v1/token/info", { chain: c, address }),
+      ]);
+      if (openSec.ok || openInfo.ok) {
+        const d = ((openSec.data as { data?: Record<string, unknown> })?.data
+          ?? {}) as Record<string, unknown>;
+        const infoRoot = ((openInfo.data as { data?: Record<string, unknown> })?.data
+          ?? (openInfo.ok ? (openInfo.data as Record<string, unknown>) : {})
+          ?? {}) as Record<string, unknown>;
+        // Some envelopes nest again under data
+        const info = (infoRoot.data && typeof infoRoot.data === "object"
+          ? infoRoot.data
+          : infoRoot) as Record<string, unknown>;
+        const creator = extractCreatorDevStats(info);
+
         const honeypotRaw = d.is_honeypot ?? d.honeypot;
         const isHoneypot =
           honeypotRaw === true || honeypotRaw === "yes" || honeypotRaw === 1 ? true
             : honeypotRaw === false || honeypotRaw === "no" || honeypotRaw === 0 ? false
               : null;
-        const top10 = d.top_10_holder_rate != null ? Number(d.top_10_holder_rate) : null;
+        const statObj = (info.stat && typeof info.stat === "object"
+          ? info.stat
+          : {}) as Record<string, unknown>;
+        const top10Raw = d.top_10_holder_rate
+          ?? info.top_10_holder_rate
+          ?? statObj.top_10_holder_rate;
+        const top10 = top10Raw != null ? Number(top10Raw) : null;
+
         const security: GmgnSecurityData = {
           isHoneypot,
           ownerRenounced: null,
@@ -448,22 +520,29 @@ export async function fetchTokenSecurity(
           top10HolderRate: top10 != null && Number.isFinite(top10) ? top10 : null,
           rugRatio: null,
           sniperCount: d.sniper_count != null ? Number(d.sniper_count) : null,
-          creatorAddress: typeof d.creator_address === "string" ? d.creator_address : null,
-          creatorClose: String(d.creator_token_status ?? "").includes("close") ? true
-            : String(d.creator_token_status ?? "").includes("hold") ? false : null,
-          creatorTokenStatus: typeof d.creator_token_status === "string"
-            ? d.creator_token_status : null,
+          creatorAddress: creator.creatorAddress
+            ?? (typeof d.creator_address === "string" ? d.creator_address : null),
+          creatorClose: creator.creatorClose ?? (
+            String(d.creator_token_status ?? "").includes("close") ? true
+              : String(d.creator_token_status ?? "").includes("hold") ? false : null
+          ),
+          creatorTokenStatus: creator.creatorTokenStatus
+            ?? (typeof d.creator_token_status === "string" ? d.creator_token_status : null),
           buyTax: d.buy_tax != null ? Number(d.buy_tax) : null,
           sellTax: d.sell_tax != null ? Number(d.sell_tax) : null,
           lpLocked: String(d.burn_status ?? "").toLowerCase() === "burn" ? true : null,
           lpLockPercent: d.burn_ratio != null ? Number(d.burn_ratio) : null,
-          ctoFlag: null,
+          ctoFlag: creator.ctoFlag,
           bluechipOwnerPct: null,
           ratTraderAmtRate: d.rat_trader_amount_rate != null
             ? Number(d.rat_trader_amount_rate) : null,
-          creatorCreatedCount: null,
+          creatorCreatedCount: creator.creatorCreatedCount,
         };
-        return { ok: true, security, raw: { openapi: open.data } };
+        return {
+          ok: true,
+          security,
+          raw: { openapiSecurity: openSec.data, openapiInfo: openInfo.data, creator },
+        };
       }
     }
   } catch {
@@ -488,13 +567,16 @@ export async function fetchTokenSecurity(
     }
   }
 
-  // ── GMGN holder stat (supplementary — sniper_count etc.) ─────────────────
-  const statRes = await gmgnFetch(
-    `https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`,
-    proxy,
-  );
+  // ── GMGN holder_stat + token_info (CTO / creator live on info.dev) ───────
+  const [statRes, infoRes] = await Promise.all([
+    gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${address}`, proxy),
+    gmgnFetch(`https://gmgn.ai/api/v1/token_info/${c}/${address}`, proxy),
+  ]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stat = (statRes.data as any)?.data ?? {};
+  const infoData = ((infoRes.data as { data?: Record<string, unknown> })?.data
+    ?? {}) as Record<string, unknown>;
+  const creator = extractCreatorDevStats(infoData);
 
   // ── Build security object ─────────────────────────────────────────────────
   // Prefer GMGN token_holder_stat top10_holder_rate — it matches on-chain data
@@ -517,10 +599,15 @@ export async function fetchTokenSecurity(
     ? rugReport.risks.some(r => r.name?.toLowerCase().includes("honeypot"))
     : null;
 
-  const creatorAddress = rugReport?.creator ?? null;
-  const creatorClose   = rugReport != null
-    ? (rugReport.creatorBalance ?? 1) === 0
-    : null;
+  // Prefer GMGN creator/CTO; RugCheck creator only as address fallback
+  const creatorAddress = creator.creatorAddress ?? rugReport?.creator ?? null;
+  const creatorClose = creator.creatorClose ?? (
+    rugReport != null ? (rugReport.creatorBalance ?? 1) === 0 : null
+  );
+  const creatorTokenStatus = creator.creatorTokenStatus
+    ?? (creatorClose === true ? "creator_close"
+      : creatorClose === false ? "creator_hold"
+        : null);
 
   const security: GmgnSecurityData = {
     isHoneypot:          rugOk ? honeypot : null,
@@ -539,23 +626,21 @@ export async function fetchTokenSecurity(
     sniperCount:         stat?.sniper_count ?? null,
     creatorAddress,
     creatorClose,
-    creatorTokenStatus:  creatorClose === true  ? "creator_close"
-                       : creatorClose === false ? "creator_hold"
-                       : null,
+    creatorTokenStatus,
     buyTax:              null,
     sellTax:             null,
     lpLocked:            rugReport != null ? (rugReport.lpLockedPct ?? 0) > 0 : null,
     lpLockPercent:       rugReport?.lpLockedPct ?? null,
-    ctoFlag:             null,
+    ctoFlag:             creator.ctoFlag,
     bluechipOwnerPct:    null,
     ratTraderAmtRate:    null,
-    creatorCreatedCount: null,
+    creatorCreatedCount: creator.creatorCreatedCount,
   };
 
   return {
-    ok: rugOk || statRes.ok,
+    ok: rugOk || statRes.ok || infoRes.ok,
     security,
-    raw: { rugcheck: rugReport, holderStat: statRes.data },
+    raw: { rugcheck: rugReport, holderStat: statRes.data, tokenInfo: infoRes.data, creator },
   };
 }
 

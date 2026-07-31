@@ -52,6 +52,10 @@ export type CallCard = {
   hit10x: boolean;
   volume24hUsd: number | null;
   tokenAgeMin: number | null;
+  ctoFlag: boolean | null;
+  creatorClose: boolean | null;
+  creatorAddress: string | null;
+  creatorCreatedCount: number | null;
   socials: { twitter?: string; telegram?: string; website?: string };
 };
 

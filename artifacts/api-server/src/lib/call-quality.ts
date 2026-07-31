@@ -20,6 +20,12 @@ export type CallQualityInput = {
   qualityLabel: string;
   athMultiple: number;
   honeypot: boolean | null;
+  /** Community takeover — original dev abandoned; often healthier for memes */
+  ctoFlag?: boolean | null;
+  /** Dev still holding allocation (sell pressure risk) */
+  creatorClose?: boolean | null;
+  /** How many tokens this creator has launched (serial farmer risk) */
+  creatorCreatedCount?: number | null;
 };
 
 export type CallQualityResult = {
@@ -77,6 +83,31 @@ export function computeCallQuality(input: CallQualityInput): CallQualityResult {
     score += 6;
   } else if (input.athMultiple >= 2) {
     score += 3;
+  }
+
+  // CTO / creator stats (from GMGN token_info.dev — not /security)
+  if (input.ctoFlag === true) {
+    score += 6;
+    reasons.push("CTO (community takeover)");
+  }
+  if (input.creatorClose === true) {
+    score += 3;
+    reasons.push("Creator closed / exited");
+  } else if (input.creatorClose === false) {
+    score -= 4;
+    reasons.push("Creator still holding");
+  }
+  const created = input.creatorCreatedCount;
+  if (created != null) {
+    if (created >= 50) {
+      score -= 10;
+      reasons.push(`Serial creator (${created} tokens)`);
+    } else if (created >= 15) {
+      score -= 5;
+      reasons.push(`Active creator (${created} tokens)`);
+    } else if (created <= 2) {
+      score += 2;
+    }
   }
 
   const rounded = Math.round(Math.min(score, 100));
