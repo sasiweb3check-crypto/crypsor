@@ -163,8 +163,8 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  // v8: sticky desk + confidence + callAlertSentAt
-  const cacheKey = `pro:feed:v8:${limit}`;
+  // v9: sticky desk + confidence (Watch MC $5–25K) + callAlertSentAt
+  const cacheKey = `pro:feed:v9:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -681,9 +681,10 @@ router.get("/pro/history", async (req, res) => {
 
 router.get("/pro/alerts", async (_req, res) => {
   try {
-    const cacheKey = "pro:alerts:v1";
+    const cacheKey = "pro:alerts:v2";
     const cached = await proCacheGet<{
       stats: Record<string, unknown>;
+      bands: Array<Record<string, unknown>>;
       sent: AlertTrackRow[];
       alert: AlertTrackRow[];
       watch: AlertTrackRow[];
@@ -795,6 +796,46 @@ router.get("/pro/alerts", async (_req, res) => {
     const x10 = sent.filter(t => t.hit10x || t.athMultiple >= 10).length;
     const bestAth = sent.reduce((m, t) => Math.max(m, t.athMultiple || 1), 1);
 
+    /** Entry-MC band research: cluster ∧ intel≥90 ∧ mint (same as Alert minus MC hard gate). */
+    const ruleTokens = feed.tokens.filter(t =>
+      t.calledSmart >= 2
+      && t.calledKol >= 1
+      && (t.calledIntel ?? 0) >= 90
+      && t.secMintRenounced === true
+      && t.secIsHoneypot !== true
+      && (t.calledMcUsd ?? 0) >= 5_000
+      && (t.calledMcUsd ?? 0) <= 40_000,
+    );
+    const bandDefs: Array<{ key: string; label: string; lo: number; hi: number; role: string }> = [
+      { key: "5-15k", label: "$5–15K", lo: 5_000, hi: 15_000, role: "Alert MC" },
+      { key: "15-25k", label: "$15–25K", lo: 15_000.01, hi: 25_000, role: "Watch only" },
+      { key: "25-40k", label: "$25–40K", lo: 25_000.01, hi: 40_000, role: "Desk only" },
+      { key: "5-25k", label: "$5–25K", lo: 5_000, hi: 25_000, role: "If Alert widened" },
+      { key: "5-40k", label: "$5–40K", lo: 5_000, hi: 40_000, role: "Full desk band" },
+    ];
+    const bands = bandDefs.map(b => {
+      const list = ruleTokens.filter(t => {
+        const mc = t.calledMcUsd ?? 0;
+        return mc >= b.lo && mc <= b.hi;
+      });
+      const n = list.length;
+      const hit2 = list.filter(t => t.hit2x || t.athMultiple >= 2).length;
+      const hit5 = list.filter(t => t.hit5x || t.athMultiple >= 5).length;
+      const hit10 = list.filter(t => t.hit10x || t.athMultiple >= 10).length;
+      return {
+        key: b.key,
+        label: b.label,
+        role: b.role,
+        n,
+        winRate2x: n ? Math.round((hit2 / n) * 100) : 0,
+        winRate5x: n ? Math.round((hit5 / n) * 100) : 0,
+        winRate10x: n ? Math.round((hit10 / n) * 100) : 0,
+        x2Count: hit2,
+        x5Count: hit5,
+        x10Count: hit10,
+      };
+    });
+
     const payload = {
       stats: {
         sent: sentN,
@@ -807,7 +848,9 @@ router.get("/pro/alerts", async (_req, res) => {
         alertLive: alert.length,
         watchLive: watch.length,
         pendingSend: alert.filter(t => !t.callAlertSentAt).length,
+        ruleN: ruleTokens.length,
       },
+      bands,
       sent,
       alert,
       watch,
