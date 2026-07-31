@@ -163,7 +163,11 @@ export async function getOpsLogMerged(opts?: {
   try {
     if (process.env.AIVEN_REDIS_URL?.trim()) {
       const { proCacheGet } = await import("./pro-cache");
-      redis = (await proCacheGet<OpsEvent[]>(REDIS_KEY)) ?? [];
+      // Bound Redis wait so Logs tab never stalls on a slow cache hop
+      redis = await Promise.race([
+        proCacheGet<OpsEvent[]>(REDIS_KEY).then(v => v ?? []),
+        new Promise<OpsEvent[]>(resolve => setTimeout(() => resolve([]), 800)),
+      ]);
     }
   } catch {
     redis = [];

@@ -48,25 +48,13 @@ router.get("/ops/summary", async (_req, res) => {
     const counters = getOpsCounters();
     const now = Date.now();
 
-    // Telegram configured?
-    const tgRows = await db
-      .select({ key: settings.key, value: settings.value })
-      .from(settings)
-      .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id', 'helius_api_key')`);
-    const bot = (tgRows.find(r => r.key === "telegram_bot_token")?.value ?? "").trim();
-    const chat = (tgRows.find(r => r.key === "telegram_chat_id")?.value ?? "").trim();
-    const heliusDb = (tgRows.find(r => r.key === "helius_api_key")?.value ?? "").trim();
-    const telegramConfigured = Boolean(bot && chat);
-    const heliusConfigured =
-      monitorStatus.heliusConfigured ||
-      Boolean(heliusDb || process.env.HELIUS_API_KEY?.trim());
-
-    // Pending first-call alerts (very_good only — precision mode)
-    let pendingFirstCalls = 0;
-    let pendingMilestones = 0;
-    let qualityBelowBlocked = 0;
-    try {
-      const pending = await db.execute(sql`
+    // Parallel DB reads — sequential awaits made Logs feel broken on tab switch
+    const [tgRows, pendingSettled, invSettled] = await Promise.all([
+      db
+        .select({ key: settings.key, value: settings.value })
+        .from(settings)
+        .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id', 'helius_api_key')`),
+      db.execute(sql`
         SELECT
           COUNT(*) FILTER (
             WHERE quality_label = 'very_good' AND call_alert_sent_at IS NULL
@@ -87,13 +75,32 @@ router.get("/ops/summary", async (_req, res) => {
             WHERE quality_label = 'below' AND called_at >= NOW() - INTERVAL '7 days'
           )::int AS below_7d
         FROM pro_calls
-      `);
-      const row = pending.rows[0] as Record<string, unknown> | undefined;
+      `).then(r => ({ ok: true as const, r })).catch(() => ({ ok: false as const })),
+      db.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM tracked_tokens) AS tokens,
+          (SELECT COUNT(*)::int FROM tracked_tokens
+             WHERE COALESCE(status, '') NOT IN ('ignored', 'archive')) AS active,
+          (SELECT COUNT(*)::int FROM token_buys) AS buys
+      `).then(r => ({ ok: true as const, r })).catch(() => ({ ok: false as const })),
+    ]);
+
+    const bot = (tgRows.find(r => r.key === "telegram_bot_token")?.value ?? "").trim();
+    const chat = (tgRows.find(r => r.key === "telegram_chat_id")?.value ?? "").trim();
+    const heliusDb = (tgRows.find(r => r.key === "helius_api_key")?.value ?? "").trim();
+    const telegramConfigured = Boolean(bot && chat);
+    const heliusConfigured =
+      monitorStatus.heliusConfigured ||
+      Boolean(heliusDb || process.env.HELIUS_API_KEY?.trim());
+
+    let pendingFirstCalls = 0;
+    let pendingMilestones = 0;
+    let qualityBelowBlocked = 0;
+    if (pendingSettled.ok) {
+      const row = pendingSettled.r.rows[0] as Record<string, unknown> | undefined;
       pendingFirstCalls = Number(row?.pending_first ?? 0);
       pendingMilestones = Number(row?.pending_ms ?? 0);
       qualityBelowBlocked = Number(row?.below_7d ?? 0);
-    } catch {
-      /* schema may lag */
     }
 
     const lastScanMs = monitorStatus.lastScanAt
@@ -170,23 +177,15 @@ router.get("/ops/summary", async (_req, res) => {
       });
     }
 
-    // Discovery inventory (wallet buys → tracked tokens)
     let tokensTracked = 0;
     let tokensActive = 0;
     let buysTotal = 0;
-    try {
-      const inv = await db.execute(sql`
-        SELECT
-          (SELECT COUNT(*)::int FROM tracked_tokens) AS tokens,
-          (SELECT COUNT(*)::int FROM tracked_tokens
-             WHERE COALESCE(status, '') NOT IN ('ignored', 'archive')) AS active,
-          (SELECT COUNT(*)::int FROM token_buys) AS buys
-      `);
-      const row = inv.rows[0] as Record<string, unknown> | undefined;
+    if (invSettled.ok) {
+      const row = invSettled.r.rows[0] as Record<string, unknown> | undefined;
       tokensTracked = Number(row?.tokens ?? 0);
       tokensActive = Number(row?.active ?? 0);
       buysTotal = Number(row?.buys ?? 0);
-    } catch { /* tables may lag */ }
+    }
 
     const walletErrors = (monitorStatus.lastScannedWallets ?? []).filter(
       w => w.status === "error" || w.status === "no_key",
@@ -271,8 +270,6 @@ router.get("/ops/gmgn-check", async (req, res) => {
     const proxy = nextProxy();
     const t0 = Date.now();
 
-    const openApi = await openApiHealthCheck(mint);
-
     const endpoints = [
       { name: "token_info", url: `https://gmgn.ai/api/v1/token_info/sol/${mint}` },
       { name: "holder_stat", url: `https://gmgn.ai/vas/api/v1/token_holder_stat/sol/${mint}` },
@@ -283,10 +280,26 @@ router.get("/ops/gmgn-check", async (req, res) => {
         url: `https://gmgn.ai/vas/api/v1/token_holders/sol/${mint}?limit=3&tag=smart_degen`,
       },
     ];
-    const results = [];
-    for (const ep of endpoints) {
-      const r = await gmgnFetch(ep.url, proxy);
-      results.push({
+
+    // Parallel OpenAPI + scrape probes — sequential loops made Logs look "stuck/red"
+    const [openApi, scrapeSettled] = await Promise.all([
+      openApiHealthCheck(mint),
+      Promise.allSettled(endpoints.map(ep => gmgnFetch(ep.url, proxy))),
+    ]);
+
+    const results = endpoints.map((ep, i) => {
+      const settled = scrapeSettled[i];
+      if (settled.status === "rejected") {
+        return {
+          name: ep.name,
+          ok: false,
+          status: 0,
+          blocked: true,
+          sample: String(settled.reason).slice(0, 80),
+        };
+      }
+      const r = settled.value;
+      return {
         name: ep.name,
         ok: r.ok,
         status: r.status,
@@ -295,8 +308,8 @@ router.get("/ops/gmgn-check", async (req, res) => {
         sample: r.ok
           ? Object.keys(((r.data as { data?: object })?.data ?? r.data ?? {}) as object).slice(0, 8)
           : (r.data as { error?: string })?.error ?? null,
-      });
-    }
+      };
+    });
     const okCount = results.filter(r => r.ok).length;
     opsLog("api", (openApi.ok || okCount > 0) ? "info" : "warn",
       `GMGN check openapi=${openApi.ok} scrape=${okCount}/${results.length}`, {

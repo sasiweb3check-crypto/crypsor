@@ -1,9 +1,28 @@
+import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { Settings, Activity, Zap, Bell, Crosshair } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { getApiBase } from "@/lib/api-base";
+import { apiFetch } from "@/lib/api-fetch";
 import { RUNNER_ALERTS_KEY, fetchRunnerAlerts } from "@/lib/runner-api";
+import {
+  OPS_LOG_KEY,
+  OPS_PING_KEY,
+  OPS_SUMMARY_KEY,
+  fetchOpsLog,
+  fetchOpsPing,
+  fetchOpsSummary,
+} from "@/lib/ops-api";
+import {
+  DEX_EVENTS_KEY,
+  DEX_POSITIONS_KEY,
+  DEX_STATUS_KEY,
+  fetchDexEvents,
+  fetchDexPositions,
+  fetchDexStatus,
+} from "@/lib/trader-api";
+
+type PrefetchKind = "alerts" | "ops" | "trader";
 
 type NavItem = {
   href: string;
@@ -11,14 +30,14 @@ type NavItem = {
   icon: React.ElementType;
   desc: string;
   pro?: boolean;
-  prefetch?: "alerts";
+  prefetch?: PrefetchKind;
 };
 
 const NAV: NavItem[] = [
   { href: "/",        label: "Runner",  icon: Zap,       desc: "Radar · entry", pro: true },
   { href: "/alerts",  label: "Alerts",  icon: Bell,      desc: "ENTRY pings", prefetch: "alerts" },
-  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Autopilot · 3×" },
-  { href: "/ops",     label: "Logs",    icon: Activity,  desc: "Buys · pipeline" },
+  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Autopilot · 3×", prefetch: "trader" },
+  { href: "/ops",     label: "Logs",    icon: Activity,  desc: "Buys · pipeline", prefetch: "ops" },
   { href: "/settings",label: "Settings",icon: Settings,  desc: "Keys · Telegram" },
 ];
 
@@ -33,28 +52,39 @@ function isActive(location: string, href: string) {
 function useHeliusOk() {
   const { data } = useQuery<{ running: boolean; heliusConfigured: boolean }>({
     queryKey: ["monitor-status-mini"],
-    queryFn: () => fetch(`${getApiBase()}api/monitor/status`).then(r => r.json()),
+    queryFn: () => apiFetch<{ running: boolean; heliusConfigured: boolean }>("api/monitor/status"),
     refetchInterval: 60_000,
     staleTime: 45_000,
+    retry: 2,
   });
   return data?.heliusConfigured;
 }
 
-function usePrefetchAlerts() {
+function usePrefetchNav() {
   const qc = useQueryClient();
-  return () => {
-    void qc.prefetchQuery({
-      queryKey: RUNNER_ALERTS_KEY,
-      queryFn: fetchRunnerAlerts,
-      staleTime: 6_000,
-    });
+  return (kind?: PrefetchKind) => {
+    if (kind === "alerts") {
+      void qc.prefetchQuery({
+        queryKey: RUNNER_ALERTS_KEY,
+        queryFn: fetchRunnerAlerts,
+        staleTime: 6_000,
+      });
+    } else if (kind === "ops") {
+      void qc.prefetchQuery({ queryKey: OPS_PING_KEY, queryFn: fetchOpsPing, staleTime: 15_000 });
+      void qc.prefetchQuery({ queryKey: OPS_SUMMARY_KEY, queryFn: fetchOpsSummary, staleTime: 8_000 });
+      void qc.prefetchQuery({ queryKey: OPS_LOG_KEY("all"), queryFn: () => fetchOpsLog("all"), staleTime: 8_000 });
+    } else if (kind === "trader") {
+      void qc.prefetchQuery({ queryKey: DEX_STATUS_KEY, queryFn: fetchDexStatus, staleTime: 6_000 });
+      void qc.prefetchQuery({ queryKey: DEX_POSITIONS_KEY, queryFn: fetchDexPositions, staleTime: 6_000 });
+      void qc.prefetchQuery({ queryKey: DEX_EVENTS_KEY, queryFn: () => fetchDexEvents(50), staleTime: 6_000 });
+    }
   };
 }
 
 function NavLink({ href, label, icon: Icon, desc, pro, prefetch }: NavItem) {
   const [location] = useLocation();
   const active = isActive(location, href);
-  const prefetchAlerts = usePrefetchAlerts();
+  const prefetchNav = usePrefetchNav();
   return (
     <Link href={href}>
       <div
@@ -66,9 +96,9 @@ function NavLink({ href, label, icon: Icon, desc, pro, prefetch }: NavItem) {
           borderLeft: active ? "2px solid var(--cryp-teal)" : "2px solid transparent",
           background: active ? "rgba(61,154,139,0.08)" : "transparent",
         }}
-        onMouseEnter={() => { if (prefetch === "alerts") prefetchAlerts(); }}
-        onFocus={() => { if (prefetch === "alerts") prefetchAlerts(); }}
-        onTouchStart={() => { if (prefetch === "alerts") prefetchAlerts(); }}
+        onMouseEnter={() => prefetchNav(prefetch)}
+        onFocus={() => prefetchNav(prefetch)}
+        onTouchStart={() => prefetchNav(prefetch)}
       >
         <Icon className="w-4 h-4 shrink-0" />
         <div className="min-w-0">
@@ -121,7 +151,7 @@ function Sidebar() {
 
 function BottomNav() {
   const [location] = useLocation();
-  const prefetchAlerts = usePrefetchAlerts();
+  const prefetchNav = usePrefetchNav();
   return (
     <nav
       className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
@@ -141,7 +171,7 @@ function BottomNav() {
                   "relative flex flex-col items-center gap-0.5 py-1.5",
                   active ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)]",
                 )}
-                onTouchStart={() => { if (prefetch === "alerts") prefetchAlerts(); }}
+                onTouchStart={() => prefetchNav(prefetch)}
               >
                 <Icon className="w-[18px] h-[18px]" />
                 <span className="text-[9px] font-bold tracking-widest uppercase">{label}</span>
@@ -162,8 +192,18 @@ function BottomNav() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  const qc = useQueryClient();
   const title = NAV.find(n => isActive(location, n.href))?.label
     ?? (location.startsWith("/tokens/") ? "Token" : "Crypsor");
+
+  // Warm the API on first paint so Logs/Trader don't flash "unreachable" on cold start
+  useEffect(() => {
+    void qc.prefetchQuery({
+      queryKey: OPS_PING_KEY,
+      queryFn: fetchOpsPing,
+      staleTime: 15_000,
+    });
+  }, [qc]);
 
   return (
     <div className="relative min-h-screen w-full desk-surface">
