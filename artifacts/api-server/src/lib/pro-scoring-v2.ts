@@ -186,8 +186,11 @@ function scoreSmartMoney(
   const shr = opts?.smartHoldRate;
   const khr = opts?.kolHoldRate;
   if (shr != null && Number.isFinite(shr)) {
-    // 0% holding smart → crash; 100% holding → full bonus
-    score += (shr - 0.5) * 40;
+    // Outcome-tuned (n=390 surfaced): hold≥50% cohorts win ~2× more than hold<25%.
+    // Steeper curve than before — weak hold was the main false-positive lane.
+    score += (shr - 0.5) * 56;
+    if (shr < 0.25) score -= 18;
+    else if (shr >= 0.8) score += 8;
   }
   if (khr != null && Number.isFinite(khr)) {
     score += (khr - 0.5) * 16;
@@ -205,8 +208,12 @@ function scoreSmartMoney(
   else if (supply >= 1) score += 4;
   else if (s + k > 0 && supply < 0.05) score -= 12; // tagged but emptied bags
 
-  if (k >= 1 && k <= 3 && s >= 2 && s <= 5) score += 8;
+  // smart≥2 is the best win cohort (~36%); single-smart is OK only with hold
+  if (s >= 2 && s <= 5) score += 10;
+  else if (s >= 6) score += 6;
+  if (k >= 1 && k <= 3 && s >= 2 && s <= 5) score += 6;
   if (k >= 1 && s >= 1) score += 3;
+  if (s === 1 && shr != null && shr < 0.5) score -= 14; // s1_weak_hold ≈12% win
   if (k === 0 && s === 0) score = 22;
   // No currently-holding smart is a hard demotion even if tags say smart>0
   if (s >= 1 && shr != null && shr <= 0) score = Math.min(score, 28);
@@ -369,16 +376,13 @@ export function computeProScoreV2(inp: ProScoreV2Input): ProScoreV2Result {
 
   const score = Math.round(clamp(raw) * 10) / 10;
 
-  // Dead / never-ran tokens must not flood Pro Intel just because call-time
-  // signals looked good. Keep quality if they already printed ≥2× ATH.
-  let qualityLabel: QualityLabel =
+  // quality_label is ENTRY quality for the desk. Do NOT demote DEAD/never-ran
+  // here — that was kicking printers (and the whole desk) off the feed when MC
+  // crashed. Desk membership is sticky via surfaced_at; use runStatus/outcome
+  // for "why it died".
+  const qualityLabel: QualityLabel =
     score >= PRO_SCORE_V2_THRESHOLDS.veryGood ? "very_good" :
     score >= PRO_SCORE_V2_THRESHOLDS.good     ? "good" : "below";
-
-  const ath = inp.athMultiple ?? 1;
-  if (inp.runStatus === "DEAD" && ath < 2 && qualityLabel !== "below") {
-    qualityLabel = "below";
-  }
 
   return {
     score,

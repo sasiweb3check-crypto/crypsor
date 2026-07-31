@@ -59,6 +59,7 @@ async function quarantineBadMcOutcomes(): Promise<void> {
          )`,
       [mints, symbols, MAX_ABSURD_MC_USD],
     );
+    // True junk only — clear surfaced_at so sticky desk does not keep them.
     const demoted = await pool.query(
       `UPDATE pro_calls pc
        SET quality_label = 'below',
@@ -73,15 +74,34 @@ async function quarantineBadMcOutcomes(): Promise<void> {
            OR COALESCE(NULLIF(pc.called_mc_usd, '')::numeric, 0) > $4
            OR COALESCE(pc.called_smart_count, 0) < 1
            OR COALESCE(NULLIF(t.market_cap_usd, '')::numeric, 0) > $5
+           OR t.sec_is_honeypot IS TRUE
          )`,
       [mints, symbols, MAX_PRO_ENTRY_MC_USD, MAX_DISCOVERY_MC_USD, MAX_ABSURD_MC_USD],
     );
+
+    // Sticky rescue: calls that entered the desk then got demoted by DEAD/score
+    // decay come back — outcome UI explains death; membership stays.
+    const rescued = await pool.query(
+      `UPDATE pro_calls
+       SET quality_label = CASE
+             WHEN COALESCE(pro_score, 0) >= 75 THEN 'very_good'
+             ELSE 'good'
+           END
+       WHERE surfaced_at IS NOT NULL
+         AND quality_label = 'below'
+         AND COALESCE(called_smart_count, 0) >= 1
+         AND COALESCE(NULLIF(called_mc_usd, '')::numeric, 0) <= $1
+         AND COALESCE(NULLIF(called_mc_usd, '')::numeric, 0) >= 5000`,
+      [MAX_PRO_ENTRY_MC_USD],
+    );
+
     logger.info(
       {
         ignoredTokens: ignored.rowCount ?? 0,
         demotedProCalls: demoted.rowCount ?? 0,
+        rescuedSticky: rescued.rowCount ?? 0,
       },
-      "quarantined bad MC / non-meme / smart=0 Pro outcomes",
+      "quarantined junk + rescued sticky Pro desk membership",
     );
   } catch (err) {
     logger.warn({ err }, "quarantineBadMcOutcomes failed (non-fatal)");

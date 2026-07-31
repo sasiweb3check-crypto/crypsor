@@ -236,13 +236,22 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         )
       `);
 
-      // Honest demotion: snapshots own ongoing quality (no ratchet that froze elites).
-      // DEAD <2× always demotes; otherwise use fresh scorer label.
-      let nextQuality = qualityLabel;
-      if (runStatus === "DEAD" && newAth < 2) nextQuality = "below";
-      if (r.sec_is_honeypot === true) nextQuality = "below";
+      // Sticky desk: once surfaced, never demote quality off the feed.
+      // Honeypot is the only snapshot-time eviction. DEAD/crash → outcome UI.
+      let nextQuality: string = qualityLabel;
+      if (r.sec_is_honeypot === true) {
+        nextQuality = "below";
+      } else if (r.prev_quality === "very_good" || r.prev_quality === "good") {
+        nextQuality = r.prev_quality;
+      } else if (
+        // Rescued / re-scored rows that still have surfaced_at but were demoted
+        qualityLabel === "below"
+      ) {
+        // Leave as below unless we are newly surfacing — handled below
+        nextQuality = "below";
+      }
 
-      const surfacingNow = (nextQuality === "good" || nextQuality === "very_good");
+      const surfacingNow = nextQuality === "good" || nextQuality === "very_good";
       const surfacedClause = surfacingNow
         ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
         : sql``;
@@ -257,13 +266,23 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           last_survival_at = NOW(),
           entry_tier       = ${entryTier},
           score_version    = 'v2',
-          quality_label    = ${nextQuality}
+          quality_label    = CASE
+            WHEN ${r.sec_is_honeypot === true} THEN 'below'
+            WHEN surfaced_at IS NOT NULL THEN
+              CASE
+                WHEN quality_label IN ('good', 'very_good') THEN quality_label
+                ELSE 'good'
+              END
+            ELSE ${nextQuality}
+          END
           ${surfacedClause}
           ${sql.join(milestoneParts, sql``)}
         WHERE id = ${r.pro_call_id}
       `);
 
-      if (String(r.prev_quality ?? "") !== String(nextQuality)) qualityChanged = true;
+      if (String(r.prev_quality ?? "") !== "good" && String(r.prev_quality ?? "") !== "very_good") {
+        qualityChanged = true;
+      }
       snapCount++;
     }
 
