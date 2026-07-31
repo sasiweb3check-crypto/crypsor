@@ -36,7 +36,11 @@ export function parseRedisUrl(rawUrl: string): RedisOptions {
  */
 export function getBullMQRedisOpts(): RedisOptions {
   const raw = process.env.AIVEN_REDIS_URL;
-  if (!raw) throw new Error("AIVEN_REDIS_URL is required for BullMQ");
+  if (!raw) {
+    throw new Error(
+      "AIVEN_REDIS_URL is required for BullMQ. The API currently uses the in-process PipelineQueue; set this only when running a dedicated BullMQ worker.",
+    );
+  }
   return {
     ...parseRedisUrl(raw),
     maxRetriesPerRequest: null,

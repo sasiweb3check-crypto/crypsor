@@ -18,6 +18,18 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
+// Keep the process alive across transient async failures (Redis blips, flaky
+// upstreams). Uncaught sync exceptions still exit after logging so Render can
+// restart from a clean state.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "Unhandled promise rejection — process kept alive");
+});
+process.on("uncaughtException", (err) => {
+  logger.fatal({ err }, "Uncaught exception — exiting for clean restart");
+  // Allow logs to flush, then exit so the supervisor restarts us.
+  setTimeout(() => process.exit(1), 250).unref();
+});
+
 app.listen(port, async (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");

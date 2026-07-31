@@ -1,9 +1,16 @@
 import { db } from "@workspace/db";
 import { tracked_tokens, token_price_snapshots } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
+
+/** Live tokens — refreshed every cycle. */
+const HOT_STATUSES = ["new", "active", "watch", "revived"] as const;
+/** Cold tokens still need occasional pricing for revival / dump detection. */
+const COLD_STATUSES = ["archive", "dumped"] as const;
+const COLD_REFRESH_EVERY_N = 15; // ~every 15 hot cycles (~5 min at 20s)
+let priceRefreshCycle = 0;
 
 // PostgreSQL timestamp range: 4713 BC – 294276 AD (as Unix ms)
 const PG_TS_MAX_MS = new Date("294276-01-01T00:00:00Z").getTime();
@@ -237,6 +244,11 @@ async function fetchCoinGeckoChain(
 export async function refreshAllPrices(): Promise<void> {
   const t0 = Date.now();
   try {
+    // Prefer hot tokens every cycle; include cold tokens only periodically so
+    // thousands of archived rows don't thrash DexScreener + the DB every 20s.
+    priceRefreshCycle += 1;
+    const wantCold = priceRefreshCycle % COLD_REFRESH_EVERY_N === 0;
+
     const tokens = await db
       .select({
         id:              tracked_tokens.id,
@@ -245,7 +257,12 @@ export async function refreshAllPrices(): Promise<void> {
         athPriceUsd:     tracked_tokens.athPriceUsd,
         athMarketCapUsd: tracked_tokens.athMarketCapUsd,
       })
-      .from(tracked_tokens);
+      .from(tracked_tokens)
+      .where(
+        wantCold
+          ? inArray(tracked_tokens.status, [...HOT_STATUSES, ...COLD_STATUSES])
+          : inArray(tracked_tokens.status, [...HOT_STATUSES]),
+      );
 
     if (!tokens.length) return;
 
