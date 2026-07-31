@@ -148,19 +148,39 @@ function CallCardView({ c }: { c: CallCard }) {
                     : ""}
                 </span>
               )}
-              <span
-                className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
-                style={{
-                  color: c.callLabel === "elite" ? "var(--cryp-ink)" : "var(--cryp-mint)",
-                  background: c.callLabel === "elite"
-                    ? "var(--cryp-mint)"
-                    : c.callLabel === "strong"
-                      ? "rgba(61,154,139,0.2)"
-                      : "rgba(122,143,153,0.16)",
-                }}
-              >
-                {c.callLabel} {c.callScore}
-              </span>
+              <div className="flex items-center gap-1 flex-wrap justify-end">
+                {c.ctoFlag === true && (
+                  <span
+                    className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                    style={{ color: "#04120c", background: "#7dd3c0" }}
+                    title="Community takeover — original creator exited"
+                  >
+                    CTO
+                  </span>
+                )}
+                {c.creatorClose === false && (
+                  <span
+                    className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                    style={{ color: "#fff", background: "rgba(232,93,93,0.75)" }}
+                    title="Creator still holding"
+                  >
+                    Dev hold
+                  </span>
+                )}
+                <span
+                  className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                  style={{
+                    color: c.callLabel === "elite" ? "var(--cryp-ink)" : "var(--cryp-mint)",
+                    background: c.callLabel === "elite"
+                      ? "var(--cryp-mint)"
+                      : c.callLabel === "strong"
+                        ? "rgba(61,154,139,0.2)"
+                        : "rgba(122,143,153,0.16)",
+                  }}
+                >
+                  {c.callLabel} {c.callScore}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -208,6 +228,10 @@ function CallCardView({ c }: { c: CallCard }) {
             {(c.calledSmart > 0 || c.calledKol > 0) && (
               <span>Smart {c.calledSmart} · KOL {c.calledKol}</span>
             )}
+            {c.creatorCreatedCount != null && (
+              <span>Creator {c.creatorCreatedCount} tokens</span>
+            )}
+            {c.creatorClose === true && <span>Creator closed</span>}
             {fmtAge(c.tokenAgeMin) && <span>{fmtAge(c.tokenAgeMin)}</span>}
             {c.volume24hUsd != null && c.volume24hUsd > 0 && (
               <span>{formatCompactUsd(c.volume24hUsd)} vol</span>

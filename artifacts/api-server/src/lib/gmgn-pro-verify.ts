@@ -285,8 +285,14 @@ function tokenStatFromParts(
     sniperHoldRate: stat.top70_sniper_hold_rate != null
       ? num(stat.top70_sniper_hold_rate) : null,
     creatorHoldRate: stat.creator_hold_rate != null ? num(stat.creator_hold_rate) : null,
-    creatorCreatedCount: (info.creator_created_count ?? stat.creator_created_count) != null
-      ? Math.round(num(info.creator_created_count ?? stat.creator_created_count)) : null,
+    // Prefer dev.creator_open_count (per-creator launches) over inflated stat counts
+    creatorCreatedCount: (() => {
+      const dev = (info.dev && typeof info.dev === "object"
+        ? info.dev
+        : {}) as Record<string, unknown>;
+      const raw = dev.creator_open_count ?? info.creator_created_count ?? stat.creator_created_count;
+      return raw != null ? Math.round(num(raw)) : null;
+    })(),
     freshWalletRate: stat.fresh_wallet_rate != null ? num(stat.fresh_wallet_rate) : null,
     entrapmentPct: stat.top_entrapment_trader_percentage != null
       ? num(stat.top_entrapment_trader_percentage) : null,
@@ -321,6 +327,11 @@ function securityFromOpenApi(
   else if (honeypotRaw === false || honeypotRaw === "no" || honeypotRaw === 0) isHoneypot = false;
 
   const creatorStatus = String(dev.creator_token_status ?? sec.creator_token_status ?? "");
+  const ctoRaw = dev.cto_flag ?? sec.cto_flag;
+  const ctoFlag =
+    ctoRaw === true || ctoRaw === 1 || ctoRaw === "1" ? true
+      : ctoRaw === false || ctoRaw === 0 || ctoRaw === "0" ? false
+        : null;
   return {
     mintRenounced: typeof sec.renounced_mint === "boolean" ? sec.renounced_mint : null,
     freezeRenounced: typeof sec.renounced_freeze_account === "boolean"
@@ -337,7 +348,7 @@ function securityFromOpenApi(
       : creatorStatus.includes("hold") ? false : null,
     creatorAddress: typeof (dev.creator_address ?? sec.creator_address) === "string"
       ? String(dev.creator_address ?? sec.creator_address) : null,
-    ctoFlag: dev.cto_flag === 1 || dev.cto_flag === true,
+    ctoFlag,
   };
 }
 

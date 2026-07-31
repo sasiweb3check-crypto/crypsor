@@ -353,7 +353,13 @@ function reshapeForScrapeKind(kind: OpenApiScrapeKind, result: GmgnResult): Gmgn
           data: {
             ...stat,
             top_10_holder_rate: stat.top_10_holder_rate ?? info.top_10_holder_rate,
-            creator_created_count: info.creator_created_count ?? stat.creator_created_count,
+            creator_created_count:
+              asRecord(info.dev).creator_open_count
+              ?? info.creator_created_count
+              ?? stat.creator_created_count,
+            cto_flag: asRecord(info.dev).cto_flag,
+            creator_address: asRecord(info.dev).creator_address,
+            creator_token_status: asRecord(info.dev).creator_token_status,
           },
         },
       };

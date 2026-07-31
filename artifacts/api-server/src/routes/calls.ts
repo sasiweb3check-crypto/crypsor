@@ -65,11 +65,15 @@ export type CallCard = {
   hit10x: boolean;
   volume24hUsd: number | null;
   tokenAgeMin: number | null;
+  ctoFlag: boolean | null;
+  creatorClose: boolean | null;
+  creatorAddress: string | null;
+  creatorCreatedCount: number | null;
   socials: { twitter?: string; telegram?: string; website?: string };
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v2:${limit}`;
+  const cacheKey = `calls:feed:v3:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -99,7 +103,12 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.holder_quality_score,
       t.holder_velocity_score,
       t.sec_is_honeypot,
-      t.first_seen_at,
+      t.sec_cto_flag,
+      t.sec_creator_close,
+      t.sec_creator_address,
+      t.sec_creator_created_count,
+      t.token_created_at,
+      t.first_detected_at,
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       buys.buy_notional AS buy_notional,
       buys.avg_win_rate AS avg_win_rate
@@ -147,6 +156,12 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       : 1;
     const walletBuys = Number(r.wallet_buys ?? 0);
     const avgWr = r.avg_win_rate != null ? Number(r.avg_win_rate) : null;
+    const ctoFlag = r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag);
+    const creatorClose = r.sec_creator_close == null ? null : Boolean(r.sec_creator_close);
+    const creatorCreatedCount = r.sec_creator_created_count != null
+      ? Number(r.sec_creator_created_count)
+      : null;
+
     const q = computeCallQuality({
       walletBuys,
       calledKol: Number(r.called_kol_count ?? 0),
@@ -160,10 +175,14 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       qualityLabel: String(r.quality_label ?? ""),
       athMultiple,
       honeypot: r.sec_is_honeypot as boolean | null,
+      ctoFlag,
+      creatorClose,
+      creatorCreatedCount,
     });
 
-    const firstSeen = r.first_seen_at ? new Date(String(r.first_seen_at)).getTime() : null;
-    const tokenAgeMin = firstSeen != null
+    const ageSrc = r.token_created_at ?? r.first_detected_at;
+    const firstSeen = ageSrc ? new Date(String(ageSrc)).getTime() : null;
+    const tokenAgeMin = firstSeen != null && Number.isFinite(firstSeen)
       ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000))
       : null;
 
@@ -206,6 +225,10 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
       tokenAgeMin,
+      ctoFlag,
+      creatorClose,
+      creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
+      creatorCreatedCount,
       socials: extractSocials(r.raw_metadata),
     };
   });
