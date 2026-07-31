@@ -6,13 +6,8 @@ import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { AppShell } from '@/components/layout';
 import Caller from '@/pages/caller';
-import Dashboard from '@/pages/dashboard';
-import Tokens from '@/pages/tokens';
 import TokenDetail from '@/pages/token-detail';
 import Settings from '@/pages/settings';
-import Wallets from '@/pages/wallets';
-import Holders from '@/pages/holders';
-import IntelLog from '@/pages/intel-log';
 import OpsPage from '@/pages/ops';
 import NotFound from '@/pages/not-found';
 import { useLiveTokens } from '@/hooks/use-live-tokens';
@@ -31,12 +26,9 @@ function LiveBridge() {
   return null;
 }
 
-/** Legacy aliases → Pro home */
 function RedirectToPro() {
   const [, setLocation] = useLocation();
-  useEffect(() => {
-    setLocation('/');
-  }, [setLocation]);
+  useEffect(() => { setLocation('/'); }, [setLocation]);
   return null;
 }
 
@@ -44,17 +36,16 @@ function Router() {
   return (
     <AppShell>
       <Switch>
-        {/* Pro Intel — primary surface */}
         <Route path="/" component={Caller} />
         <Route path="/pro" component={RedirectToPro} />
         <Route path="/caller" component={RedirectToPro} />
-
-        <Route path="/dashboard" component={Dashboard} />
-        <Route path="/tokens" component={Tokens} />
+        {/* Detail kept for Pro drill-down; other surfaces redirected */}
         <Route path="/tokens/:id" component={TokenDetail} />
-        <Route path="/wallets" component={Wallets} />
-        <Route path="/holders" component={Holders} />
-        <Route path="/intel-log" component={IntelLog} />
+        <Route path="/dashboard" component={RedirectToPro} />
+        <Route path="/tokens" component={RedirectToPro} />
+        <Route path="/wallets" component={RedirectToPro} />
+        <Route path="/holders" component={RedirectToPro} />
+        <Route path="/intel-log" component={RedirectToPro} />
         <Route path="/ops" component={OpsPage} />
         <Route path="/settings" component={Settings} />
         <Route component={NotFound} />

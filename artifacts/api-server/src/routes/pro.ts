@@ -62,10 +62,43 @@ type SlimToken = {
   secFreezeRenounced: boolean | null;
   secIsHoneypot: boolean | null;
   socials: { twitter?: string; telegram?: string; website?: string };
+  /** Frozen GMGN conviction at call (from verified_wallets). */
+  conviction: {
+    smartHoldRate: number | null;
+    kolHoldRate: number | null;
+    smartHolding: number;
+    kolHolding: number;
+    paperHands: number;
+    diamondHands: number;
+    supplyPctHeld: number;
+  } | null;
+  kolSmartSource: string | null;
 };
 
+function parseConviction(raw: unknown): SlimToken["conviction"] {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!o || typeof o !== "object") return null;
+    const c = (o as { conviction?: { kol?: Record<string, number>; smart?: Record<string, number> } }).conviction;
+    const holding = (o as { holding?: { kol?: number; smart?: number } }).holding;
+    if (!c?.smart && !c?.kol && !holding) return null;
+    return {
+      smartHoldRate: c?.smart?.holdRate ?? null,
+      kolHoldRate: c?.kol?.holdRate ?? null,
+      smartHolding: holding?.smart ?? c?.smart?.holding ?? 0,
+      kolHolding: holding?.kol ?? c?.kol?.holding ?? 0,
+      paperHands: (c?.smart?.paperHands ?? 0) + (c?.kol?.paperHands ?? 0),
+      diamondHands: (c?.smart?.diamondHands ?? 0) + (c?.kol?.diamondHands ?? 0),
+      supplyPctHeld: (c?.smart?.supplyPctHeld ?? 0) + (c?.kol?.supplyPctHeld ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  const cacheKey = `pro:feed:v2:${limit}`;
+  const cacheKey = `pro:feed:v3:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -107,6 +140,8 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       pc.surfaced_at,
       pc.surfaced_mc_usd,
       pc.scanner_label,
+      pc.verified_wallets,
+      pc.kol_smart_source,
       t.address, t.chain, t.name, t.symbol,
       t.logo_uri, t.image_path,
       t.status,
@@ -173,6 +208,8 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       secFreezeRenounced: call.sec_freeze_renounced as boolean | null,
       secIsHoneypot: call.sec_is_honeypot as boolean | null,
       socials: {},
+      conviction: parseConviction(call.verified_wallets),
+      kolSmartSource: call.kol_smart_source != null ? String(call.kol_smart_source) : null,
     };
   });
 

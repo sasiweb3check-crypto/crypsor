@@ -29,6 +29,12 @@ interface OpsEvent {
 
 interface OpsSummary {
   ts: string;
+  inventory?: {
+    tokensTracked: number;
+    tokensActive: number;
+    buysTotal: number;
+    walletsTracked: number;
+  };
   helius: {
     configured: boolean;
     lastError: string | null;
@@ -140,8 +146,8 @@ export default function OpsPage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4" style={{ color: "#f59e0b" }} />
-            <h1 className="text-[13px] font-black uppercase tracking-widest text-white">Ops</h1>
+            <Activity className="w-4 h-4" style={{ color: "var(--cryp-teal)" }} />
+            <h1 className="font-display text-[13px] font-black uppercase tracking-widest text-[var(--cryp-text)]">Logs</h1>
           </div>
           <p className="text-[9px] text-[#484f58] mt-0.5">
             Wallet buys · Helius · Pro qualify · Telegram — lightweight ring log
@@ -155,6 +161,24 @@ export default function OpsPage() {
           <RefreshCw className={cn("w-3 h-3", (fetchingSummary || fetchingLog) && "animate-spin")} />
           Refresh
         </button>
+      </div>
+
+      {/* Inventory — wallet buys / tokens in DB */}
+      <div
+        className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-3 py-3"
+        style={{ background: "rgba(61,154,139,0.06)", border: "1px solid rgba(61,154,139,0.18)" }}
+      >
+        {[
+          { l: "Tokens tracked", v: summary?.inventory?.tokensTracked ?? "—" },
+          { l: "Tokens active", v: summary?.inventory?.tokensActive ?? "—" },
+          { l: "Wallet buys", v: summary?.inventory?.buysTotal ?? summary?.scan.totalBuysAllTime ?? "—" },
+          { l: "Wallets", v: summary?.inventory?.walletsTracked ?? summary?.scan.walletsTracked ?? "—" },
+        ].map(x => (
+          <div key={x.l}>
+            <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">{x.l}</div>
+            <div className="font-mono-num text-lg font-bold text-[var(--cryp-mint)] mt-0.5">{x.v}</div>
+          </div>
+        ))}
       </div>
 
       {/* API reachability */}

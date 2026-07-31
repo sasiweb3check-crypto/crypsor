@@ -25,6 +25,7 @@ import {
 } from "../lib/pro-scoring";
 import {
   applyVerifyToTrackedToken,
+  convictionFromPayload,
   verifyTokenKolSmart,
   walletsPayload,
   type GmgnProVerifyResult,
@@ -82,13 +83,8 @@ function gateTrack(
 
 function holdingCounts(verify: GmgnProVerifyResult | null): { kol: number; smart: number } {
   if (!verify?.ok) return { kol: 0, smart: 0 };
-  const kolH = verify.wallets.kol.filter(w => w.holding).length;
-  const smartH = verify.wallets.smart.filter(w => w.holding).length;
-  // Prefer currently-holding wallets; fall back to tag totals
-  return {
-    kol: kolH > 0 ? kolH : verify.kolCount,
-    smart: smartH > 0 ? smartH : verify.smartCount,
-  };
+  // Never fall back to tag totals — sold-out smart must not qualify.
+  return { kol: verify.holdingKol, smart: verify.holdingSmart };
 }
 
 function shouldSurface(opts: {
@@ -413,7 +409,9 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         pc.called_volume_intensity,
         pc.ath_multiple,
         pc.quality_label,
+        pc.verified_wallets,
         pc.surfaced_at,
+        pc.surfaced_mc_usd,
         t.address,
         t.symbol,
         t.market_cap_usd AS current_mc,
@@ -449,6 +447,16 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         : 0;
       const runStatus = deriveRunStatus(currentMc || null, calledMc || null, athMultiple);
 
+      let conviction: ReturnType<typeof convictionFromPayload> = null;
+      if (r.verified_wallets) {
+        try {
+          const raw = typeof r.verified_wallets === "string"
+            ? JSON.parse(String(r.verified_wallets))
+            : r.verified_wallets;
+          conviction = convictionFromPayload(raw);
+        } catch { /* ignore */ }
+      }
+
       const result = computeProScore({
         calledIntelScore: Number(r.called_intel_score ?? 60),
         calledKolCount: Number(r.called_kol_count ?? 0),
@@ -457,6 +465,12 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         calledHolderVelocity: r.called_holder_velocity != null ? Number(r.called_holder_velocity) : null,
         calledMcGrowth: r.called_mc_growth != null ? Number(r.called_mc_growth) : null,
         calledVolumeIntensity: r.called_volume_intensity != null ? Number(r.called_volume_intensity) : null,
+        smartHoldRate: conviction?.smart.holdRate ?? null,
+        kolHoldRate: conviction?.kol.holdRate ?? null,
+        smartPaperHands: conviction?.smart.paperHands ?? null,
+        diamondHands: (conviction?.smart.diamondHands ?? 0) + (conviction?.kol.diamondHands ?? 0),
+        smartKolSupplyPct:
+          (conviction?.smart.supplyPctHeld ?? 0) + (conviction?.kol.supplyPctHeld ?? 0),
         currentMcUsd: currentMc || null,
         athMultiple,
         gainSinceCall: gainPct,
