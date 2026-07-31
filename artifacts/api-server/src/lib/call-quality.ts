@@ -92,27 +92,35 @@ export function computeCallQuality(input: CallQualityInput): CallQualityResult {
   }
 
   // CTO / creator stats (from GMGN token_info.dev — not /security)
-  if (input.ctoFlag === true) {
-    score += 6;
+  // When CTO'd, ignore bad serial-creator stats — community owns the tape.
+  const isCto = input.ctoFlag === true;
+  if (isCto) {
+    score += 12;
     reasons.push("CTO (community takeover)");
-  }
-  if (input.creatorClose === true) {
-    score += 3;
-    reasons.push("Creator closed / exited");
-  } else if (input.creatorClose === false) {
-    score -= 4;
-    reasons.push("Creator still holding");
-  }
-  const created = input.creatorCreatedCount;
-  if (created != null) {
-    if (created >= 50) {
-      score -= 10;
-      reasons.push(`Serial creator (${created} tokens)`);
-    } else if (created >= 15) {
-      score -= 5;
-      reasons.push(`Active creator (${created} tokens)`);
-    } else if (created <= 2) {
-      score += 2;
+    // Creator exit is expected on CTO — treat as confirmation, not risk
+    if (input.creatorClose === true) {
+      score += 4;
+      reasons.push("Creator exited (CTO)");
+    }
+  } else {
+    if (input.creatorClose === true) {
+      score += 3;
+      reasons.push("Creator closed / exited");
+    } else if (input.creatorClose === false) {
+      score -= 4;
+      reasons.push("Creator still holding");
+    }
+    const created = input.creatorCreatedCount;
+    if (created != null) {
+      if (created >= 50) {
+        score -= 10;
+        reasons.push(`Serial creator (${created} tokens)`);
+      } else if (created >= 15) {
+        score -= 5;
+        reasons.push(`Active creator (${created} tokens)`);
+      } else if (created <= 2) {
+        score += 2;
+      }
     }
   }
 

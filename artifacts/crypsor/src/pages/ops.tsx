@@ -188,7 +188,7 @@ export default function OpsPage() {
   const blockers = summary?.blockers ?? [];
 
   const kinds: OpsKind[] = useMemo(
-    () => ["all", "helius", "wallet_buy", "scan", "pro_qualify", "telegram", "blocker", "api"],
+    () => ["all", "helius", "wallet_buy", "scan", "pro_qualify", "cto", "telegram", "blocker", "api"],
     [],
   );
 

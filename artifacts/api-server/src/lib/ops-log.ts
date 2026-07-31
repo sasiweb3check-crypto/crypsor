@@ -17,7 +17,8 @@ export type OpsKind =
   | "blocker"
   | "api"
   | "runner"
-  | "dex";
+  | "dex"
+  | "cto";
 
 export type OpsLevel = "info" | "warn" | "error";
 

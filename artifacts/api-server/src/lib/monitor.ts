@@ -26,6 +26,7 @@ import { startHoldersRefresh } from "../pipeline/holders-refresh";
 import { startTokenUpdater } from "../pipeline/token-updater";
 import { startIntelligenceEngine } from "../pipeline/intelligence-engine";
 import { startSecurityService } from "../pipeline/security-service";
+import { startCtoScan } from "../pipeline/cto-scan";
 import { startCallerAlerts } from "../pipeline/caller-alerts";
 import { startProScanner }  from "../pipeline/pro-scanner";
 import { startProSnapshots } from "../pipeline/pro-snapshots";
@@ -637,6 +638,7 @@ export function startMonitor(): void {
   startHoldersRefresh();
   startIntelligenceEngine();
   startSecurityService();
+  startCtoScan();
   startCallerAlerts();
   startProScanner();
   startProSnapshots();
