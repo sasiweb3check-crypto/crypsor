@@ -338,7 +338,7 @@ export default function CallsPage() {
               Best calls
             </h1>
             <p className="text-[12px] text-[var(--cryp-mute)] mt-1 leading-relaxed">
-              ~{universe || "—"} tracked · surfacing quality wallets & holders · any MC
+              ~{universe || "—"} tracked · win-rate = ENTRY-served only
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -376,7 +376,9 @@ export default function CallsPage() {
           icon={<TrendingUp className="w-4 h-4" />}
           label={`Win rate · ${period.toUpperCase()}`}
           value={`${stats?.winRate ?? "—"}%`}
-          hint={stats ? `${stats.wins}/${stats.signals} hit 2×` : "loading"}
+          hint={stats
+            ? `${stats.wins}/${stats.signals} ENTRY hit 2×${stats.deskRaw != null ? ` · desk ${stats.deskRaw}` : ""}`
+            : "loading"}
           accent="var(--cryp-mint)"
         />
         <StatTile
@@ -388,15 +390,17 @@ export default function CallsPage() {
         />
         <StatTile
           icon={<Zap className="w-4 h-4" />}
-          label="All signals"
+          label="ENTRY served"
           value={stats ? String(stats.signals) : "—"}
-          hint={`${period.toUpperCase()} desk`}
+          hint={stats?.telegramN != null
+            ? `${stats.telegramN} Telegram · ${period.toUpperCase()}`
+            : `${period.toUpperCase()} ENTRY`}
         />
         <StatTile
           icon={<Flame className="w-4 h-4" />}
           label="Avg X"
           value={stats?.avgX ? `${stats.avgX.toFixed(2)}x` : "—"}
-          hint={`${period.toUpperCase()} performance`}
+          hint={`${period.toUpperCase()} ENTRY avg`}
           accent="var(--cryp-teal)"
         />
       </div>
@@ -426,7 +430,7 @@ export default function CallsPage() {
 
       {mode === "best" && (
         <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed fade-up">
-          Top conviction from the universe — multi-buy + smart/KOL + buyer win-rate. Aim: a few great calls, not noise.
+          ENTRY-served + proper very_good only — not the raw good desk flood. Aim: a few clear calls.
         </p>
       )}
 

@@ -70,10 +70,17 @@ export type CallCard = {
   creatorAddress: string | null;
   creatorCreatedCount: number | null;
   socials: { twitter?: string; telegram?: string; website?: string };
+  /** ENTRY ping fired (Telegram or in-app) — what win-rate counts */
+  entryServed: boolean;
+  /**
+   * Proper serve: very_good + ≥5 observation snaps + holder snapshot + tagged ≥1
+   * Used to keep Best desk clear of raw `good` flood.
+   */
+  properServe: boolean;
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v5:${limit}`;
+  const cacheKey = `calls:feed:v6:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -97,9 +104,13 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       pc.quality_label,
       pc.hit_2x, pc.hit_5x, pc.hit_10x,
       pc.surfaced_at,
+      pc.call_alert_sent_at,
+      pc.runner_alert_sent_at,
+      COALESCE(pc.observation_snap_count, 0)::int AS observation_snap_count,
       t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
       t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
       t.raw_metadata, t.holder_count,
+      t.latest_holder_snapshot_id,
       t.holder_kol_count AS live_kol,
       t.holder_smart_count AS live_smart,
       t.holder_quality_score,
@@ -141,9 +152,16 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
     ) cryp ON TRUE
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND (
-        pc.surfaced_at IS NOT NULL
-        OR pc.quality_label IN ('very_good', 'good')
-        OR COALESCE(buys.wallet_buys, 0) >= 2
+        pc.call_alert_sent_at IS NOT NULL
+        OR pc.runner_alert_sent_at IS NOT NULL
+        OR pc.quality_label = 'very_good'
+        OR (
+          pc.quality_label = 'good'
+          AND COALESCE(pc.observation_snap_count, 0) >= 5
+          AND t.latest_holder_snapshot_id IS NOT NULL
+          AND (COALESCE(pc.called_smart_count, 0) + COALESCE(pc.called_kol_count, 0)) >= 1
+          AND COALESCE(buys.wallet_buys, 0) >= 1
+        )
       )
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT 200
@@ -203,6 +221,14 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       : null;
 
     const buyNotional = r.buy_notional != null ? Number(r.buy_notional) : null;
+    const entryServed = Boolean(r.call_alert_sent_at || r.runner_alert_sent_at);
+    const obsSnaps = Number(r.observation_snap_count ?? 0);
+    const hasHolders = r.latest_holder_snapshot_id != null;
+    const tagged = Number(r.called_smart_count ?? 0) + Number(r.called_kol_count ?? 0);
+    const properServe = String(r.quality_label ?? "") === "very_good"
+      && obsSnaps >= 5
+      && hasHolders
+      && tagged >= 1;
 
     return {
       id: Number(r.token_id),
@@ -233,9 +259,11 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
       proScore: Number(r.pro_score ?? 0),
       qualityLabel: String(r.quality_label ?? "—"),
-      callScore: q.score,
+      callScore: q.score + (entryServed ? 8 : 0) + (properServe ? 4 : 0),
       callLabel: q.label,
-      reasons: q.reasons,
+      reasons: entryServed
+        ? ["ENTRY served", ...q.reasons].slice(0, 4)
+        : q.reasons,
       hit2x: Boolean(r.hit_2x) || athMultiple >= 2,
       hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
@@ -246,13 +274,16 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
       creatorCreatedCount,
       socials: extractSocials(r.raw_metadata),
+      entryServed,
+      properServe,
     };
   });
 
-  // Rank: elite/strong first, then score, then freshness
+  // Rank: ENTRY-served first, then elite/strong, then score
   const rank = (c: CallCard) => {
+    const served = c.entryServed ? 0 : c.properServe ? 1 : 2;
     const tier = c.callLabel === "elite" ? 0 : c.callLabel === "strong" ? 1 : c.callLabel === "watch" ? 2 : 3;
-    return tier * 1000 - c.callScore;
+    return served * 10_000 + tier * 1000 - c.callScore;
   };
   cards.sort((a, b) => {
     const d = rank(a) - rank(b);
@@ -279,9 +310,11 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       pc.called_kol_count, pc.called_smart_count,
       pc.ath_multiple, pc.pro_score, pc.quality_label,
       pc.hit_2x, pc.hit_5x, pc.hit_10x, pc.surfaced_at,
+      pc.call_alert_sent_at, pc.runner_alert_sent_at,
+      COALESCE(pc.observation_snap_count, 0)::int AS observation_snap_count,
       t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
       t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
-      t.raw_metadata, t.holder_count,
+      t.raw_metadata, t.holder_count, t.latest_holder_snapshot_id,
       t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
       t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
@@ -290,7 +323,11 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
-      AND (pc.surfaced_at IS NOT NULL OR pc.quality_label IN ('very_good', 'good'))
+      AND (
+        pc.call_alert_sent_at IS NOT NULL
+        OR pc.runner_alert_sent_at IS NOT NULL
+        OR pc.quality_label = 'very_good'
+      )
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT ${Math.min(limit, 120)}
   `);
@@ -331,6 +368,13 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
     });
     const ageSrc = r.token_created_at ?? r.first_detected_at;
     const firstSeen = ageSrc ? new Date(String(ageSrc)).getTime() : null;
+    const entryServed = Boolean(r.call_alert_sent_at || r.runner_alert_sent_at);
+    const obsSnaps = Number(r.observation_snap_count ?? 0);
+    const tagged = Number(r.called_smart_count ?? 0) + Number(r.called_kol_count ?? 0);
+    const properServe = String(r.quality_label ?? "") === "very_good"
+      && obsSnaps >= 5
+      && r.latest_holder_snapshot_id != null
+      && tagged >= 1;
     return {
       id: Number(r.token_id),
       address: String(r.address),
@@ -357,9 +401,9 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
       proScore: Number(r.pro_score ?? 0),
       qualityLabel: String(r.quality_label ?? "—"),
-      callScore: q.score,
+      callScore: q.score + (entryServed ? 8 : 0) + (properServe ? 4 : 0),
       callLabel: q.label,
-      reasons: q.reasons,
+      reasons: entryServed ? ["ENTRY served", ...q.reasons].slice(0, 4) : q.reasons,
       hit2x: Boolean(r.hit_2x) || athMultiple >= 2,
       hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
@@ -371,9 +415,16 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
       creatorCreatedCount,
       socials: extractSocials(r.raw_metadata),
+      entryServed,
+      properServe,
     };
   });
-  cards.sort((a, b) => b.callScore - a.callScore);
+  cards.sort((a, b) => {
+    const sa = a.entryServed ? 0 : a.properServe ? 1 : 2;
+    const sb = b.entryServed ? 0 : b.properServe ? 1 : 2;
+    if (sa !== sb) return sa - sb;
+    return b.callScore - a.callScore;
+  });
   return { cards: cards.slice(0, limit), universe };
 }
 
@@ -393,14 +444,19 @@ router.get("/calls/feed", async (req, res) => {
 
     let out = cards;
     if (mode === "best") {
-      out = cards
-        .filter(c => c.callLabel === "elite" || c.callLabel === "strong")
+      // Clarity: ENTRY-served first, then proper VG — never raw good flood
+      const served = cards.filter(c => c.entryServed);
+      const proper = cards.filter(c => !c.entryServed && c.properServe);
+      out = [...served, ...proper]
+        .filter(c => c.entryServed || c.callLabel === "elite" || c.callLabel === "strong" || c.properServe)
         .slice(0, Math.min(limit, 8));
-      if (out.length < 5) {
-        out = cards.slice(0, Math.min(limit, 8));
+      if (out.length < 3) {
+        out = cards.filter(c => c.entryServed || c.properServe || c.qualityLabel === "very_good")
+          .slice(0, Math.min(limit, 8));
       }
     } else if (mode === "hot") {
       out = [...cards]
+        .filter(c => c.entryServed || c.properServe || c.qualityLabel === "very_good")
         .sort((a, b) => (b.nowMultiple - a.nowMultiple) || (b.callScore - a.callScore))
         .slice(0, limit);
     } else {
@@ -415,7 +471,7 @@ router.get("/calls/feed", async (req, res) => {
       total: out.length,
       universe,
       mode,
-      note: "Ranked by wallet multi-buy · tagged holders · buyer win-rate — any market cap",
+      note: "Best = ENTRY-served + proper very_good (not raw good desk flood)",
     }));
   } catch (err) {
     console.error("calls feed error", err);
@@ -442,42 +498,49 @@ router.get("/calls/stats", async (req, res) => {
     const period = STATS_PERIODS.has(rawPeriod) ? rawPeriod : "7d";
     const days = statsPeriodDays(period);
 
-    const cacheKey = `calls:stats:v3:${period}`;
+    const cacheKey = `calls:stats:v4:entry:${period}`;
     const cached = await proCacheGet<Record<string, unknown>>(cacheKey);
     if (cached) {
       res.json(apiOk(cached, { cache: "hit" }));
       return;
     }
 
-    // Window on call time — win-rate for Best Calls in this period
+    // Win-rate = ENTRY-served only (Telegram or in-app ENTRY ping).
+    // desk_raw kept for clarity vs the old good/very_good flood.
     const result = await db.execute(sql`
       SELECT
         COUNT(*) FILTER (
-          WHERE surfaced_at IS NOT NULL OR quality_label IN ('very_good','good')
+          WHERE call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL
         )::int AS signals,
         COUNT(*) FILTER (
-          WHERE (surfaced_at IS NOT NULL OR quality_label IN ('very_good','good'))
+          WHERE (call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL)
             AND COALESCE(ath_multiple, 1) >= 2
         )::int AS wins_2x,
         COUNT(*) FILTER (
-          WHERE (surfaced_at IS NOT NULL OR quality_label IN ('very_good','good'))
+          WHERE (call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL)
             AND COALESCE(ath_multiple, 1) >= 5
         )::int AS wins_5x,
         COUNT(*) FILTER (
-          WHERE (surfaced_at IS NOT NULL OR quality_label IN ('very_good','good'))
+          WHERE (call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL)
             AND COALESCE(ath_multiple, 1) >= 10
         )::int AS wins_10x,
         AVG(ath_multiple) FILTER (
-          WHERE surfaced_at IS NOT NULL OR quality_label IN ('very_good','good')
+          WHERE call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL
         ) AS avg_ath,
         MAX(ath_multiple) FILTER (
-          WHERE surfaced_at IS NOT NULL OR quality_label IN ('very_good','good')
+          WHERE call_alert_sent_at IS NOT NULL OR runner_alert_sent_at IS NOT NULL
         ) AS best_ath,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL OR quality_label IN ('very_good','good')
+        )::int AS desk_raw,
+        COUNT(*) FILTER (
+          WHERE runner_alert_sent_at IS NOT NULL
+        )::int AS telegram_n,
         (
           SELECT t.symbol FROM pro_calls pc2
           JOIN tracked_tokens t ON t.id = pc2.token_id
           WHERE pc2.ath_multiple IS NOT NULL
-            AND (pc2.surfaced_at IS NOT NULL OR pc2.quality_label IN ('very_good','good'))
+            AND (pc2.call_alert_sent_at IS NOT NULL OR pc2.runner_alert_sent_at IS NOT NULL)
             AND pc2.called_at >= NOW() - (${days}::int * INTERVAL '1 day')
           ORDER BY pc2.ath_multiple DESC NULLS LAST
           LIMIT 1
@@ -488,9 +551,11 @@ router.get("/calls/stats", async (req, res) => {
     const r = (result.rows[0] ?? {}) as Record<string, unknown>;
     const signals = Number(r.signals ?? 0);
     const wins = Number(r.wins_2x ?? 0);
+    const deskRaw = Number(r.desk_raw ?? 0);
     const data = {
       period,
       days,
+      scope: "entry_served",
       winRate: signals ? Math.round((wins / signals) * 1000) / 10 : 0,
       wins,
       signals,
@@ -499,6 +564,9 @@ router.get("/calls/stats", async (req, res) => {
       avgX: r.avg_ath != null ? Math.round(Number(r.avg_ath) * 100) / 100 : 0,
       bestX: r.best_ath != null ? Math.round(Number(r.best_ath) * 100) / 100 : 0,
       bestSymbol: r.best_symbol != null ? String(r.best_symbol) : null,
+      deskRaw,
+      telegramN: Number(r.telegram_n ?? 0),
+      note: "Win-rate counts ENTRY-served calls only (not raw good desk flood)",
       universe: undefined as number | undefined,
     };
 
