@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { useState } from "react";
 import {
-  formatMarketCap, formatTimeAgo, truncateAddress, getGmgnUrl, safeSymbol,
+  formatMarketCap, formatTimeAgo, truncateAddress, getGmgnUrl, safeSymbol, safeImageUrl,
 } from "@/lib/utils";
 import { getApiBase } from "@/lib/api-base";
 
@@ -243,6 +243,8 @@ export default function TokenDetailPage() {
 
   const ath = pc?.athMultiple ?? pm?.now.athMultiple ?? 1;
   const gain = pm?.now.gainPct ?? null;
+  const [imgBroken, setImgBroken] = useState(false);
+  const imgSrc = safeImageUrl(token.logoUri, token.address, token.symbol);
 
   return (
     <div className="px-4 md:px-8 pt-4 md:pt-6 pb-8 space-y-5 max-w-5xl">
@@ -257,8 +259,14 @@ export default function TokenDetailPage() {
       {/* Header */}
       <header className="desk-card p-5 fade-up">
         <div className="flex items-start gap-4">
-          {token.logoUri ? (
-            <img src={token.logoUri} alt="" className="w-14 h-14 object-cover" style={{ borderRadius: 4 }} />
+          {!imgBroken ? (
+            <img
+              src={imgSrc}
+              alt=""
+              className="w-14 h-14 object-cover"
+              style={{ borderRadius: 4 }}
+              onError={() => setImgBroken(true)}
+            />
           ) : (
             <div
               className="w-14 h-14 flex items-center justify-center font-display font-bold"

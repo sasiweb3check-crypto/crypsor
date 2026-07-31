@@ -26,6 +26,25 @@ const router = Router();
 const FEED_CACHE_TTL_SEC = 8;
 const STATS_CACHE_TTL_SEC = 10;
 
+/** Prefer live https logo; else absolute /api/assets URL (SPA origin would 404 HTML). */
+function resolveLogoUri(imagePath: unknown, logoUri: unknown): string | null {
+  const external = logoUri != null ? String(logoUri).trim() : "";
+  if (/^https?:\/\//i.test(external)) return external;
+  const path = imagePath != null ? String(imagePath).trim() : "";
+  if (path) {
+    const rel = path.startsWith("/api/assets")
+      ? path
+      : `/api/assets${path.startsWith("/") ? path : `/${path}`}`;
+    const base = (
+      process.env.PUBLIC_API_URL
+      || process.env.RENDER_EXTERNAL_URL
+      || ""
+    ).replace(/\/$/, "");
+    return base ? `${base}${rel}` : rel;
+  }
+  return external || null;
+}
+
 type SlimToken = {
   id: number;
   address: string;
@@ -98,7 +117,7 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  const cacheKey = `pro:feed:v3:${limit}`;
+  const cacheKey = `pro:feed:v4:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -175,7 +194,7 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       chain: String(call.chain),
       name: (call.name as string | null) ?? null,
       symbol: (call.symbol as string | null) ?? null,
-      logoUri: call.image_path ? `/api/assets${call.image_path}` : (call.logo_uri as string | null),
+      logoUri: resolveLogoUri(call.image_path, call.logo_uri),
       status: String(call.status ?? ""),
       calledAt: toIsoUtc(call.called_at),
       calledMcUsd: calledMc,

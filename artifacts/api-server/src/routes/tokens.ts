@@ -12,6 +12,20 @@ import { buildHolderIntel } from "../lib/holder-intel";
 
 const router = Router();
 
+function resolveLogoUri(imagePath: string | null | undefined, logoUri: string | null | undefined): string | null {
+  const external = (logoUri ?? "").trim();
+  if (/^https?:\/\//i.test(external)) return external;
+  const path = (imagePath ?? "").trim();
+  if (path) {
+    const rel = path.startsWith("/api/assets")
+      ? path
+      : `/api/assets${path.startsWith("/") ? path : `/${path}`}`;
+    const base = (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
+    return base ? `${base}${rel}` : rel;
+  }
+  return external || null;
+}
+
 // ── Token shape mapper ────────────────────────────────────────────────────────
 
 function mapToken(t: typeof tracked_tokens.$inferSelect) {
@@ -21,7 +35,7 @@ function mapToken(t: typeof tracked_tokens.$inferSelect) {
     chain:            t.chain,
     name:             t.name,
     symbol:           t.symbol,
-    logoUri:          t.imagePath ? `/api/assets${t.imagePath}` : t.logoUri,
+    logoUri:          resolveLogoUri(t.imagePath, t.logoUri),
     detectedPriceUsd: t.detectedPriceUsd,
     currentPriceUsd:  t.currentPriceUsd,
     athPriceUsd:      t.athPriceUsd,

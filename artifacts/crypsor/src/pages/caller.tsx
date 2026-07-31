@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getApiBase } from "@/lib/api-base";
 import {
   cn, truncateAddress, formatCompactUsd, formatTimeAgo, formatCalledAt,
-  getGmgnUrl, safeSymbol,
+  getGmgnUrl, safeSymbol, safeImageUrl, parseApiDate,
 } from "@/lib/utils";
 
 type RunStatus = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
@@ -117,6 +117,8 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
   const holdKol = c?.kolHolding ?? 0;
   const ath = t.athMultiple ?? 1;
   const gain = t.gainSinceCall ?? 0;
+  const [imgBroken, setImgBroken] = useState(false);
+  const imgSrc = safeImageUrl(t.logoUri, t.address, t.symbol);
 
   return (
     <article
@@ -125,8 +127,14 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
     >
       <div className="p-4 md:p-5">
         <div className="flex items-start gap-3">
-          {t.logoUri ? (
-            <img src={t.logoUri} alt="" className="w-11 h-11 object-cover shrink-0" style={{ borderRadius: 4 }} />
+          {!imgBroken ? (
+            <img
+              src={imgSrc}
+              alt=""
+              className="w-11 h-11 object-cover shrink-0"
+              style={{ borderRadius: 4 }}
+              onError={() => setImgBroken(true)}
+            />
           ) : (
             <div
               className="w-11 h-11 flex items-center justify-center font-display font-bold text-sm shrink-0"
@@ -262,7 +270,7 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
 
 export default function Caller() {
   const [, setLocation] = useLocation();
-  const [age, setAge] = useState<AgeTab>("24h");
+  const [age, setAge] = useState<AgeTab>("7d");
   const [sort, setSort] = useState<SortKey>("calledAt");
   const [q, setQ] = useState("");
 
@@ -278,6 +286,24 @@ export default function Caller() {
     refetchInterval: 12_000,
   });
 
+  const ageCounts = useMemo(() => {
+    const list = hist?.tokens ?? [];
+    const now = Date.now();
+    const count = (ms: number | null) =>
+      list.filter(t => {
+        if (ms == null) return true;
+        const d = parseApiDate(t.calledAt);
+        return d != null && now - d.getTime() <= ms;
+      }).length;
+    return {
+      "1h": count(3_600_000),
+      "6h": count(6 * 3_600_000),
+      "24h": count(24 * 3_600_000),
+      "7d": count(7 * 24 * 3_600_000),
+      all: list.length,
+    } as Record<AgeTab, number>;
+  }, [hist]);
+
   const tokens = useMemo(() => {
     let list = hist?.tokens ?? [];
     const now = Date.now();
@@ -286,7 +312,10 @@ export default function Caller() {
     };
     const cut = ageMs[age];
     if (cut != null) {
-      list = list.filter(t => t.calledAt && now - new Date(t.calledAt).getTime() <= cut);
+      list = list.filter(t => {
+        const d = parseApiDate(t.calledAt);
+        return d != null && now - d.getTime() <= cut;
+      });
     }
     if (q.trim()) {
       const s = q.trim().toLowerCase();
@@ -299,12 +328,13 @@ export default function Caller() {
     const scored = [...list];
     scored.sort((a, b) => {
       if (sort === "calledAt") {
-        return (new Date(b.calledAt ?? 0).getTime()) - (new Date(a.calledAt ?? 0).getTime());
+        const ta = parseApiDate(a.calledAt)?.getTime() ?? 0;
+        const tb = parseApiDate(b.calledAt)?.getTime() ?? 0;
+        return tb - ta;
       }
       if (sort === "ath") return (b.athMultiple ?? 0) - (a.athMultiple ?? 0);
       if (sort === "gain") return (b.gainSinceCall ?? 0) - (a.gainSinceCall ?? 0);
       if (sort === "proScore") return (b.proScore ?? 0) - (a.proScore ?? 0);
-      // conviction: smart hold rate then score
       const ac = a.conviction?.smartHoldRate ?? 0;
       const bc = b.conviction?.smartHoldRate ?? 0;
       if (bc !== ac) return bc - ac;
@@ -314,6 +344,7 @@ export default function Caller() {
   }, [hist, age, sort, q]);
 
   const latest = hist?.tokens?.[0];
+  const latestAge = latest?.calledAt ? formatTimeAgo(latest.calledAt) : null;
 
   return (
     <div className="px-4 md:px-8 pt-5 md:pt-8 space-y-6">
@@ -328,7 +359,10 @@ export default function Caller() {
         <p className="text-[var(--cryp-mute)] text-sm mt-2 max-w-xl leading-relaxed">
           High-conviction Solana memes verified live on GMGN — smart still holding beats tag counts.
           {latest?.symbol && (
-            <span className="text-[var(--cryp-text)]"> Latest · {safeSymbol(latest.symbol, latest.address)}</span>
+            <span className="text-[var(--cryp-text)]">
+              {" "}Latest · {safeSymbol(latest.symbol, latest.address)}
+              {latestAge ? ` · ${latestAge} ago` : ""}
+            </span>
           )}
         </p>
       </header>
@@ -379,6 +413,7 @@ export default function Caller() {
               }}
             >
               {label}
+              <span className="ml-1 opacity-70 font-mono-num">{ageCounts[key]}</span>
             </button>
           ))}
         </div>
@@ -423,9 +458,24 @@ export default function Caller() {
         {!isLoading && tokens.length === 0 && (
           <div className="desk-card p-10 text-center">
             <div className="font-display text-lg font-bold">No calls in this window</div>
-            <div className="text-sm text-[var(--cryp-mute)] mt-2">
-              Strict gates: smart still holding · MC $5–40K · live GMGN
+            <div className="text-sm text-[var(--cryp-mute)] mt-2 max-w-md mx-auto">
+              {age !== "all" && ageCounts.all > 0
+                ? `${ageCounts.all} Pro calls exist, but none in ${age.toUpperCase()}. Try 7D or All.`
+                : "Strict gates: smart still holding · MC $5–40K · live GMGN"}
+              {latestAge && (
+                <div className="mt-2 text-[12px]">Latest call was {latestAge} ago</div>
+              )}
             </div>
+            {age !== "7d" && age !== "all" && (
+              <button
+                type="button"
+                className="mt-4 px-4 py-2 text-[11px] font-bold uppercase tracking-wider"
+                style={{ background: "var(--cryp-teal)", color: "var(--cryp-ink)" }}
+                onClick={() => setAge("7d")}
+              >
+                Show 7D ({ageCounts["7d"]})
+              </button>
+            )}
           </div>
         )}
 

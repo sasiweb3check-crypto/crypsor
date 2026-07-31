@@ -262,6 +262,56 @@ router.get("/ops/summary", async (_req, res) => {
   }
 });
 
+// Live GMGN probe from the deployed API host (CF bypass via gmgnFetch)
+router.get("/ops/gmgn-check", async (req, res) => {
+  try {
+    const mint = String(req.query.mint ?? "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263").trim();
+    const { gmgnFetch, nextProxy } = await import("../lib/gmgn-client");
+    const proxy = nextProxy();
+    const t0 = Date.now();
+    const endpoints = [
+      { name: "token_info", url: `https://gmgn.ai/api/v1/token_info/sol/${mint}` },
+      { name: "holder_stat", url: `https://gmgn.ai/vas/api/v1/token_holder_stat/sol/${mint}` },
+      { name: "tags_stat", url: `https://gmgn.ai/api/v1/token_wallet_tags_stat/sol/${mint}` },
+      { name: "token_stat", url: `https://gmgn.ai/api/v1/token_stat/sol/${mint}` },
+      {
+        name: "holders_smart",
+        url: `https://gmgn.ai/vas/api/v1/token_holders/sol/${mint}?limit=3&tag=smart_degen`,
+      },
+    ];
+    const results = [];
+    for (const ep of endpoints) {
+      const r = await gmgnFetch(ep.url, proxy);
+      results.push({
+        name: ep.name,
+        ok: r.ok,
+        status: r.status,
+        blocked: !r.ok && (r.status === 403 || r.status === 0
+          || (r.data as { error?: string })?.error === "cloudflare_blocked"),
+        sample: r.ok
+          ? Object.keys(((r.data as { data?: object })?.data ?? r.data ?? {}) as object).slice(0, 8)
+          : (r.data as { error?: string })?.error ?? null,
+      });
+    }
+    const okCount = results.filter(r => r.ok).length;
+    opsLog("api", okCount === results.length ? "info" : "warn",
+      `GMGN check ${okCount}/${results.length}`, { mint: mint.slice(0, 8) });
+    res.json({
+      ok: okCount > 0,
+      mint,
+      latencyMs: Date.now() - t0,
+      proxy: proxy ? "pool" : "direct",
+      results,
+      note: okCount === 0
+        ? "All GMGN endpoints failed — Cloudflare or network block from this host"
+        : "GMGN reachable via curl HTTP/2 bypass",
+    });
+  } catch (err) {
+    console.error("ops gmgn-check error", err);
+    res.status(500).json({ ok: false, error: String(err).slice(0, 200) });
+  }
+});
+
 // Record that the ops API itself is reachable (called lightly from UI)
 router.post("/ops/ack", (req, res) => {
   const msg = typeof req.body?.msg === "string" ? req.body.msg : "client ack";
