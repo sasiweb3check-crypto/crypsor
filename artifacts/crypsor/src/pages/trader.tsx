@@ -1,33 +1,25 @@
 /**
- * Trader Mode — paper book for 3×+ entries/exits with Dex the desk companion.
+ * Dex Autopilot desk — fully automated paper agent.
+ * No discretionary clicks. Pattern memory · 3× bank · moon bag trail.
  */
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Crosshair, LogOut, Plus, Target, Wallet } from "lucide-react";
-import { TraderCompanion } from "@/components/trader/companion";
-import { useToast } from "@/hooks/use-toast";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bot, Moon, Power, Radio } from "lucide-react";
 import {
-  computeBookStats,
-  closePosition,
-  hitTarget,
-  isOpen,
-  loadBook,
-  openPosition,
-  positionMultiple,
-  positionPnlUsd,
-  setBankroll,
-  type TraderBook,
-  type TraderPosition,
-} from "@/lib/trader-book";
-import {
-  fetchRunnerFeed,
-  RUNNER_FEED_KEY,
-  type RunnerToken,
-} from "@/lib/runner-api";
-import {
-  cn, formatCompactUsd, safeImageUrl, safeSymbol, truncateAddress,
-} from "@/lib/utils";
+  DEX_EVENTS_KEY,
+  DEX_PATTERNS_KEY,
+  DEX_POSITIONS_KEY,
+  DEX_STATUS_KEY,
+  fetchDexEvents,
+  fetchDexPatterns,
+  fetchDexPositions,
+  fetchDexStatus,
+  setDexEnabled,
+  type DexEvent,
+  type DexPosition,
+} from "@/lib/trader-api";
+import { cn, formatCompactUsd, truncateAddress } from "@/lib/utils";
 
 function StatTile({
   label, value, hint, accent,
@@ -46,418 +38,336 @@ function StatTile({
   );
 }
 
-function liveMcMap(feed: RunnerToken[]): Record<number, number | null> {
-  const m: Record<number, number | null> = {};
-  for (const t of feed) m[t.id] = t.currentMcUsd;
-  return m;
-}
-
-function PositionRow({
-  pos,
-  liveMc,
-  token,
-  selected,
-  onSelect,
-  onExit,
-}: {
-  pos: TraderPosition;
-  liveMc: number | null | undefined;
-  token?: RunnerToken;
-  selected: boolean;
-  onSelect: () => void;
-  onExit: () => void;
-}) {
-  const mult = positionMultiple(pos, liveMc);
-  const pnl = positionPnlUsd(pos, liveMc);
-  const open = isOpen(pos);
-  const targetHit = hitTarget(pos, liveMc);
-  const img = safeImageUrl(pos.logoUri, pos.address, pos.symbol);
-
+function PositionCard({ p, onOpen }: { p: DexPosition; onOpen: () => void }) {
+  const open = p.status === "open" || p.status === "moon";
   return (
     <article
-      className={cn(
-        "desk-card p-4 transition-transform duration-200 hover:-translate-y-0.5 cursor-pointer fade-up",
-        selected && "ring-1 ring-[var(--cryp-teal)]",
-      )}
-      onClick={onSelect}
+      className="desk-card p-4 cursor-pointer transition-transform duration-200 hover:-translate-y-0.5 fade-up"
+      onClick={onOpen}
     >
-      <div className="flex items-start gap-3">
-        <img
-          src={img}
-          alt=""
-          className="w-10 h-10 object-cover shrink-0"
-          style={{ background: "var(--cryp-elevated)" }}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-display text-[14px] font-bold">{safeSymbol(pos.symbol, pos.address)}</h3>
-            {open ? (
-              <span
-                className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
-                style={{
-                  color: targetHit ? "var(--cryp-ink)" : "var(--cryp-mint)",
-                  background: targetHit ? "var(--cryp-gain)" : "rgba(61,154,139,0.16)",
-                }}
-              >
-                {targetHit ? "3×+" : "Open"}
-              </span>
-            ) : (
-              <span className="text-[9px] font-bold tracking-wider uppercase text-[var(--cryp-mute)]">
-                Closed
-              </span>
-            )}
-            {token && (
-              <span className="text-[9px] text-[var(--cryp-mute)] uppercase tracking-wider">
-                {token.runner.phase} · snaps {token.runner.signals.snapCount ?? 0}/5
-              </span>
-            )}
+      <div className="flex items-center gap-2 flex-wrap">
+        <h3 className="font-display text-[14px] font-bold">{p.symbol ?? "?"}</h3>
+        <span
+          className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+          style={{
+            color: p.status === "moon" ? "var(--cryp-ink)" : open ? "var(--cryp-mint)" : "var(--cryp-mute)",
+            background: p.status === "moon"
+              ? "var(--cryp-warn)"
+              : open ? "rgba(61,154,139,0.16)" : "rgba(122,143,153,0.14)",
+          }}
+        >
+          {p.status === "moon" ? "🌙 Moon bag" : p.status}
+        </span>
+        {p.moonBagTaken && p.status !== "moon" && (
+          <span className="text-[9px] font-bold text-[var(--cryp-gain)]">3× banked</span>
+        )}
+      </div>
+      <div className="grid grid-cols-4 gap-2 mt-2.5">
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Mult</div>
+          <div
+            className="font-mono-num text-[12px] font-bold"
+            style={{ color: p.multiple >= 3 ? "var(--cryp-gain)" : p.multiple < 1 ? "var(--cryp-loss)" : "var(--cryp-text)" }}
+          >
+            {p.multiple.toFixed(2)}×
           </div>
-          <div className="grid grid-cols-4 gap-2 mt-2.5">
-            <div>
-              <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Entry</div>
-              <div className="font-mono-num text-[12px]">{formatCompactUsd(pos.entryMcUsd)}</div>
-            </div>
-            <div>
-              <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Mult</div>
-              <div
-                className="font-mono-num text-[12px] font-bold"
-                style={{ color: mult >= 3 ? "var(--cryp-gain)" : mult < 1 ? "var(--cryp-loss)" : "var(--cryp-text)" }}
-              >
-                {mult.toFixed(2)}×
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">P&L</div>
-              <div
-                className="font-mono-num text-[12px] font-bold"
-                style={{ color: pnl >= 0 ? "var(--cryp-gain)" : "var(--cryp-loss)" }}
-              >
-                {pnl >= 0 ? "+" : ""}{Math.round(pnl)}
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Stake</div>
-              <div className="font-mono-num text-[12px]">${Math.round(pos.stakeUsd)}</div>
-            </div>
-          </div>
-          {open && (
-            <button
-              type="button"
-              className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5"
-              style={{ background: "rgba(232,93,93,0.12)", color: "var(--cryp-loss)" }}
-              onClick={(e) => { e.stopPropagation(); onExit(); }}
-            >
-              <LogOut className="w-3 h-3" /> Exit @ live
-            </button>
-          )}
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Entry</div>
+          <div className="font-mono-num text-[12px]">{formatCompactUsd(p.entryMcUsd)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Live</div>
+          <div className="font-mono-num text-[12px]">{formatCompactUsd(p.liveMcUsd)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">Stake</div>
+          <div className="font-mono-num text-[12px]">${Math.round(p.remainingStakeUsd || p.stakeUsd)}</div>
         </div>
       </div>
+      <div className="mt-2 text-[11px] text-[var(--cryp-mute)] truncate">
+        {p.entryPhase ?? "—"} · score {p.entryScore ?? "—"} · vel {p.entryVelocity?.toFixed(2) ?? "—"}× · snaps {p.entrySnapCount ?? "—"}/5
+        {p.exitReason ? ` · exit ${p.exitReason}` : ""}
+      </div>
+      {p.patternKey && (
+        <div className="mt-1 text-[10px] font-mono-num text-[var(--cryp-mute)] truncate" title={p.patternKey}>
+          pattern {p.patternKey}
+        </div>
+      )}
     </article>
   );
 }
 
-export default function TraderPage() {
-  const { toast } = useToast();
-  const [, setLocation] = useLocation();
-  const [book, setBook] = useState<TraderBook>(() => loadBook());
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const [stake, setStake] = useState(50);
-  const [target, setTarget] = useState(3);
-  const [pickId, setPickId] = useState<number | null>(null);
-  const [justEntered, setJustEntered] = useState(false);
-  const [justExited, setJustExited] = useState<{ multiple: number; symbol: string } | null>(null);
-  const [tab, setTab] = useState<"open" | "closed" | "candidates">("open");
+function EventRow({ e }: { e: DexEvent }) {
+  return (
+    <li className="dex-news-row text-[12px] leading-snug">
+      <span className="text-[10px] text-[var(--cryp-mute)] mr-2 font-mono-num">
+        {e.at ? new Date(e.at).toLocaleTimeString() : ""}
+      </span>
+      <span style={{ color: e.level === "warn" ? "var(--cryp-warn)" : "var(--cryp-text)" }}>
+        {e.msg}
+      </span>
+    </li>
+  );
+}
 
-  const { data: feedData, isLoading } = useQuery({
-    queryKey: RUNNER_FEED_KEY,
-    queryFn: () => fetchRunnerFeed(200),
-    refetchInterval: 12_000,
+export default function TraderPage() {
+  const [, setLocation] = useLocation();
+  const qc = useQueryClient();
+  const [tab, setTab] = useState<"live" | "closed" | "patterns" | "log">("live");
+
+  const { data: status } = useQuery({
+    queryKey: DEX_STATUS_KEY,
+    queryFn: fetchDexStatus,
+    refetchInterval: 8_000,
     placeholderData: keepPreviousData,
   });
-  const feed = feedData?.tokens ?? [];
-  const live = useMemo(() => liveMcMap(feed), [feed]);
-  const stats = useMemo(() => computeBookStats(book, live), [book, live]);
-  const focus = book.positions.find(p => p.id === focusId) ?? book.positions.find(isOpen) ?? null;
+  const { data: posData } = useQuery({
+    queryKey: DEX_POSITIONS_KEY,
+    queryFn: fetchDexPositions,
+    refetchInterval: 8_000,
+    placeholderData: keepPreviousData,
+  });
+  const { data: evData } = useQuery({
+    queryKey: DEX_EVENTS_KEY,
+    queryFn: () => fetchDexEvents(50),
+    refetchInterval: 6_000,
+    placeholderData: keepPreviousData,
+  });
+  const { data: patData } = useQuery({
+    queryKey: DEX_PATTERNS_KEY,
+    queryFn: fetchDexPatterns,
+    refetchInterval: 20_000,
+    placeholderData: keepPreviousData,
+  });
 
-  const candidates = useMemo(() => {
-    return feed
-      .filter(t => t.runner.phase === "heating" || t.runner.phase === "entry" || t.runner.phase === "radar")
-      .filter(t => !book.positions.some(p => isOpen(p) && p.tokenId === t.id))
-      .slice(0, 24);
-  }, [feed, book.positions]);
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => setDexEnabled(enabled),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: DEX_STATUS_KEY });
+      void qc.invalidateQueries({ queryKey: DEX_EVENTS_KEY });
+    },
+  });
 
-  const openPos = book.positions.filter(isOpen);
-  const closedPos = book.positions.filter(p => !isOpen(p));
-
-  function handleEnter(t: RunnerToken) {
-    if (!t.currentMcUsd || t.currentMcUsd <= 0) {
-      toast({ title: "No live MC", description: "Wait for a price tick.", variant: "destructive" });
-      return;
-    }
-    if (book.bankrollUsd < 1) {
-      toast({ title: "Bankroll empty", description: "Top up or close a winner.", variant: "destructive" });
-      return;
-    }
-    if ((t.runner.signals.snapCount ?? 0) < 5 && t.runner.phase !== "entry") {
-      toast({
-        title: "Dex says wait",
-        description: `Only ${t.runner.signals.snapCount ?? 0}/5 snaps — observation first.`,
-      });
-    }
-    const next = openPosition(book, {
-      tokenId: t.id,
-      address: t.address,
-      symbol: safeSymbol(t.symbol, t.address) || "?",
-      name: t.name,
-      logoUri: t.logoUri,
-      entryMcUsd: t.currentMcUsd,
-      stakeUsd: stake,
-      targetMultiple: target,
-    });
-    setBook(next);
-    setJustEntered(true);
-    setJustExited(null);
-    setFocusId(next.positions[0]?.id ?? null);
-    setTab("open");
-    setPickId(null);
-    window.setTimeout(() => setJustEntered(false), 14_000);
-    toast({ title: `Entered ${safeSymbol(t.symbol, t.address)}`, description: `Target ${target}× · stake $${stake}` });
-  }
-
-  function handleExit(pos: TraderPosition) {
-    const mc = live[pos.tokenId] ?? pos.entryMcUsd;
-    const mult = positionMultiple(pos, mc);
-    const next = closePosition(book, pos.id, mc);
-    setBook(next);
-    setJustExited({ multiple: mult, symbol: pos.symbol });
-    setJustEntered(false);
-    window.setTimeout(() => setJustExited(null), 16_000);
-    toast({
-      title: `Exited ${pos.symbol}`,
-      description: `${mult.toFixed(2)}× · ${mult >= 3 ? "Target cleared" : "Closed"}`,
-    });
-  }
+  const positions = posData?.positions ?? [];
+  const live = useMemo(() => positions.filter(p => p.status === "open" || p.status === "moon"), [positions]);
+  const closed = useMemo(() => positions.filter(p => p.status === "closed"), [positions]);
+  const events = evData?.events ?? [];
+  const patterns = patData?.patterns ?? [];
+  const enabled = status?.enabled ?? true;
 
   return (
     <div className="px-4 md:px-6 lg:px-8 py-5 md:py-8 space-y-5 md:space-y-6">
       <header className="fade-up">
         <div className="font-display text-[11px] font-bold tracking-[0.22em] uppercase text-[var(--cryp-teal)]">
-          Trader Mode
+          Dex Autopilot
         </div>
         <h1 className="font-display text-3xl md:text-4xl font-extrabold tracking-tight mt-1">
-          Your book. His watch.
+          No emotions. On-chain only.
         </h1>
         <p className="text-[var(--cryp-mute)] text-[13px] md:text-[14px] mt-2 max-w-2xl">
-          Place entries, hunt 3×+, bank exits. Dex watches the tape — observation snaps, heating, and what not to do.
+          Automated paper agent: observes ≥5 snaps, reverse-engineers patterns, enters on confirmed velocity,
+          banks <span className="text-[var(--cryp-mint)]">70% at 3×</span>, trails a{" "}
+          <span className="text-[var(--cryp-warn)]">30% moon bag</span>. You watch the machine.
         </p>
       </header>
 
-      <TraderCompanion
-        ctx={{
-          book,
-          feed,
-          focus,
-          justEntered,
-          justExited,
-        }}
-      />
+      <div className="desk-card p-4 md:p-5 fade-up flex flex-wrap items-center gap-3 justify-between">
+        <div className="flex items-center gap-3">
+          <div
+            className="w-12 h-12 flex items-center justify-center"
+            style={{
+              background: enabled ? "rgba(61,154,139,0.16)" : "rgba(122,143,153,0.12)",
+              border: `1px solid ${enabled ? "var(--cryp-teal)" : "var(--cryp-line)"}`,
+            }}
+          >
+            <Bot className="w-6 h-6" style={{ color: enabled ? "var(--cryp-mint)" : "var(--cryp-mute)" }} />
+          </div>
+          <div>
+            <div className="font-display text-[13px] font-bold tracking-wide uppercase flex items-center gap-2">
+              {enabled ? "Autopilot ON" : "Autopilot OFF"}
+              <span className={cn("w-1.5 h-1.5 rounded-full", enabled ? "bg-[var(--cryp-gain)] pulse-dot" : "bg-[var(--cryp-mute)]")} />
+            </div>
+            <div className="text-[11px] text-[var(--cryp-mute)] mt-0.5">
+              {status?.rules?.takeProfit ?? "70% @ 3×"} · {status?.rules?.moonBag ?? "30% trailed"} ·{" "}
+              {status?.rules?.observationSnaps ?? 5} snaps · max {status?.rules?.maxOpen ?? 3} open
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={toggle.isPending}
+          onClick={() => toggle.mutate(!enabled)}
+          className="inline-flex items-center gap-2 text-[10px] font-bold tracking-widest uppercase px-3 py-2"
+          style={{
+            background: enabled ? "rgba(232,93,93,0.12)" : "var(--cryp-teal)",
+            color: enabled ? "var(--cryp-loss)" : "var(--cryp-ink)",
+          }}
+        >
+          <Power className="w-3.5 h-3.5" />
+          {enabled ? "Pause agent" : "Start agent"}
+        </button>
+      </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatTile label="Equity" value={`$${Math.round(stats.equity).toLocaleString()}`} hint="Cash + open marks" accent="var(--cryp-mint)" />
-        <StatTile label="Bankroll" value={`$${Math.round(book.bankrollUsd).toLocaleString()}`} hint="Dry powder" />
         <StatTile
-          label="Open P&L"
-          value={`${stats.openPnl >= 0 ? "+" : ""}$${Math.round(stats.openPnl)}`}
-          accent={stats.openPnl >= 0 ? "var(--cryp-gain)" : "var(--cryp-loss)"}
-          hint={`${stats.openCount} open`}
+          label="Equity"
+          value={`$${Math.round(status?.equityUsd ?? 1000).toLocaleString()}`}
+          hint="Cash + open marks"
+          accent="var(--cryp-mint)"
+        />
+        <StatTile
+          label="Bankroll"
+          value={`$${Math.round(status?.bankrollUsd ?? 1000).toLocaleString()}`}
+          hint={`Open mark $${Math.round(status?.openMarkUsd ?? 0)}`}
+        />
+        <StatTile
+          label="Realized"
+          value={`${(status?.realizedPnlUsd ?? 0) >= 0 ? "+" : ""}$${Math.round(status?.realizedPnlUsd ?? 0)}`}
+          accent={(status?.realizedPnlUsd ?? 0) >= 0 ? "var(--cryp-gain)" : "var(--cryp-loss)"}
+          hint={`${status?.tradesClosed ?? 0} closed`}
         />
         <StatTile
           label="3× Hits"
-          value={String(stats.hits3x)}
-          hint={`Best ${stats.bestMultiple.toFixed(1)}× · realized $${Math.round(stats.realizedPnl)}`}
+          value={String(status?.hits3x ?? 0)}
+          hint={`${status?.openCount ?? 0} live · ${status?.tradesOpened ?? 0} opened`}
           accent="var(--cryp-gain)"
         />
       </div>
 
-      <div className="desk-card p-4 md:p-5 fade-up">
-        <div className="flex flex-wrap items-end gap-3 md:gap-4">
-          <label className="space-y-1">
-            <span className="text-[10px] tracking-[0.18em] uppercase text-[var(--cryp-mute)] flex items-center gap-1">
-              <Wallet className="w-3 h-3" /> Stake USD
-            </span>
-            <input
-              type="number"
-              min={1}
-              max={book.bankrollUsd}
-              value={stake}
-              onChange={e => setStake(Math.max(1, Number(e.target.value) || 1))}
-              className="w-28 bg-[var(--cryp-ink)] border border-[var(--cryp-line)] px-2.5 py-2 font-mono-num text-[13px] text-[var(--cryp-text)]"
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="text-[10px] tracking-[0.18em] uppercase text-[var(--cryp-mute)] flex items-center gap-1">
-              <Target className="w-3 h-3" /> Target ×
-            </span>
-            <input
-              type="number"
-              min={1.5}
-              max={20}
-              step={0.5}
-              value={target}
-              onChange={e => setTarget(Math.max(1.5, Number(e.target.value) || 3))}
-              className="w-24 bg-[var(--cryp-ink)] border border-[var(--cryp-line)] px-2.5 py-2 font-mono-num text-[13px] text-[var(--cryp-text)]"
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="text-[10px] tracking-[0.18em] uppercase text-[var(--cryp-mute)]">Bankroll</span>
-            <input
-              type="number"
-              min={0}
-              value={book.bankrollUsd}
-              onChange={e => setBook(setBankroll(book, Number(e.target.value) || 0))}
-              className="w-32 bg-[var(--cryp-ink)] border border-[var(--cryp-line)] px-2.5 py-2 font-mono-num text-[13px] text-[var(--cryp-text)]"
-            />
-          </label>
-          <p className="text-[11px] text-[var(--cryp-mute)] pb-2 max-w-sm">
-            Paper stakes only. Dex won't let the system ping ENTRY before 5 snaps — match that discipline.
-          </p>
-        </div>
-      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div className="lg:col-span-3 space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            {([
+              ["live", `Live (${live.length})`],
+              ["closed", `Closed (${closed.length})`],
+              ["patterns", `Patterns (${patterns.length})`],
+              ["log", "Agent log"],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className="text-[10px] font-bold tracking-[0.16em] uppercase px-3 py-2"
+                style={{
+                  background: tab === id ? "var(--cryp-teal)" : "transparent",
+                  color: tab === id ? "var(--cryp-ink)" : "var(--cryp-mute)",
+                  border: tab === id ? "1px solid var(--cryp-teal)" : "1px solid var(--cryp-line)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
-      <div className="flex gap-2 flex-wrap">
-        {([
-          ["open", `Open (${openPos.length})`],
-          ["closed", `Closed (${closedPos.length})`],
-          ["candidates", "Candidates"],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setTab(id)}
-            className="text-[10px] font-bold tracking-[0.16em] uppercase px-3 py-2 transition-colors"
-            style={{
-              background: tab === id ? "var(--cryp-teal)" : "transparent",
-              color: tab === id ? "var(--cryp-ink)" : "var(--cryp-mute)",
-              border: tab === id ? "1px solid var(--cryp-teal)" : "1px solid var(--cryp-line)",
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "candidates" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {isLoading && !feed.length && (
-            <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">Loading runner tape…</div>
-          )}
-          {!isLoading && candidates.length === 0 && (
-            <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">
-              No fresh candidates — Dex is still watching radar.
-            </div>
-          )}
-          {candidates.map(t => {
-            const snaps = t.runner.signals.snapCount ?? 0;
-            const selected = pickId === t.id;
-            return (
-              <article key={t.id} className="desk-card p-4 fade-up">
-                <div className="flex items-start gap-3">
-                  <img
-                    src={safeImageUrl(t.logoUri, t.address, t.symbol)}
-                    alt=""
-                    className="w-10 h-10 object-cover"
-                    style={{ background: "var(--cryp-elevated)" }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        className="font-display text-[14px] font-bold hover:text-[var(--cryp-mint)]"
-                        onClick={() => setLocation(`/tokens/${t.id}`)}
-                      >
-                        {safeSymbol(t.symbol, t.address)}
-                      </button>
-                      <span className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">
-                        {t.runner.phase} · {t.velocity.toFixed(2)}× · {snaps}/5 snaps
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-[var(--cryp-mute)] mt-1 truncate">
-                      {truncateAddress(t.address)} · MC {formatCompactUsd(t.currentMcUsd)}
-                    </div>
-                    {(t.runner.blockers ?? []).length > 0 && (
-                      <div className="text-[11px] text-[var(--cryp-warn)] mt-1">
-                        Dex: {t.runner.blockers[0]}
-                      </div>
-                    )}
-                    <div className="flex gap-2 mt-3">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5"
-                        style={{ background: "var(--cryp-teal)", color: "var(--cryp-ink)" }}
-                        onClick={() => handleEnter(t)}
-                      >
-                        <Plus className="w-3 h-3" /> Enter
-                      </button>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1.5"
-                        style={{
-                          border: "1px solid var(--cryp-line)",
-                          color: selected ? "var(--cryp-mint)" : "var(--cryp-mute)",
-                        }}
-                        onClick={() => setPickId(selected ? null : t.id)}
-                      >
-                        <Crosshair className="w-3 h-3" /> Watch
-                      </button>
-                    </div>
-                  </div>
+          {tab === "live" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {live.length === 0 && (
+                <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm md:col-span-2">
+                  <Radio className="w-4 h-4 inline mr-2" />
+                  Agent scanning — waiting for observation-ready Heating/ENTRY with pattern edge.
                 </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {tab === "open" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {openPos.length === 0 && (
-            <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">
-              No open positions. Pull a candidate when Heating has tape — aim 3×.
+              )}
+              {live.map(p => (
+                <PositionCard key={p.id} p={p} onOpen={() => setLocation(`/tokens/${p.tokenId}`)} />
+              ))}
             </div>
           )}
-          {openPos.map(p => (
-            <PositionRow
-              key={p.id}
-              pos={p}
-              liveMc={live[p.tokenId]}
-              token={feed.find(t => t.id === p.tokenId)}
-              selected={focus?.id === p.id}
-              onSelect={() => setFocusId(p.id)}
-              onExit={() => handleExit(p)}
-            />
-          ))}
-        </div>
-      )}
 
-      {tab === "closed" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {closedPos.length === 0 && (
-            <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">
-              Closed book is empty. First 3× pays for the coffee.
+          {tab === "closed" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {closed.length === 0 && (
+                <div className="desk-card p-6 text-[var(--cryp-mute)] text-sm">No closed trades yet.</div>
+              )}
+              {closed.map(p => (
+                <PositionCard key={p.id} p={p} onOpen={() => setLocation(`/tokens/${p.tokenId}`)} />
+              ))}
             </div>
           )}
-          {closedPos.map(p => (
-            <PositionRow
-              key={p.id}
-              pos={p}
-              liveMc={p.exitMcUsd}
-              selected={false}
-              onSelect={() => setFocusId(p.id)}
-              onExit={() => undefined}
-            />
-          ))}
+
+          {tab === "patterns" && (
+            <div className="desk-card overflow-hidden">
+              <div className="px-4 py-3 text-[10px] tracking-[0.18em] uppercase text-[var(--cryp-mute)]" style={{ borderBottom: "1px solid var(--cryp-line)" }}>
+                Reverse-engineered fingerprints · win-rate gates future size
+              </div>
+              {patterns.length === 0 && (
+                <div className="p-6 text-[var(--cryp-mute)] text-sm">Patterns fill as the agent closes trades.</div>
+              )}
+              <ul className="divide-y divide-[var(--cryp-line)]">
+                {patterns.map(pat => (
+                  <li key={pat.key} className="px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-mono-num text-[11px] text-[var(--cryp-text)] truncate">{pat.key}</div>
+                      <div className="text-[10px] text-[var(--cryp-mute)] mt-0.5">
+                        n={pat.samples} · best {pat.bestMultiple.toFixed(1)}×
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div
+                        className="font-mono-num text-[14px] font-bold"
+                        style={{ color: pat.winRate >= 40 ? "var(--cryp-gain)" : pat.winRate < 25 ? "var(--cryp-loss)" : "var(--cryp-warn)" }}
+                      >
+                        {pat.winRate}% 3×
+                      </div>
+                      <div className="text-[10px] text-[var(--cryp-mute)]">avg exit {pat.avgExit.toFixed(2)}×</div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {tab === "log" && (
+            <div className="desk-card p-4">
+              <div className="font-display text-[10px] font-bold tracking-[0.2em] uppercase text-[var(--cryp-teal)] mb-2">
+                🤖 Agent activity
+              </div>
+              <ul className="dex-news max-h-[420px] overflow-y-auto no-scrollbar space-y-1">
+                {events.length === 0 && (
+                  <li className="text-[var(--cryp-mute)] text-sm py-4">Waiting for first agent tick…</li>
+                )}
+                {events.map(e => <EventRow key={e.id} e={e} />)}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
+
+        <aside className="lg:col-span-2 space-y-3">
+          <div className="desk-card p-4 fade-up">
+            <div className="font-display text-[10px] font-bold tracking-[0.2em] uppercase text-[var(--cryp-teal)] mb-2 flex items-center gap-2">
+              <Moon className="w-3.5 h-3.5" /> Playbook
+            </div>
+            <ul className="space-y-2 text-[12px] text-[var(--cryp-mute)] leading-relaxed">
+              <li>📡 Watch tape until <span className="text-[var(--cryp-text)]">5 snaps</span></li>
+              <li>🔥 Enter on ENTRY / strong heating + tagged + velocity</li>
+              <li>🧬 Skip dead patterns (&lt;20% 3× after 6 samples)</li>
+              <li>💰 Sell <span className="text-[var(--cryp-gain)]">70% at 3×</span></li>
+              <li>🌙 Trail <span className="text-[var(--cryp-warn)]">30% moon bag</span> (−32% from peak or fade)</li>
+              <li>🛑 Hard stop at 0.65× or dead phase</li>
+              <li>⛓️ Marks = live on-chain MC · paper bankroll</li>
+            </ul>
+          </div>
+
+          <div className="desk-card p-4 fade-up">
+            <div className="font-display text-[10px] font-bold tracking-[0.2em] uppercase text-[var(--cryp-teal)] mb-2">
+              📰 Latest ticks
+            </div>
+            <ul className="dex-news max-h-[280px] overflow-y-auto no-scrollbar space-y-1">
+              {events.slice(0, 12).map(e => <EventRow key={`side-${e.id}`} e={e} />)}
+              {events.length === 0 && (
+                <li className="text-[12px] text-[var(--cryp-mute)]">Agent arms ~35s after API boot…</li>
+              )}
+            </ul>
+          </div>
+
+          {live[0] && (
+            <div className="desk-card p-4 text-[11px] text-[var(--cryp-mute)]">
+              Focus · <span className="text-[var(--cryp-text)] font-bold">{live[0].symbol}</span>{" "}
+              {live[0].multiple.toFixed(2)}× · {truncateAddress(live[0].address)}
+            </div>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }

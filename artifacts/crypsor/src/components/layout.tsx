@@ -17,7 +17,7 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: "/",        label: "Runner",  icon: Zap,       desc: "Radar · entry", pro: true },
   { href: "/alerts",  label: "Alerts",  icon: Bell,      desc: "ENTRY pings", prefetch: "alerts" },
-  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Book · Dex" },
+  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Autopilot · 3×" },
   { href: "/ops",     label: "Logs",    icon: Activity,  desc: "Buys · pipeline" },
   { href: "/settings",label: "Settings",icon: Settings,  desc: "Keys · Telegram" },
 ];
