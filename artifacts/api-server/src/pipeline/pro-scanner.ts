@@ -41,6 +41,7 @@ import {
 } from "../lib/gmgn-pro-verify";
 import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
+import { invalidateProCaches } from "../lib/pro-cache";
 
 const log = logger.child({ module: "pro-scanner" });
 
@@ -480,6 +481,10 @@ async function scanOnce(onlyTokenId?: number): Promise<void> {
         scored,
         candidates: candidates.length,
       });
+      // Bust Pro Intel feed/stats so Age tabs show the new call immediately
+      if (veryStrong + strong + scored > 0) {
+        await invalidateProCaches();
+      }
     } else if (candidates.length > 0) {
       opsLog("pro_qualify", "info", `Qualify checked ${candidates.length} — none inserted`, {
         candidates: candidates.length,

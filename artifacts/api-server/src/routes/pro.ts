@@ -23,8 +23,8 @@ import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
 
 const router = Router();
 
-const FEED_CACHE_TTL_SEC = 12;
-const STATS_CACHE_TTL_SEC = 15;
+const FEED_CACHE_TTL_SEC = 8;
+const STATS_CACHE_TTL_SEC = 10;
 
 type SlimToken = {
   id: number;
@@ -67,7 +67,24 @@ type SlimToken = {
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
   const cacheKey = `pro:feed:v2:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
-  if (cached?.tokens?.length) return cached;
+
+  // Cheap freshness check — stats/total can move while feed cache still holds old rows
+  const head = await db.execute(sql`
+    SELECT
+      COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int AS quality_total,
+      MAX(called_at) FILTER (WHERE quality_label IN ('very_good', 'good')) AS latest_called
+    FROM pro_calls
+  `);
+  const headRow = (head.rows[0] ?? {}) as Record<string, unknown>;
+  const qualityTotal = Number(headRow.quality_total ?? 0);
+  const latestCalled = toIsoUtc(headRow.latest_called);
+  const cachedLatest = cached?.tokens?.[0]?.calledAt ?? null;
+  const cacheFresh =
+    cached?.tokens?.length &&
+    cached.total === qualityTotal &&
+    (!latestCalled || !cachedLatest || cachedLatest >= latestCalled);
+
+  if (cacheFresh && cached) return cached;
 
   const callRows = await db.execute(sql`
     SELECT
@@ -159,7 +176,7 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
     };
   });
 
-  const payload = { tokens, total: tokens.length };
+  const payload = { tokens, total: qualityTotal };
   await proCacheSet(cacheKey, payload, FEED_CACHE_TTL_SEC);
   return payload;
 }
