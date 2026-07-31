@@ -75,9 +75,16 @@ function gateTrack(
   intel: number,
   kol: number,
   smart: number,
+  smartHoldRate: number | null,
 ): "very_strong" | null {
-  // Require smart money — KOL-only / Track C dumps are the main win-rate poison
-  if (intel >= MIN_INTEL && smart >= 1) return "very_strong";
+  // smart=0 never qualifies (0% win among surfaced)
+  if (smart < 1) return null;
+  // Outcome-tuned: smart=1 with holdRate<50% wins ~12% — reject when known.
+  if (smart === 1 && smartHoldRate != null && smartHoldRate < 0.5) return null;
+  // Prefer smart≥2 (best cohort ~36% 2×); smart=1 with solid hold still OK.
+  if (intel >= MIN_INTEL && (smart >= 2 || (smart >= 1 && (smartHoldRate == null || smartHoldRate >= 0.5)))) {
+    return "very_strong";
+  }
   if (intel >= 85 && smart >= 1 && kol >= 1) return "very_strong";
   return null;
 }
@@ -280,11 +287,13 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
     const held = holdingCounts(verify);
     const kol = held.kol;
     const smart = held.smart;
-    const track = gateTrack(c.intelligence_score, kol, smart);
+    const smartHoldRate = verify.smartConviction?.holdRate ?? null;
+    const track = gateTrack(c.intelligence_score, kol, smart, smartHoldRate);
     if (!track) {
-      opsLog("pro_qualify", "info", `Skip — need smart≥1 (kol=${kol} smart=${smart})`, {
+      opsLog("pro_qualify", "info", `Skip — conviction gate (kol=${kol} smart=${smart} hold=${smartHoldRate ?? "n/a"})`, {
         tokenId: c.token_id,
         intel: c.intelligence_score,
+        smartHoldRate,
       });
       continue;
     }
@@ -561,26 +570,41 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         // Rescue stuck elite rows that were demoted by the old live-liq gate
         const effectiveScore = Math.max(result.score, prevScore ?? 0);
 
+        const alreadySurfaced = r.surfaced_at != null;
         let qualityLabel: "very_good" | "good" | "below" = ban.banned
           ? "below"
           : result.qualityLabel;
-        if (!ban.banned && runStatus === "DEAD" && athMultiple < 2) {
-          qualityLabel = "below";
+        // Sticky: once on the desk, never demote for DEAD/live score decay.
+        if (!ban.banned && alreadySurfaced) {
+          const prevQ = r.quality_label != null ? String(r.quality_label) : "good";
+          if (prevQ === "very_good" || effectiveScore >= SURFACE_VERY_GOOD) {
+            qualityLabel = "very_good";
+          } else {
+            qualityLabel = "good";
+          }
         } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_VERY_GOOD) {
           qualityLabel = "very_good";
         } else if (!ban.banned && smart >= 1 && effectiveScore >= SURFACE_GOOD_STRICT) {
           if (qualityLabel === "below") qualityLabel = "good";
         }
 
-        const finalSurface = !ban.banned && qualityLabel !== "below" && shouldSurface({
-          qualityLabel,
-          score: effectiveScore,
-          smart,
-          hv,
-          honeypot: r.sec_is_honeypot as boolean | null,
-          calledMc,
-        });
-        if (!finalSurface && qualityLabel !== "below") qualityLabel = "below";
+        const finalSurface = !ban.banned && (
+          alreadySurfaced
+          || (qualityLabel !== "below" && shouldSurface({
+            qualityLabel,
+            score: effectiveScore,
+            smart,
+            hv,
+            honeypot: r.sec_is_honeypot as boolean | null,
+            calledMc,
+          }))
+        );
+        if (!finalSurface && !alreadySurfaced && qualityLabel !== "below") {
+          qualityLabel = "below";
+        }
+        if (finalSurface && qualityLabel === "below" && !ban.banned) {
+          qualityLabel = "good";
+        }
 
         const entryTier: EntryTier = result.entryTier;
         const surfacedMc = String(currentMc || calledMc || 0);
@@ -589,7 +613,6 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
           ? effectiveScore
           : result.score;
 
-        // Simple UPDATE — avoid brittle CASE param comparisons that were failing silently
         if (finalSurface) {
           await db.execute(sql`
             UPDATE pro_calls
@@ -615,7 +638,7 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
               last_survival_at = NOW(),
               entry_tier = ${entryTier},
               score_version = 'v2',
-              quality_label = ${qualityLabel}
+              quality_label = ${ban.banned ? "below" : qualityLabel}
             WHERE id = ${callId}
           `);
         }

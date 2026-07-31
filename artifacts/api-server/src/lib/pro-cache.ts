@@ -98,6 +98,10 @@ export async function invalidateProCaches(): Promise<void> {
         "pro:feed:v5:200",
         "pro:feed:v5:300",
         "pro:feed:v5:400",
+        "pro:feed:v6:150",
+        "pro:feed:v6:200",
+        "pro:feed:v6:300",
+        "pro:feed:v6:400",
       ];
       if (keys.length) await r.del(...keys);
     }

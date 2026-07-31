@@ -34,6 +34,12 @@ interface Conviction {
   verifiedAt?: string | null;
 }
 
+interface OutcomeInfo {
+  code: string;
+  label: string;
+  detail: string;
+}
+
 interface ProToken {
   id: number;
   address: string;
@@ -62,6 +68,7 @@ interface ProToken {
   secFreezeRenounced: boolean | null;
   secIsHoneypot: boolean | null;
   socials: { twitter?: string; telegram?: string; website?: string };
+  outcome?: OutcomeInfo | null;
 }
 
 interface ProStats {
@@ -157,6 +164,19 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
                 </span>
               )}
               <span className="text-[10px] font-medium" style={{ color: run.color }}>{run.label}</span>
+              {t.outcome && t.outcome.code !== "pumping" && t.outcome.code !== "building" && (
+                <span
+                  className="text-[9px] tracking-wider uppercase"
+                  style={{
+                    color: t.outcome.code === "printed_holding" || t.outcome.code === "printed_faded"
+                      ? "var(--cryp-gain)"
+                      : "var(--cryp-loss)",
+                  }}
+                  title={t.outcome.detail}
+                >
+                  {t.outcome.label}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-1 text-[11px] text-[var(--cryp-mute)]">
               <span className="font-mono-num">{formatCalledAt(t.calledAt)}</span>
@@ -169,6 +189,11 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
                 </>
               )}
             </div>
+            {t.outcome?.detail && (t.outcome.code === "never_ran" || t.outcome.code === "crashed" || t.outcome.code === "dead" || t.outcome.code === "printed_faded") && (
+              <div className="text-[10px] mt-1 leading-snug" style={{ color: "var(--cryp-mute)" }} title={t.outcome.detail}>
+                {t.outcome.detail}
+              </div>
+            )}
           </div>
 
           <div className="text-right shrink-0">

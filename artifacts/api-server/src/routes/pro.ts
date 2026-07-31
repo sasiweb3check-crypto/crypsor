@@ -19,7 +19,9 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { extractSocials } from "../lib/socials";
 import { deriveRunStatus } from "../lib/pro-scoring";
+import { deriveProOutcome, type OutcomeInfo } from "../lib/pro-outcome";
 import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
+import { isProBannedToken } from "../lib/solana-memecoin-gate";
 
 const router = Router();
 
@@ -96,6 +98,8 @@ type SlimToken = {
     verifiedAt: string | null;
   } | null;
   kolSmartSource: string | null;
+  /** Why it printed / stalled / died — desk stays sticky; this explains outcome. */
+  outcome: OutcomeInfo;
 };
 
 function parseVwSocials(raw: unknown): { twitter?: string; telegram?: string; website?: string } {
@@ -143,14 +147,19 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  const cacheKey = `pro:feed:v5:${limit}`;
+  // v6: sticky desk = surfaced_at (not live quality demotion)
+  const cacheKey = `pro:feed:v6:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
   const head = await db.execute(sql`
     SELECT
-      COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int AS quality_total,
-      MAX(called_at) FILTER (WHERE quality_label IN ('very_good', 'good')) AS latest_called
+      COUNT(*) FILTER (
+        WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good', 'good')
+      )::int AS quality_total,
+      MAX(called_at) FILTER (
+        WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good', 'good')
+      ) AS latest_called
     FROM pro_calls
   `);
   const headRow = (head.rows[0] ?? {}) as Record<string, unknown>;
@@ -200,7 +209,9 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       t.sec_freeze_renounced
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
-    WHERE pc.quality_label IN ('very_good', 'good')
+    WHERE pc.surfaced_at IS NOT NULL
+      AND pc.quality_label IN ('very_good', 'good')
+      AND COALESCE(t.status, '') <> 'ignored'
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT ${limit}
   `);
@@ -214,6 +225,20 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
     const runStatus = deriveRunStatus(currentMc, calledMc, athMultiple);
     const proScore = Number(call.pro_score ?? 0);
     const qualityLabel = String(call.quality_label ?? "below");
+    const ban = isProBannedToken({
+      address: call.address != null ? String(call.address) : null,
+      symbol: call.symbol != null ? String(call.symbol) : null,
+      calledMcUsd: calledMc,
+      currentMcUsd: currentMc,
+    });
+    const outcome = deriveProOutcome({
+      calledMcUsd: calledMc,
+      currentMcUsd: currentMc,
+      athMultiple,
+      runStatus,
+      honeypot: call.sec_is_honeypot as boolean | null,
+      banned: ban.banned,
+    });
 
     return {
       id: Number(call.token_id),
@@ -259,6 +284,7 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       },
       conviction: parseConviction(call.verified_wallets),
       kolSmartSource: call.kol_smart_source != null ? String(call.kol_smart_source) : null,
+      outcome,
     };
   });
 
@@ -345,38 +371,77 @@ router.get("/pro/stats", async (_req, res) => {
 
     const result = await db.execute(sql`
       SELECT
-        COUNT(*) FILTER (WHERE quality_label IN ('very_good', 'good'))::int           AS total,
-        COUNT(*)::int                                                                  AS total_all_time,
-        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS win,
-        COUNT(CASE WHEN ath_multiple >= 1.5 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x1,
-        COUNT(CASE WHEN ath_multiple >= 2   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x2,
-        COUNT(CASE WHEN ath_multiple >= 3   AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x3,
-        COUNT(CASE WHEN ath_multiple >= 5 AND ath_multiple < 10 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x5,
-        COUNT(CASE WHEN ath_multiple >= 10 AND ath_multiple < 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10,
-        COUNT(CASE WHEN ath_multiple >= 20 AND quality_label IN ('very_good','good') THEN 1 END)::int AS x10_plus,
-        COUNT(CASE WHEN ath_multiple >= 100 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x100,
-        COUNT(CASE WHEN ath_multiple >= 200 AND quality_label IN ('very_good','good') THEN 1 END)::int  AS x200,
-        ROUND(MAX(CASE WHEN quality_label IN ('very_good','good') THEN ath_multiple END)::numeric, 2)   AS best_ath,
-        COUNT(CASE WHEN quality_label = 'very_good' THEN 1 END)::int                  AS very_good_count,
-        COUNT(CASE WHEN quality_label = 'good'      THEN 1 END)::int                  AS good_count,
         COUNT(*) FILTER (
-          WHERE quality_label IN ('very_good','good')
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good', 'good')
+        )::int                                                                         AS total,
+        COUNT(*)::int                                                                  AS total_all_time,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 2
+        )::int                                                                         AS win,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 1.5
+        )::int                                                                         AS x1,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 2
+        )::int                                                                         AS x2,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 3
+        )::int                                                                         AS x3,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 5 AND ath_multiple < 10
+        )::int                                                                         AS x5,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 10 AND ath_multiple < 20
+        )::int                                                                         AS x10,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 20
+        )::int                                                                         AS x10_plus,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 100
+        )::int                                                                         AS x100,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+            AND ath_multiple >= 200
+        )::int                                                                         AS x200,
+        ROUND(MAX(CASE
+          WHEN surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+          THEN ath_multiple END)::numeric, 2)                                          AS best_ath,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label = 'very_good'
+        )::int                                                                         AS very_good_count,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label = 'good'
+        )::int                                                                         AS good_count,
+        COUNT(*) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
             AND called_at >= NOW() - INTERVAL '1 hour'
         )::int                                                                         AS recent_1h,
         COUNT(*) FILTER (
-          WHERE quality_label IN ('very_good','good')
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
             AND called_at >= NOW() - INTERVAL '6 hours'
         )::int                                                                         AS recent_6h,
         COUNT(*) FILTER (
-          WHERE quality_label IN ('very_good','good')
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
             AND called_at >= NOW() - INTERVAL '24 hours'
         )::int                                                                         AS recent_count,
         COUNT(*) FILTER (
-          WHERE quality_label IN ('very_good','good')
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
             AND called_at >= NOW() - INTERVAL '7 days'
         )::int                                                                         AS recent_7d,
-        ROUND(AVG(CASE WHEN quality_label IN ('very_good','good') THEN survival_score END)::numeric, 1) AS avg_survival,
-        MAX(called_at) FILTER (WHERE quality_label IN ('very_good','good'))            AS latest_called_at
+        ROUND(AVG(CASE
+          WHEN surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+          THEN survival_score END)::numeric, 1)                                        AS avg_survival,
+        MAX(called_at) FILTER (
+          WHERE surfaced_at IS NOT NULL AND quality_label IN ('very_good','good')
+        )                                                                              AS latest_called_at
       FROM pro_calls
     `);
 
