@@ -10,6 +10,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
   const onUtility = location === "/ops" || location === "/settings"
     || location.startsWith("/ops/") || location.startsWith("/settings/");
+  const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
 
   useEffect(() => {
     void qc.prefetchQuery({
@@ -35,7 +36,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
-              Best Calls
+              {onDetail ? "Call detail" : "Best Calls"}
             </div>
           </div>
         </Link>

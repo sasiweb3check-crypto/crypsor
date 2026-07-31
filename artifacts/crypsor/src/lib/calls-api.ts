@@ -89,3 +89,33 @@ export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
 export function fetchCallsStats() {
   return callsFetch<CallStats>("api/calls/stats");
 }
+
+export type CallBuyer = {
+  walletId: number;
+  address: string;
+  label: string;
+  boughtAt: string | null;
+  winRate: number | null;
+  amount: string | null;
+  priceUsd: string | null;
+};
+
+export type CallSnap = {
+  at: string | null;
+  mcUsd: number | null;
+  athMultiple: number | null;
+  gainPct: number | null;
+  kol: number | null;
+  smart: number | null;
+};
+
+export const CALLS_TOKEN_KEY = (id: number) => ["calls-token", id] as const;
+
+export function fetchCallDetail(tokenId: number) {
+  return callsFetch<{
+    card: CallCard | null;
+    buyers: CallBuyer[];
+    snaps: CallSnap[];
+    walletBuysNote?: string;
+  }>(`api/calls/token/${tokenId}`);
+}
