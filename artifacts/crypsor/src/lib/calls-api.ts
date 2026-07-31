@@ -59,7 +59,11 @@ export type CallCard = {
   socials: { twitter?: string; telegram?: string; website?: string };
 };
 
+export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
+
 export type CallStats = {
+  period?: StatsPeriod | string;
+  days?: number;
   winRate: number;
   wins: number;
   signals: number;
@@ -74,7 +78,7 @@ export type CallStats = {
 export type CallMode = "best" | "latest" | "hot";
 
 export const CALLS_FEED_KEY = (mode: CallMode) => ["calls-feed", mode] as const;
-export const CALLS_STATS_KEY = ["calls-stats"] as const;
+export const CALLS_STATS_KEY = (period: StatsPeriod = "7d") => ["calls-stats", period] as const;
 
 export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
   return callsFetch<{
@@ -86,8 +90,8 @@ export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
   }>(`api/calls/feed?mode=${mode}&limit=${limit}`);
 }
 
-export function fetchCallsStats() {
-  return callsFetch<CallStats>("api/calls/stats");
+export function fetchCallsStats(period: StatsPeriod = "7d") {
+  return callsFetch<CallStats>(`api/calls/stats?period=${period}`);
 }
 
 export type CallBuyer = {

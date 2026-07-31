@@ -31,8 +31,11 @@ const CHECK_INTERVAL_MS = 20_000;
 const STARTUP_DELAY_MS = 20_000;
 const ALERT_MILESTONES = [2, 5, 10, 20] as const;
 
-/** Product default: in-app Calls desk only — no Telegram / push. Opt-in via env. */
-const TELEGRAM_PUSH_ENABLED = process.env.TELEGRAM_PUSH_ENABLED === "true";
+/**
+ * Best Calls ENTRY Telegram — on by default.
+ * Set TELEGRAM_PUSH_ENABLED=false to mute push (in-app desk still scores).
+ */
+const TELEGRAM_PUSH_ENABLED = process.env.TELEGRAM_PUSH_ENABLED !== "false";
 
 async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } | null> {
   try {
@@ -297,19 +300,18 @@ function buildEntryMessage(t: ProAlertToken, runner: RunnerScoreResult): string 
   const socials = extractSocials(t.rawMetadata);
   const why = runner.reasons.slice(0, 4).map(r => `• ${esc(r)}`);
   const lines = [
-    `🚀 *RUNNER ENTRY* — *${name}* \\(${symbol}\\)`,
+    `🚀 *BEST CALL* — *${name}* \\(${symbol}\\)`,
     ``,
-    `Phase *${esc(runner.label)}* · Score *${runner.score}* · Vel *${esc(String(runner.signals.velocity))}×*`,
-    `Tape *${runner.signals.snapCount}* snaps · Observation cleared`,
-    `Entry MC: *${esc(fmtMc(t.calledMcUsd))}* · Now: *${esc(fmtMc(t.currentMc))}* · Gain *${Math.round(runner.signals.gainPct)}%*`,
-    `Size *${esc(runner.sizeLabel)}* · Tagged smart *${t.calledSmart}* / KOL *${t.calledKol}*`,
+    `Score *${runner.score}* · Vel *${esc(String(runner.signals.velocity))}×* · Tape *${runner.signals.snapCount}* snaps`,
+    `Mcap: *${esc(fmtMc(t.calledMcUsd))}* → Now *${esc(fmtMc(t.currentMc))}* · Gain *${Math.round(runner.signals.gainPct)}%*`,
+    `Smart *${t.calledSmart}* · KOL *${t.calledKol}* · Size *${esc(runner.sizeLabel)}*`,
     t.secMint === true ? `✅ Mint renounced` : null,
     ``,
-    `*Why this entry*`,
+    `*Why*`,
     ...why,
     ``,
-    `\`${t.address}\``,
-    `🔗 [GMGN](${gmgnLink(t.chain, t.address)})`,
+    `CA: \`${t.address}\``,
+    `🔗 [GMGN](${gmgnLink(t.chain, t.address)}) · [Dexscreener](https://dexscreener.com/solana/${t.address})`,
     ...(() => {
       const s = socialBlock(socials);
       return s.length ? ["", ...s] : [];
@@ -422,9 +424,12 @@ async function checkAndAlert(): Promise<void> {
       break;
     }
 
-    const alreadyEntry = Boolean(t.runnerAlertSentAt || t.callAlertSentAt);
+    // Telegram ENTRY once (runner_alert_sent_at). In-app-only marks must not
+    // block Telegram after push is re-enabled.
+    const alreadyTelegram = Boolean(t.runnerAlertSentAt);
+    const alreadyInAppOnly = Boolean(t.callAlertSentAt) && !t.runnerAlertSentAt;
 
-    if (!alreadyEntry) {
+    if (!alreadyTelegram) {
       const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
       const runner = evaluateRunner(t);
       // Carry label change onto the snapshot tape before overwriting pro_calls
@@ -452,7 +457,7 @@ async function checkAndAlert(): Promise<void> {
         WHERE id = ${t.proCallId}
       `);
 
-      // In-app desk: keep scoring. Telegram only when explicitly enabled.
+      // Best Calls desk scoring always; Telegram when push enabled + creds.
       const snapsOk = observationReady(t.snapCount) && runner.signals.observationReady;
       if (!runner.alertEligible || !snapsOk || runner.phase !== "entry") {
         if (runner.phase === "entry" || runner.rawPhase === "entry") {
@@ -472,21 +477,23 @@ async function checkAndAlert(): Promise<void> {
         continue;
       }
 
-      // Mark as called in-app even without Telegram push
+      // Mute path: mark in-app only (never blocks later Telegram if push turns on)
       if (!creds) {
-        await db.execute(sql`
-          UPDATE pro_calls
-          SET call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
-              runner_score = ${runner.score},
-              runner_phase = ${runner.phase}
-          WHERE id = ${t.proCallId}
-        `);
-        opsLog("runner", "info", `In-app ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
-          velocity: runner.signals.velocity,
-          phase: runner.phase,
-          push: false,
-        });
-        entrySent++;
+        if (!alreadyInAppOnly) {
+          await db.execute(sql`
+            UPDATE pro_calls
+            SET call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
+                runner_score = ${runner.score},
+                runner_phase = ${runner.phase}
+            WHERE id = ${t.proCallId}
+          `);
+          opsLog("runner", "info", `In-app ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+            velocity: runner.signals.velocity,
+            phase: runner.phase,
+            push: false,
+          });
+          entrySent++;
+        }
         skipped++;
         continue;
       }
@@ -505,15 +512,15 @@ async function checkAndAlert(): Promise<void> {
         sends++;
         log.info(
           { proCallId: t.proCallId, symbol: t.symbol, runner: runner.score, phase: runner.phase },
-          "Runner ENTRY alert sent",
+          "Best Call Telegram ENTRY sent",
         );
-        opsLog("telegram", "info", `Runner ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+        opsLog("telegram", "info", `Best Call · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
           velocity: runner.signals.velocity,
           phase: runner.phase,
         });
         await new Promise(r => setTimeout(r, 350));
       } catch (err) {
-        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "Runner ENTRY alert failed");
+        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "Best Call Telegram ENTRY failed");
         opsLog("telegram", "error", `ENTRY failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
       }
       continue;
@@ -570,13 +577,13 @@ export function startCallerAlerts(): void {
       milestones: ALERT_MILESTONES,
       telegramPush: TELEGRAM_PUSH_ENABLED,
     },
-    "Runner score loop ready (Telegram push opt-in via TELEGRAM_PUSH_ENABLED)",
+    "Best Calls alert loop ready (Telegram ENTRY on unless TELEGRAM_PUSH_ENABLED=false)",
   );
   opsLog(
     "runner",
     "info",
     TELEGRAM_PUSH_ENABLED
-      ? "Runner loop started · Telegram push ON"
-      : "Runner loop started · in-app only (no Telegram push)",
+      ? "Best Calls loop · Telegram ENTRY ON"
+      : "Best Calls loop · in-app only (Telegram muted)",
   );
 }

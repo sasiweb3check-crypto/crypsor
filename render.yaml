@@ -34,6 +34,9 @@ services:
         generateValue: true
       - key: CORS_ORIGIN
         value: https://crypsor-web.onrender.com
+      # Best Calls ENTRY + milestone Telegram (bot token / chat id in settings DB)
+      - key: TELEGRAM_PUSH_ENABLED
+        value: "true"
 
   - type: web
     name: crypsor-web

@@ -423,15 +423,33 @@ router.get("/calls/feed", async (req, res) => {
   }
 });
 
-router.get("/calls/stats", async (_req, res) => {
+const STATS_PERIODS = new Set(["1d", "3d", "5d", "7d", "30d"]);
+
+function statsPeriodDays(period: string): number {
+  switch (period) {
+    case "1d": return 1;
+    case "3d": return 3;
+    case "5d": return 5;
+    case "7d": return 7;
+    case "30d": return 30;
+    default: return 7;
+  }
+}
+
+router.get("/calls/stats", async (req, res) => {
   try {
-    const cacheKey = "calls:stats:v2";
+    const rawPeriod = String(req.query.period ?? "7d").toLowerCase();
+    const period = STATS_PERIODS.has(rawPeriod) ? rawPeriod : "7d";
+    const days = statsPeriodDays(period);
+
+    const cacheKey = `calls:stats:v3:${period}`;
     const cached = await proCacheGet<Record<string, unknown>>(cacheKey);
     if (cached) {
       res.json(apiOk(cached, { cache: "hit" }));
       return;
     }
 
+    // Window on call time — win-rate for Best Calls in this period
     const result = await db.execute(sql`
       SELECT
         COUNT(*) FILTER (
@@ -459,15 +477,20 @@ router.get("/calls/stats", async (_req, res) => {
           SELECT t.symbol FROM pro_calls pc2
           JOIN tracked_tokens t ON t.id = pc2.token_id
           WHERE pc2.ath_multiple IS NOT NULL
+            AND (pc2.surfaced_at IS NOT NULL OR pc2.quality_label IN ('very_good','good'))
+            AND pc2.called_at >= NOW() - (${days}::int * INTERVAL '1 day')
           ORDER BY pc2.ath_multiple DESC NULLS LAST
           LIMIT 1
         ) AS best_symbol
       FROM pro_calls
+      WHERE called_at >= NOW() - (${days}::int * INTERVAL '1 day')
     `);
     const r = (result.rows[0] ?? {}) as Record<string, unknown>;
     const signals = Number(r.signals ?? 0);
     const wins = Number(r.wins_2x ?? 0);
     const data = {
+      period,
+      days,
       winRate: signals ? Math.round((wins / signals) * 1000) / 10 : 0,
       wins,
       signals,
