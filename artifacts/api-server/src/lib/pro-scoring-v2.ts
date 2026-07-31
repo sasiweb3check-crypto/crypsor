@@ -34,7 +34,8 @@ export const PRO_SCORE_V2_WEIGHTS = {
 
 export const PRO_SCORE_V2_THRESHOLDS = {
   veryGood: 75,
-  good:     55,
+  /** Raised from 55 — soft “good” was the main dump lane. */
+  good:     68,
 } as const;
 
 export interface ProScoreV2Input {

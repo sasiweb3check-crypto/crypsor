@@ -61,7 +61,7 @@ router.get("/ops/summary", async (_req, res) => {
       monitorStatus.heliusConfigured ||
       Boolean(heliusDb || process.env.HELIUS_API_KEY?.trim());
 
-    // Pending first-call alerts (quality good/very_good, never sent)
+    // Pending first-call alerts (very_good only — precision mode)
     let pendingFirstCalls = 0;
     let pendingMilestones = 0;
     let qualityBelowBlocked = 0;
@@ -69,10 +69,10 @@ router.get("/ops/summary", async (_req, res) => {
       const pending = await db.execute(sql`
         SELECT
           COUNT(*) FILTER (
-            WHERE quality_label IN ('very_good','good') AND call_alert_sent_at IS NULL
+            WHERE quality_label = 'very_good' AND call_alert_sent_at IS NULL
           )::int AS pending_first,
           COUNT(*) FILTER (
-            WHERE quality_label IN ('very_good','good')
+            WHERE quality_label = 'very_good'
               AND call_alert_sent_at IS NOT NULL
               AND COALESCE(ath_multiple, 1) >= 2
               AND (
@@ -159,7 +159,7 @@ router.get("/ops/summary", async (_req, res) => {
       blockers.push({
         code: "quality_below",
         level: "info",
-        msg: `${qualityBelowBlocked} recent pro_calls scored below (no alert until good/very_good)`,
+        msg: `${qualityBelowBlocked} recent pro_calls scored below (no alert until very_good)`,
       });
     }
     if (monitorStatus.walletsTracked === 0) {

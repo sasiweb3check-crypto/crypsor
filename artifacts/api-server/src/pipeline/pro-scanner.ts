@@ -1,26 +1,16 @@
 /**
- * Pro Scanner
+ * Pro Scanner — strict precision mode (win-rate first)
  *
- * Identifies tokens that qualify for the Pro Caller tier and registers them
- * in `pro_calls` (one record per token, never duplicated).
+ * intel:scored → live GMGN verify (required) → INSERT freeze → score → surface
+ * only high-conviction calls.
  *
- * On-time path (Jul 2026):
- *   intel:scored → immediate scan → live GMGN KOL/smart verify → INSERT with
- *   freeze → Pro Score v2 + surface NOW.
- *
- * Qualification tracks
- * ────────────────────
- *  VERY STRONG  (scanner_label = 'very_strong')
- *    Track A: intelligence_score >= 80 + verified KOL/Smart >= 1 + MC >= $5K
- *    Track B: intelligence_score >= 75 + verified KOL >= 2  + MC >= $5K
- *
- *  STRONG       (scanner_label = 'strong')
- *    Track C: intelligence_score >= 80 + verified KOL/Smart = 0 + MC >= $5K
- *             Auto-upgraded once live GMGN shows KOL/Smart.
- *
- * KOL/smart SSOT at qualify: live GMGN (wallet_tags_stat / holder_stat + tagged
- * holder lists). Never trust inflated intel-log kol (tracked-wallet boost) alone.
- * Entry MC / ATH always use called_mc_usd; surfaced_* is first-seen-in-UI only.
+ * Gates (must all pass):
+ *   • Live GMGN verify OK — no intel_log / tracked-wallet shortcut
+ *   • Holding smart ≥ 1 (preferred) or tags smart ≥ 1
+ *   • Entry MC $5K–$40K · liq ≥ $8K when known · !honeypot
+ *   • Banned mints/symbols (USD1, cbBTC, stables) rejected
+ *   • Track C (K0∧S0) never qualifies
+ * Surface / alerts: very_good only (≥75), or score≥68 with smart≥1 ∧ HV≥80
  */
 
 import { db } from "@workspace/db";
@@ -42,6 +32,11 @@ import {
 import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
 import { invalidateProCaches } from "../lib/pro-cache";
+import {
+  MAX_PRO_ENTRY_MC_USD,
+  MIN_PRO_LIQ_USD,
+  isProBannedToken,
+} from "../lib/solana-memecoin-gate";
 
 const log = logger.child({ module: "pro-scanner" });
 
@@ -49,17 +44,19 @@ const SCAN_INTERVAL_MS = 60_000;
 const STARTUP_DELAY_MS = 12_000;
 
 const MIN_INTEL = 80;
-const MIN_INTEL_STRONG_KOL = 75;
-const MIN_KOL_STRONG = 2;
 const MIN_MC = 5_000;
-const MAX_MC = 500_000;
+const MAX_MC = MAX_PRO_ENTRY_MC_USD; // hard cap — late / major entries out
 /** Cap live GMGN verifies per full cycle to stay under rate limits. */
 const MAX_VERIFY_PER_CYCLE = 12;
+/** Surface / alert bar — precision over volume. */
+const SURFACE_VERY_GOOD = 75;
+const SURFACE_GOOD_STRICT = 68;
 
 type Candidate = {
   token_id: number;
   address: string;
   chain: string;
+  symbol: string | null;
   computed_at: string | Date;
   market_cap_usd: string | null;
   intelligence_score: number;
@@ -76,11 +73,42 @@ function gateTrack(
   intel: number,
   kol: number,
   smart: number,
-): "very_strong" | "strong" | null {
-  if (intel >= MIN_INTEL && (kol >= 1 || smart >= 1)) return "very_strong";
-  if (intel >= MIN_INTEL_STRONG_KOL && kol >= MIN_KOL_STRONG) return "very_strong";
-  if (intel >= MIN_INTEL && kol === 0 && smart === 0) return "strong";
+): "very_strong" | null {
+  // Require smart money — KOL-only / Track C dumps are the main win-rate poison
+  if (intel >= MIN_INTEL && smart >= 1) return "very_strong";
+  if (intel >= 85 && smart >= 1 && kol >= 1) return "very_strong";
   return null;
+}
+
+function holdingCounts(verify: GmgnProVerifyResult | null): { kol: number; smart: number } {
+  if (!verify?.ok) return { kol: 0, smart: 0 };
+  const kolH = verify.wallets.kol.filter(w => w.holding).length;
+  const smartH = verify.wallets.smart.filter(w => w.holding).length;
+  // Prefer currently-holding wallets; fall back to tag totals
+  return {
+    kol: kolH > 0 ? kolH : verify.kolCount,
+    smart: smartH > 0 ? smartH : verify.smartCount,
+  };
+}
+
+function shouldSurface(opts: {
+  qualityLabel: string;
+  score: number;
+  smart: number;
+  hv: number | null;
+  honeypot: boolean | null;
+  liquidityUsd: number | null;
+  calledMc: number;
+}): boolean {
+  if (opts.honeypot === true) return false;
+  if (opts.calledMc < MIN_MC || opts.calledMc > MAX_MC) return false;
+  if (opts.liquidityUsd != null && opts.liquidityUsd > 0 && opts.liquidityUsd < MIN_PRO_LIQ_USD) {
+    return false;
+  }
+  if (opts.smart < 1) return false;
+  if (opts.qualityLabel === "very_good" || opts.score >= SURFACE_VERY_GOOD) return true;
+  const hv = opts.hv ?? 0;
+  return opts.score >= SURFACE_GOOD_STRICT && hv >= 80 && opts.smart >= 1;
 }
 
 async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candidate[]> {
@@ -89,6 +117,7 @@ async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candida
       l.token_id,
       t.address,
       t.chain,
+      t.symbol,
       l.computed_at,
       l.market_cap_usd,
       l.intelligence_score,
@@ -101,10 +130,15 @@ async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candida
       l.status_after
     FROM token_intel_log l
     JOIN tracked_tokens t ON t.id = l.token_id
-    WHERE l.intelligence_score >= ${MIN_INTEL_STRONG_KOL}
+    WHERE l.intelligence_score >= ${MIN_INTEL}
       AND l.market_cap_usd::numeric >= ${MIN_MC}
       AND l.market_cap_usd::numeric <= ${MAX_MC}
       AND l.status_after IN ('new', 'active', 'watch')
+      AND COALESCE(t.status, '') <> 'ignored'
+      AND COALESCE(UPPER(t.symbol), '') NOT IN (
+        'USD1','USDC','USDT','USDS','DAI','UXD','CBBTC','WBTC','BTC','TBTC',
+        'WETH','ETH','SOL','WSOL','PYUSD','MSOL','STSOL','JITOSOL','BSOL'
+      )
       AND NOT EXISTS (SELECT 1 FROM pro_calls pc WHERE pc.token_id = l.token_id)
       ${onlyTokenId ? sql`AND l.token_id = ${onlyTokenId}` : sql``}
     ORDER BY l.token_id, l.computed_at ASC
@@ -173,17 +207,39 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
   verified: number;
 }> {
   let veryStrong = 0;
-  let strong = 0;
+  const strong = 0;
   let verified = 0;
 
-  // Prefer verifying highest-intel first when we must truncate.
   const ordered = [...candidates].sort(
     (a, b) => (b.intelligence_score ?? 0) - (a.intelligence_score ?? 0),
   );
+  // Never insert without live verify — deferred intel_log path removed (dump source)
   const toVerify = ordered.slice(0, MAX_VERIFY_PER_CYCLE);
-  const deferred = ordered.slice(MAX_VERIFY_PER_CYCLE);
+  if (ordered.length > MAX_VERIFY_PER_CYCLE) {
+    opsLog("pro_qualify", "info", `Deferred ${ordered.length - MAX_VERIFY_PER_CYCLE} (verify cap)`, {
+      deferred: ordered.length - MAX_VERIFY_PER_CYCLE,
+    });
+  }
 
   for (const c of toVerify) {
+    const ban = isProBannedToken({
+      address: c.address,
+      symbol: c.symbol,
+      calledMcUsd: parseFloat(c.market_cap_usd ?? "0") || null,
+    });
+    if (ban.banned) {
+      opsLog("pro_qualify", "info", `Banned · ${ban.reason}`, {
+        tokenId: c.token_id,
+        symbol: c.symbol,
+      });
+      await db.execute(sql`
+        UPDATE tracked_tokens
+        SET status = 'ignored', last_status_change_at = NOW()
+        WHERE id = ${c.token_id} AND COALESCE(status, '') <> 'ignored'
+      `);
+      continue;
+    }
+
     const mc = parseFloat(c.market_cap_usd ?? "0") || 0;
     if (mc < MIN_MC || mc > MAX_MC) continue;
 
@@ -195,21 +251,40 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
         verified++;
       }
     } catch (err) {
-      log.warn({ err, tokenId: c.token_id }, "GMGN verify failed (non-fatal)");
+      log.warn({ err, tokenId: c.token_id }, "GMGN verify failed — skip qualify");
+      continue;
     }
 
-    const kol = verify?.ok ? verify.kolCount : Math.max(0, Number(c.holder_kol_count ?? 0));
-    const smart = verify?.ok ? verify.smartCount : Math.max(0, Number(c.holder_smart_count ?? 0));
-    const source = verify?.ok ? "gmgn_live" : "intel_log";
+    // Live verify required — no intel_log / tracked-wallet fallback
+    if (!verify?.ok) {
+      opsLog("pro_qualify", "info", "Skip — GMGN verify failed", { tokenId: c.token_id });
+      continue;
+    }
+
+    if (verify.liquidityUsd != null && verify.liquidityUsd > 0 && verify.liquidityUsd < MIN_PRO_LIQ_USD) {
+      opsLog("pro_qualify", "info", `Skip — liq $${Math.round(verify.liquidityUsd)} < ${MIN_PRO_LIQ_USD}`, {
+        tokenId: c.token_id,
+      });
+      continue;
+    }
+
+    const held = holdingCounts(verify);
+    const kol = held.kol;
+    const smart = held.smart;
     const track = gateTrack(c.intelligence_score, kol, smart);
-    if (!track) continue;
+    if (!track) {
+      opsLog("pro_qualify", "info", `Skip — need smart≥1 (kol=${kol} smart=${smart})`, {
+        tokenId: c.token_id,
+        intel: c.intelligence_score,
+      });
+      continue;
+    }
 
     const inserted = await insertProCall({
-      c, scannerLabel: track, kol, smart, source, verify,
+      c, scannerLabel: track, kol, smart, source: "gmgn_live", verify,
     });
     if (inserted) {
-      if (track === "very_strong") veryStrong++;
-      else strong++;
+      veryStrong++;
       log.info(
         {
           tokenId: c.token_id,
@@ -218,35 +293,20 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
           intel: c.intelligence_score,
           kol,
           smart,
-          source,
+          source: "gmgn_live",
           calledMc: c.market_cap_usd,
+          liq: verify.liquidityUsd,
         },
-        "Pro call registered",
+        "Pro call registered (strict)",
       );
-      opsLog("pro_qualify", "info", `Pro call · ${track} · intel ${c.intelligence_score}`, {
+      opsLog("pro_qualify", "info", `Pro call · smart${smart}·kol${kol} · intel ${c.intelligence_score}`, {
         inserted: true,
         tokenId: c.token_id,
         kol,
         smart,
-        source,
+        source: "gmgn_live",
         mc: c.market_cap_usd,
       });
-    }
-  }
-
-  // Deferred candidates: insert without live verify using raw log counts so we
-  // do not drop them; upgradeStrong / next cycle will re-verify.
-  for (const c of deferred) {
-    const kol = Math.max(0, Number(c.holder_kol_count ?? 0));
-    const smart = Math.max(0, Number(c.holder_smart_count ?? 0));
-    const track = gateTrack(c.intelligence_score, kol, smart);
-    if (!track) continue;
-    const inserted = await insertProCall({
-      c, scannerLabel: track, kol, smart, source: "intel_log", verify: null,
-    });
-    if (inserted) {
-      if (track === "very_strong") veryStrong++;
-      else strong++;
     }
   }
 
@@ -354,6 +414,8 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         pc.ath_multiple,
         pc.quality_label,
         pc.surfaced_at,
+        t.address,
+        t.symbol,
         t.market_cap_usd AS current_mc,
         t.ath_market_cap_usd AS ath_mc_usd,
         t.liquidity_usd,
@@ -410,8 +472,29 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         secRatTraderAmtRate: r.sec_rat_trader_amt_rate != null ? Number(r.sec_rat_trader_amt_rate) : null,
       });
 
-      const qualityLabel = result.qualityLabel;
-      const surfacingNow = qualityLabel === "good" || qualityLabel === "very_good";
+      const ban = isProBannedToken({
+        address: r.address != null ? String(r.address) : null,
+        symbol: r.symbol != null ? String(r.symbol) : null,
+        calledMcUsd: calledMc || null,
+        currentMcUsd: currentMc || null,
+      });
+      const smart = Number(r.called_smart_count ?? 0);
+      const hv = r.called_holder_velocity != null
+        ? Number(r.called_holder_velocity)
+        : (r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null);
+      const liq = parseFloat(String(r.liquidity_usd ?? "0")) || null;
+      // Start from model label, then demote anything that fails strict surface.
+      let qualityLabel = ban.banned ? "below" : result.qualityLabel;
+      const surfacingNow = !ban.banned && shouldSurface({
+        qualityLabel: result.qualityLabel,
+        score: result.score,
+        smart,
+        hv,
+        honeypot: r.sec_is_honeypot as boolean | null,
+        liquidityUsd: liq,
+        calledMc,
+      });
+      if (!surfacingNow) qualityLabel = "below";
       const entryTier: EntryTier = result.entryTier;
 
       // surfaced_mc = MC when first visible in UI (audit), NOT entry price.
@@ -425,11 +508,13 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
           entry_tier = ${entryTier},
           score_version = 'v2',
           quality_label = CASE
-            WHEN ${runStatus} = 'DEAD' AND ${athMultiple} < 2 THEN ${qualityLabel}
+            WHEN ${ban.banned} THEN 'below'
+            WHEN ${runStatus} = 'DEAD' AND ${athMultiple} < 2 THEN 'below'
+            WHEN ${qualityLabel} = 'below' THEN 'below'
             WHEN quality_label = 'very_good' THEN 'very_good'
             WHEN quality_label = 'good' AND ${qualityLabel} = 'very_good' THEN 'very_good'
-            WHEN quality_label = 'good' AND ${qualityLabel} = 'below' THEN 'good'
-            WHEN quality_label = 'good' THEN 'good'
+            WHEN ${qualityLabel} = 'very_good' THEN 'very_good'
+            WHEN ${qualityLabel} = 'good' THEN 'good'
             ELSE ${qualityLabel}
           END,
           surfaced_at = CASE
@@ -505,9 +590,9 @@ export function startProScanner(): void {
   });
 
   eventBus.on("intel:scored", (e: IntelScoredEvent) => {
-    if (e.intelligenceScore < MIN_INTEL_STRONG_KOL) return;
+    if (e.intelligenceScore < MIN_INTEL) return;
     const mc = e.marketCapUsd ? parseFloat(e.marketCapUsd) : 0;
-    if (mc > 0 && mc < MIN_MC) return;
+    if (mc > 0 && (mc < MIN_MC || mc > MAX_MC)) return;
     pipelineQueue.enqueue(
       "pro",
       { tokenId: e.tokenId },
