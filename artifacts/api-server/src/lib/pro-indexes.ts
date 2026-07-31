@@ -177,18 +177,18 @@ async function quarantineBadMcOutcomes(): Promise<void> {
 }
 
 export async function ensureProIndexes(): Promise<void> {
-  // Don't block boot/health — schema + indexes in the background.
-  void (async () => {
-    for (const sqlText of SCHEMA_STATEMENTS) {
-      try {
-        await pool.query(sqlText);
-      } catch (err) {
-        logger.warn({ err, sqlText }, "pro schema ensure failed");
-      }
+  // Schema ALTERs/CREATEs first (Dex agent needs tables before first tick).
+  for (const sqlText of SCHEMA_STATEMENTS) {
+    try {
+      await pool.query(sqlText);
+    } catch (err) {
+      logger.warn({ err, sqlText }, "pro schema ensure failed");
     }
+  }
+  // Indexes + quarantine in the background — CONCURRENTLY must not block boot.
+  void (async () => {
     for (const sqlText of STATEMENTS) {
       try {
-        // CONCURRENTLY cannot run inside a transaction; use bare pool.query.
         await pool.query(sqlText);
       } catch (err) {
         logger.warn({ err, sqlText }, "pro index ensure failed");
