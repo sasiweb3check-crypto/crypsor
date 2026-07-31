@@ -15,7 +15,8 @@ export type OpsKind =
   | "pro_qualify"
   | "telegram"
   | "blocker"
-  | "api";
+  | "api"
+  | "runner";
 
 export type OpsLevel = "info" | "warn" | "error";
 

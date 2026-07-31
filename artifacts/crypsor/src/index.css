@@ -153,3 +153,85 @@ body {
   animation: shimmer-slide 1.35s ease-in-out infinite;
 }
 .shimmer-card { position: relative; overflow: hidden; }
+
+/* Dex — trader companion */
+.dex-body {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px 18px 22px 22px;
+  background:
+    radial-gradient(circle at 35% 30%, rgba(125, 211, 192, 0.22), transparent 45%),
+    linear-gradient(160deg, #14242e, #0b141c);
+  border: 2px solid var(--cryp-teal);
+  position: relative;
+  overflow: hidden;
+  animation: dex-breathe 3.6s ease-in-out infinite;
+}
+.dex-hat {
+  position: absolute;
+  top: 0;
+  left: 18%;
+  right: 18%;
+  height: 7px;
+  border-radius: 0 0 4px 4px;
+  opacity: 0.9;
+}
+.dex-face {
+  position: absolute;
+  inset: 22% 18% 28%;
+}
+.dex-eye {
+  position: absolute;
+  top: 28%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cryp-mint);
+  box-shadow: 0 0 8px rgba(125, 211, 192, 0.45);
+  animation: dex-blink 5.2s ease-in-out infinite;
+}
+.dex-eye.left { left: 18%; }
+.dex-eye.right { right: 18%; }
+.dex-mouth {
+  position: absolute;
+  left: 30%;
+  right: 30%;
+  bottom: 18%;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(230, 238, 242, 0.55);
+  transition: transform 0.35s ease, height 0.35s ease, border-radius 0.35s ease;
+}
+.dex-mood-celebrate .dex-mouth {
+  height: 8px;
+  border-radius: 0 0 8px 8px;
+  background: var(--cryp-gain);
+}
+.dex-mood-warn .dex-mouth {
+  transform: scaleY(-1);
+  background: var(--cryp-loss);
+}
+.dex-mood-entry .dex-mouth {
+  height: 5px;
+  border-radius: 2px 2px 6px 6px;
+  background: var(--cryp-teal);
+}
+.dex-mood-heating .dex-eye {
+  background: var(--cryp-warn);
+  box-shadow: 0 0 8px rgba(212, 160, 23, 0.5);
+}
+.dex-bubble {
+  animation: dex-talk 0.45s ease-out both;
+}
+@keyframes dex-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes dex-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  94% { transform: scaleY(0.15); }
+}
+@keyframes dex-talk {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

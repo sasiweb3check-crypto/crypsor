@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Settings, Activity, Zap, Bell } from "lucide-react";
+import { Settings, Activity, Zap, Bell, Crosshair } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { getApiBase } from "@/lib/api-base";
@@ -15,10 +15,11 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { href: "/",        label: "Runner",  icon: Zap,      desc: "Radar · entry", pro: true },
-  { href: "/alerts",  label: "Alerts",  icon: Bell,     desc: "ENTRY pings", prefetch: "alerts" },
-  { href: "/ops",     label: "Logs",    icon: Activity, desc: "Buys · pipeline" },
-  { href: "/settings",label: "Settings",icon: Settings, desc: "Keys · Telegram" },
+  { href: "/",        label: "Runner",  icon: Zap,       desc: "Radar · entry", pro: true },
+  { href: "/alerts",  label: "Alerts",  icon: Bell,      desc: "ENTRY pings", prefetch: "alerts" },
+  { href: "/trader",  label: "Trader",  icon: Crosshair, desc: "Book · Dex" },
+  { href: "/ops",     label: "Logs",    icon: Activity,  desc: "Buys · pipeline" },
+  { href: "/settings",label: "Settings",icon: Settings,  desc: "Keys · Telegram" },
 ];
 
 function isActive(location: string, href: string) {
