@@ -2,9 +2,9 @@
  * Pro Caller Page — shows only Very Good (≥75) and Good (55–74) tokens
  * sorted by Pro Score by default.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Copy, ExternalLink, Twitter, Send, Globe,
   TrendingUp, Zap, Shield, ShieldCheck, ShieldOff,
@@ -547,14 +547,32 @@ const BASE_URL = getApiBase().replace(/\/$/, "");
 
 export default function Caller() {
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
   const [sortKey, setSortKey]         = useState<SortKey>("proScore");
   const [sortAsc, setSortAsc]         = useState(false);
   // Default: three ATH sections (5× / 10× / 10×+)
   const [qualityFilter, setQF]        = useState<QualityFilter>("sections");
 
   function setSort(key: SortKey) {
-    if (key === sortKey) setSortAsc(v => !v);
-    else { setSortKey(key); setSortAsc(false); }
+    if (key === sortKey) {
+      setSortAsc(v => !v);
+      return;
+    }
+    setSortKey(key);
+    setSortAsc(false);
+    // Age sort while stuck on Sections hides brand-new calls (ATH still ~1×).
+    // Jump to 24h so the newest quality call is visible immediately.
+    if (key === "calledAt" && qualityFilter === "sections") {
+      setQF("24h");
+    }
+  }
+
+  function setAgeFilter(f: QualityFilter) {
+    setQF(f);
+    setSortKey("calledAt");
+    setSortAsc(false);
+    // Force a fresh feed so Age isn't looking at a stale cached list
+    void queryClient.invalidateQueries({ queryKey: ["proHistory", "feed"] });
   }
 
   // ── Data fetching — one slim feed; tab/sort changes are client-side (instant) ─
@@ -562,30 +580,54 @@ export default function Caller() {
   const { data: stats } = useQuery<ProStats>({
     queryKey: ["proStats"],
     queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
-    refetchInterval: 20_000,
-    staleTime:       12_000,
+    refetchInterval: 12_000,
+    staleTime:       6_000,
     refetchOnWindowFocus: true,
   });
 
-  const { data: historyData, isLoading } = useQuery<{
+  const { data: historyData, isLoading, dataUpdatedAt } = useQuery<{
     total: number; totalAll: number; tokens: ProToken[]; latestCalledAt?: string | null;
   }>({
     queryKey: ["proHistory", "feed"],
     queryFn:  () =>
-      fetch(`${BASE_URL}/api/pro/history?quality=feed&sort=calledAt&order=desc&limit=300`)
+      fetch(`${BASE_URL}/api/pro/history?quality=feed&sort=calledAt&order=desc&limit=300&_=${Date.now()}`)
         .then(r => r.json()),
-    refetchInterval: 15_000,
-    staleTime:       12_000,
+    refetchInterval: 10_000,
+    staleTime:       5_000,
     refetchOnWindowFocus: true,
     placeholderData: (prev) => prev,
   });
 
   const feed = historyData?.tokens ?? [];
+
+  // If stats already see a newer call than the feed, refetch feed now (cache lag)
+  useEffect(() => {
+    const statsLatest = stats?.latestCalledAt;
+    if (!statsLatest) return;
+    const feedLatest =
+      historyData?.latestCalledAt ??
+      feed.reduce<string | null>((best, t) => {
+        if (!t.calledAt) return best;
+        if (!best || t.calledAt > best) return t.calledAt;
+        return best;
+      }, null);
+    // Only compare timestamps — totals can differ from feed page size
+    if (!feedLatest || statsLatest > feedLatest) {
+      void queryClient.invalidateQueries({ queryKey: ["proHistory", "feed"] });
+    }
+  }, [stats?.latestCalledAt, historyData?.latestCalledAt, feed, queryClient, dataUpdatedAt]);
+
   const isSections = qualityFilter === "sections";
-  const ageSort = qualityFilter === "recent" || qualityFilter === "1h"
-    || qualityFilter === "6h" || qualityFilter === "24h" || qualityFilter === "7d";
-  const effectiveSort: SortKey = ageSort && sortKey === "proScore" ? "calledAt" : sortKey;
-  const effectiveAsc = ageSort && sortKey === "proScore" ? false : sortAsc;
+  const effectiveSort: SortKey = (qualityFilter === "1h" || qualityFilter === "6h"
+    || qualityFilter === "24h" || qualityFilter === "7d" || qualityFilter === "recent")
+    && sortKey === "proScore"
+    ? "calledAt"
+    : sortKey;
+  const effectiveAsc = (qualityFilter === "1h" || qualityFilter === "6h"
+    || qualityFilter === "24h" || qualityFilter === "7d" || qualityFilter === "recent")
+    && sortKey === "proScore"
+    ? false
+    : sortAsc;
 
   const sorted = useMemo(() => {
     const nowMs = Date.now();
@@ -626,6 +668,15 @@ export default function Caller() {
   const bestAth    = stats?.bestAth ?? null;
   const winRate    = stats?.winRate ?? 0;
 
+  const latestToken = useMemo(() => {
+    if (!feed.length) return null;
+    return [...feed].sort((a, b) => {
+      const ta = parseApiDate(a.calledAt)?.getTime() ?? 0;
+      const tb = parseApiDate(b.calledAt)?.getTime() ?? 0;
+      return tb - ta;
+    })[0] ?? null;
+  }, [feed]);
+
   return (
     <div className="flex flex-col min-h-0 flex-1 gap-3 px-3 py-3 md:px-6 md:py-5 max-w-2xl mx-auto w-full">
 
@@ -645,7 +696,9 @@ export default function Caller() {
             </span>
           </div>
           <p className="text-[9px] text-[#484f58] mt-0.5">
-            Instant filters · called time UTC · Redis-cached feed
+            {latestToken
+              ? `Latest · ${safeSymbol(latestToken.symbol, latestToken.address)} · ${formatTimeAgo(latestToken.calledAt)} ago · Age tabs show all quality (not just 5×+)`
+              : "Instant filters · Age = called time · Sections = 5×+ only"}
           </p>
         </div>
         <div
@@ -723,22 +776,22 @@ export default function Caller() {
           <FilterTab
             label="1h" active={qualityFilter === "1h"}
             count={stats?.recent1hCount ?? ageCounts.h1}
-            onClick={() => setQF("1h")}
+            onClick={() => setAgeFilter("1h")}
           />
           <FilterTab
             label="6h" active={qualityFilter === "6h"}
             count={stats?.recent6hCount ?? ageCounts.h6}
-            onClick={() => setQF("6h")}
+            onClick={() => setAgeFilter("6h")}
           />
           <FilterTab
             label="24h" active={qualityFilter === "recent" || qualityFilter === "24h"}
             count={recentCt}
-            onClick={() => setQF("24h")}
+            onClick={() => setAgeFilter("24h")}
           />
           <FilterTab
             label="7d" active={qualityFilter === "7d"}
             count={stats?.recent7dCount ?? ageCounts.d7}
-            onClick={() => setQF("7d")}
+            onClick={() => setAgeFilter("7d")}
           />
         </div>
 

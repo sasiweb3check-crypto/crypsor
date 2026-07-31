@@ -75,6 +75,29 @@ export async function proCacheSet(key: string, value: unknown, ttlSec: number): 
   }
 }
 
+/** Drop Pro feed/stats caches so a new call is visible on the next request. */
+export async function invalidateProCaches(): Promise<void> {
+  try {
+    for (const key of [...memory.keys()]) {
+      if (key.startsWith("pro:feed:") || key.startsWith("pro:stats:")) memory.delete(key);
+    }
+    const r = await getRedis();
+    if (r) {
+      // Known keys — keep simple (no KEYS scan on Redis)
+      const keys = [
+        "pro:stats:v2",
+        "pro:feed:v2:300",
+        "pro:feed:v2:400",
+        "pro:feed:v2:150",
+        "pro:feed:v2:200",
+      ];
+      if (keys.length) await r.del(...keys);
+    }
+  } catch {
+    /* never break callers */
+  }
+}
+
 /** Normalize PG timestamp-without-tz / Date into ISO UTC string. */
 export function toIsoUtc(value: unknown): string | null {
   if (value == null) return null;
