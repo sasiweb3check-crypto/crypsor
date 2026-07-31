@@ -2,7 +2,7 @@
  * Wallet intel report — search a wallet, enrich GMGN profile,
  * show Crypsor labels / win-rate / observed trades.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import {
@@ -291,6 +291,10 @@ export default function WalletIntelPage() {
   const [refreshTick, setRefreshTick] = useState(0);
   const address = (params.address ?? "").trim();
   const valid = SOL_RE.test(address);
+
+  useEffect(() => {
+    if (params.address) setInput(params.address);
+  }, [params.address]);
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: [...WALLET_INTEL_KEY(address, true), refreshTick],
