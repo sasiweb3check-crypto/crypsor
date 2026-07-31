@@ -20,6 +20,11 @@ import { sql } from "drizzle-orm";
 import { extractSocials } from "../lib/socials";
 import { deriveRunStatus } from "../lib/pro-scoring";
 import { deriveProOutcome, type OutcomeInfo } from "../lib/pro-outcome";
+import {
+  computeConfidence,
+  convictionFieldsFromVerified,
+  type ConfidenceResult,
+} from "../lib/pro-confidence";
 import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
 import { isProBannedToken } from "../lib/solana-memecoin-gate";
 
@@ -100,6 +105,14 @@ type SlimToken = {
   kolSmartSource: string | null;
   /** Why it printed / stalled / died — desk stays sticky; this explains outcome. */
   outcome: OutcomeInfo;
+  /** Entry-only confidence (alert vs watch vs desk). */
+  confidence: {
+    score: number;
+    tier: ConfidenceResult["tier"];
+    label: string;
+    alertEligible: boolean;
+    reasons: string[];
+  };
 };
 
 function parseVwSocials(raw: unknown): { twitter?: string; telegram?: string; website?: string } {
@@ -147,8 +160,8 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  // v6: sticky desk = surfaced_at (not live quality demotion)
-  const cacheKey = `pro:feed:v6:${limit}`;
+  // v7: sticky desk + entry confidence tier
+  const cacheKey = `pro:feed:v7:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -239,6 +252,28 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       honeypot: call.sec_is_honeypot as boolean | null,
       banned: ban.banned,
     });
+    const vwFields = convictionFieldsFromVerified(call.verified_wallets);
+    const ageMin = call.called_at
+      ? (Date.now() - new Date(String(call.called_at)).getTime()) / 60_000
+      : null;
+    const conf = computeConfidence({
+      calledIntelScore: call.called_intel_score != null ? Number(call.called_intel_score) : null,
+      calledSmartCount: Number(call.called_smart_count ?? 0),
+      calledKolCount: Number(call.called_kol_count ?? 0),
+      calledMcUsd: calledMc,
+      calledHolderVelocity: call.called_holder_velocity != null
+        ? Number(call.called_holder_velocity) : null,
+      smartHoldRate: vwFields.smartHoldRate,
+      diamondHands: vwFields.diamondHands,
+      paperHands: vwFields.paperHands,
+      top10HolderRate: vwFields.top10HolderRate,
+      bundlerPct: vwFields.bundlerPct,
+      secIsHoneypot: call.sec_is_honeypot as boolean | null,
+      secMintRenounced: call.sec_mint_renounced as boolean | null,
+      secFreezeRenounced: call.sec_freeze_renounced as boolean | null,
+      ageMinutes: ageMin,
+      gainSinceCallPct: gainSinceCall,
+    });
 
     return {
       id: Number(call.token_id),
@@ -285,6 +320,13 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       conviction: parseConviction(call.verified_wallets),
       kolSmartSource: call.kol_smart_source != null ? String(call.kol_smart_source) : null,
       outcome,
+      confidence: {
+        score: conf.score,
+        tier: conf.tier,
+        label: conf.label,
+        alertEligible: conf.alertEligible,
+        reasons: conf.reasons,
+      },
     };
   });
 
@@ -362,7 +404,7 @@ function filterTokens(tokens: SlimToken[], quality: string): SlimToken[] {
 
 router.get("/pro/stats", async (_req, res) => {
   try {
-    const cacheKey = "pro:stats:v2";
+    const cacheKey = "pro:stats:v3";
     const cached = await proCacheGet<Record<string, unknown>>(cacheKey);
     if (cached) {
       res.json(cached);

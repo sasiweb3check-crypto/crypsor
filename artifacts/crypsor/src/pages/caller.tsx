@@ -40,6 +40,14 @@ interface OutcomeInfo {
   detail: string;
 }
 
+interface ConfidenceInfo {
+  score: number;
+  tier: "alert" | "watch" | "desk";
+  label: string;
+  alertEligible: boolean;
+  reasons: string[];
+}
+
 interface ProToken {
   id: number;
   address: string;
@@ -69,6 +77,7 @@ interface ProToken {
   secIsHoneypot: boolean | null;
   socials: { twitter?: string; telegram?: string; website?: string };
   outcome?: OutcomeInfo | null;
+  confidence?: ConfidenceInfo | null;
 }
 
 interface ProStats {
@@ -157,7 +166,21 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-display text-[15px] font-bold truncate">{safeSymbol(t.symbol, t.address) || "—"}</h3>
-              {t.qualityLabel === "very_good" && (
+              {t.confidence?.tier === "alert" && (
+                <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                  style={{ color: "#0b141c", background: "var(--cryp-mint)" }}
+                  title={(t.confidence.reasons ?? []).join(" · ")}>
+                  Alert {t.confidence.score}
+                </span>
+              )}
+              {t.confidence?.tier === "watch" && (
+                <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                  style={{ color: "var(--cryp-warn)", background: "rgba(212,160,74,0.15)" }}
+                  title={(t.confidence.reasons ?? []).join(" · ")}>
+                  Watch {t.confidence.score}
+                </span>
+              )}
+              {t.qualityLabel === "very_good" && t.confidence?.tier !== "alert" && (
                 <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
                   style={{ color: "var(--cryp-mint)", background: "rgba(61,154,139,0.15)" }}>
                   Elite
@@ -393,7 +416,8 @@ export default function Caller() {
           Caller desk
         </h1>
         <p className="text-[var(--cryp-mute)] text-sm mt-2 max-w-xl leading-relaxed">
-          High-conviction Solana memes verified live on GMGN — smart still holding beats tag counts.
+          Desk lists every surfaced call. Telegram alerts fire only on high-confidence entries
+          (cluster smart+KOL · intel≥90 · $5–15K · mint renounced · fresh).
           {latest?.symbol && (
             <span className="text-[var(--cryp-text)]">
               {" "}Latest · {safeSymbol(latest.symbol, latest.address)}
