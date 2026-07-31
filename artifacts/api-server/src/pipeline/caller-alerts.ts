@@ -31,6 +31,9 @@ const CHECK_INTERVAL_MS = 20_000;
 const STARTUP_DELAY_MS = 20_000;
 const ALERT_MILESTONES = [2, 5, 10, 20] as const;
 
+/** Product default: in-app Calls desk only — no Telegram / push. Opt-in via env. */
+const TELEGRAM_PUSH_ENABLED = process.env.TELEGRAM_PUSH_ENABLED === "true";
+
 async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } | null> {
   try {
     const rows = await db
@@ -339,15 +342,13 @@ function buildMilestoneMessage(t: ProAlertToken, tier: number): string {
 
 async function checkAndAlert(): Promise<void> {
   const t0 = Date.now();
-  const creds = await getTelegramCreds();
-  if (!creds) {
+  const creds = TELEGRAM_PUSH_ENABLED ? await getTelegramCreds() : null;
+  if (TELEGRAM_PUSH_ENABLED && !creds) {
     const last = (checkAndAlert as { _lastNoTg?: number })._lastNoTg ?? 0;
     if (Date.now() - last > 600_000) {
       (checkAndAlert as { _lastNoTg?: number })._lastNoTg = Date.now();
-      opsLog("blocker", "warn", "Telegram not configured — Runner alerts skipped");
+      opsLog("blocker", "warn", "Telegram push enabled but credentials missing");
     }
-    healthMonitor.ok("caller-alerts");
-    return;
   }
 
   const rows = await db.execute(sql`
@@ -451,7 +452,7 @@ async function checkAndAlert(): Promise<void> {
         WHERE id = ${t.proCallId}
       `);
 
-      // Strict wire: never Telegram ENTRY without observation tape
+      // In-app desk: keep scoring. Telegram only when explicitly enabled.
       const snapsOk = observationReady(t.snapCount) && runner.signals.observationReady;
       if (!runner.alertEligible || !snapsOk || runner.phase !== "entry") {
         if (runner.phase === "entry" || runner.rawPhase === "entry") {
@@ -470,6 +471,26 @@ async function checkAndAlert(): Promise<void> {
         skipped++;
         continue;
       }
+
+      // Mark as called in-app even without Telegram push
+      if (!creds) {
+        await db.execute(sql`
+          UPDATE pro_calls
+          SET call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
+              runner_score = ${runner.score},
+              runner_phase = ${runner.phase}
+          WHERE id = ${t.proCallId}
+        `);
+        opsLog("runner", "info", `In-app ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+          velocity: runner.signals.velocity,
+          phase: runner.phase,
+          push: false,
+        });
+        entrySent++;
+        skipped++;
+        continue;
+      }
+
       try {
         await sendTelegram(creds, buildEntryMessage(t, runner));
         await db.execute(sql`
@@ -497,6 +518,8 @@ async function checkAndAlert(): Promise<void> {
       }
       continue;
     }
+
+    if (!creds) continue;
 
     const athX = t.athMultiple ?? 1;
     const already = parseSentTiers(t.milestoneAlertsSent);
@@ -542,8 +565,18 @@ export function startCallerAlerts(): void {
   };
   setTimeout(loop, STARTUP_DELAY_MS);
   log.info(
-    { intervalMs: CHECK_INTERVAL_MS, milestones: ALERT_MILESTONES },
-    "Runner alerts ready (ENTRY momentum + milestones)",
+    {
+      intervalMs: CHECK_INTERVAL_MS,
+      milestones: ALERT_MILESTONES,
+      telegramPush: TELEGRAM_PUSH_ENABLED,
+    },
+    "Runner score loop ready (Telegram push opt-in via TELEGRAM_PUSH_ENABLED)",
   );
-  opsLog("telegram", "info", "Runner alerts loop started");
+  opsLog(
+    "runner",
+    "info",
+    TELEGRAM_PUSH_ENABLED
+      ? "Runner loop started · Telegram push ON"
+      : "Runner loop started · in-app only (no Telegram push)",
+  );
 }

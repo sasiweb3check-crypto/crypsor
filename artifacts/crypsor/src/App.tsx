@@ -5,10 +5,7 @@ import { useEffect } from 'react';
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { AppShell } from '@/components/layout';
-import Caller from '@/pages/caller';
-import AlertsPage from '@/pages/alerts';
-import TraderPage from '@/pages/trader';
-import TokenDetail from '@/pages/token-detail';
+import CallsPage from '@/pages/calls';
 import Settings from '@/pages/settings';
 import OpsPage from '@/pages/ops';
 import NotFound from '@/pages/not-found';
@@ -20,7 +17,6 @@ const queryClient = new QueryClient({
       staleTime: 12_000,
       gcTime: 5 * 60_000,
       refetchOnWindowFocus: false,
-      // Survive Render cold starts / brief CORS blips when switching tabs
       retry: 3,
       retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 8_000),
     },
@@ -32,7 +28,7 @@ function LiveBridge() {
   return null;
 }
 
-function RedirectToPro() {
+function RedirectHome() {
   const [, setLocation] = useLocation();
   useEffect(() => { setLocation('/'); }, [setLocation]);
   return null;
@@ -42,20 +38,20 @@ function Router() {
   return (
     <AppShell>
       <Switch>
-        <Route path="/" component={Caller} />
-        <Route path="/alerts" component={AlertsPage} />
-        <Route path="/trader" component={TraderPage} />
-        <Route path="/pro" component={RedirectToPro} />
-        <Route path="/caller" component={RedirectToPro} />
-        {/* Detail kept for Pro drill-down; other surfaces redirected */}
-        <Route path="/tokens/:id" component={TokenDetail} />
-        <Route path="/dashboard" component={RedirectToPro} />
-        <Route path="/tokens" component={RedirectToPro} />
-        <Route path="/wallets" component={RedirectToPro} />
-        <Route path="/holders" component={RedirectToPro} />
-        <Route path="/intel-log" component={RedirectToPro} />
+        <Route path="/" component={CallsPage} />
         <Route path="/ops" component={OpsPage} />
         <Route path="/settings" component={Settings} />
+        {/* Legacy surfaces removed from product — redirect home */}
+        <Route path="/alerts" component={RedirectHome} />
+        <Route path="/trader" component={RedirectHome} />
+        <Route path="/pro" component={RedirectHome} />
+        <Route path="/caller" component={RedirectHome} />
+        <Route path="/tokens/:id" component={RedirectHome} />
+        <Route path="/dashboard" component={RedirectHome} />
+        <Route path="/tokens" component={RedirectHome} />
+        <Route path="/wallets" component={RedirectHome} />
+        <Route path="/holders" component={RedirectHome} />
+        <Route path="/intel-log" component={RedirectHome} />
         <Route component={NotFound} />
       </Switch>
     </AppShell>

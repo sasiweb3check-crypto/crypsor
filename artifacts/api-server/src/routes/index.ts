@@ -13,6 +13,7 @@ import callerRouter   from "./caller";
 import proRouter      from "./pro";
 import runnerRouter   from "./runner";
 import traderRouter   from "./trader";
+import callsRouter    from "./calls";
 import opsRouter      from "./ops";
 import { sseHandler } from "../pipeline/sse-gateway";
 
@@ -29,6 +30,7 @@ router.use("/assets",    assetsRouter);
 router.use("/holders",   holdersRouter);
 router.use(intelLogRouter);
 router.use(callerRouter);
+router.use(callsRouter);
 router.use(runnerRouter);
 router.use(traderRouter);
 router.use(proRouter);
