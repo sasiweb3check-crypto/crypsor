@@ -39,6 +39,7 @@ import {
   SOLANA_BLOCKED_MINTS,
   checkSolanaMemecoinBuy,
   isBlockedMint,
+  isTransientDexGateReason,
 } from "./solana-memecoin-gate";
 
 // ── Ignore lists ──────────────────────────────────────────────────────────────
@@ -68,6 +69,10 @@ export interface WalletScanResult {
   address: string; chain: string; label: string;
   status: "ok" | "error" | "no_key" | "pending";
   buysFound: number; lastError: string | null;
+  /** Permanent memecoin-gate rejects (blocked / no SOL-USDC / MC). */
+  gateSkipped?: number;
+  /** Buys recorded while Dex was down/rate-limited (fail-open). */
+  gateFailOpen?: number;
 }
 
 export interface MonitorStatus {
@@ -333,6 +338,7 @@ async function scanSolanaWallet(
   const result: WalletScanResult = {
     address: wallet.address, chain: "solana", label: wallet.label,
     status: "pending", buysFound: 0, lastError: null,
+    gateSkipped: 0, gateFailOpen: 0,
   };
 
   const { txs, error } = await fetchHeliusTxs(wallet.address, heliusKey, 100);
@@ -355,6 +361,8 @@ async function scanSolanaWallet(
   }
   let walked = 0;
   const maxWalk = coldStart ? 12 : 100;
+  /** If a soft-deny still happens, do not advance cursor past that sig. */
+  let holdCursor = false;
 
   for (const tx of txs) {
     if (!coldStart && lastKnown && tx.signature === lastKnown) break;
@@ -371,11 +379,24 @@ async function scanSolanaWallet(
       // SOL/USDC pair + symbol/MC gate — skip stables, cbBTC, USD1, etc.
       const gate = await checkSolanaMemecoinBuy(transfer.mint);
       if (!gate.ok) {
+        // Belt: never permanently drop on a transient Dex failure via cursor advance.
+        if (isTransientDexGateReason(gate.reason)) {
+          holdCursor = true;
+          opsLog("wallet_buy", "warn", `Hold cursor · transient Dex · ${gate.reason}`, {
+            mint: transfer.mint.slice(0, 8),
+            walletId: wallet.id,
+          });
+          continue;
+        }
+        result.gateSkipped = (result.gateSkipped ?? 0) + 1;
         opsLog("wallet_buy", "info", `Skipped non-meme · ${gate.reason}`, {
           mint: transfer.mint.slice(0, 8),
           symbol: gate.symbol ?? null,
         });
         continue;
+      }
+      if (gate.reason?.includes("failopen")) {
+        result.gateFailOpen = (result.gateFailOpen ?? 0) + 1;
       }
       // No Dex await for enrich — upsert enriches async; metadata-service also listens.
       const tokenId = await upsertToken(transfer.mint, "solana", {
@@ -394,6 +415,7 @@ async function scanSolanaWallet(
           mint: transfer.mint.slice(0, 8),
           walletId: wallet.id,
           symbol: gate.symbol ?? null,
+          failOpen: gate.reason?.includes("failopen") ?? false,
         });
         eventBus.emit("token:bought", {
           tokenId, tokenAddress: transfer.mint, chain: "solana",
@@ -449,7 +471,13 @@ async function scanSolanaWallet(
     }
   }
 
-  if (txs[0]) await saveHeliusCursor(wallet.id, txs[0].signature);
+  // Never advance past buys we could not classify due to Dex outages.
+  if (txs[0] && !holdCursor) await saveHeliusCursor(wallet.id, txs[0].signature);
+  else if (holdCursor) {
+    opsLog("helius", "warn", `Cursor held · Dex transient on ${wallet.label || wallet.address.slice(0, 6)}`, {
+      walletId: wallet.id,
+    });
+  }
   result.status = "ok";
   return result;
 }
@@ -558,17 +586,23 @@ export async function runScan(): Promise<void> {
   };
 
   const errWallets = results.filter(r => r.status === "error" || r.status === "no_key");
+  const gateSkipped = results.reduce((n, r) => n + (r.gateSkipped ?? 0), 0);
+  const gateFailOpen = results.reduce((n, r) => n + (r.gateFailOpen ?? 0), 0);
   opsLog(
     "scan",
-    errWallets.length ? "warn" : "info",
+    errWallets.length || gateFailOpen > 0 ? "warn" : "info",
     `Scan cycle · ${cycleBuys} new buys · ${results.length}/${monitorStatus.walletsTracked} due wallets` +
-      (errWallets.length ? ` · ${errWallets.length} errors` : ""),
+      (errWallets.length ? ` · ${errWallets.length} errors` : "") +
+      (gateSkipped ? ` · ${gateSkipped} non-meme skipped` : "") +
+      (gateFailOpen ? ` · ${gateFailOpen} Dex fail-open` : ""),
     {
       buys: cycleBuys,
       wallets: results.length,
       tracked: monitorStatus.walletsTracked,
       errors: errWallets.length,
       sampleError: errWallets[0]?.lastError ?? null,
+      gateSkipped,
+      gateFailOpen,
     },
   );
   if (!heliusKey) {

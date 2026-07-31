@@ -82,8 +82,38 @@ type DexPair = {
 
 const eligibilityCache = new Map<string, { expires: number; result: MemecoinGateResult }>();
 
+/** Cap parallel DexScreener calls — bursts of unique mints were cascading into 429s. */
+const DEX_GATE_CONCURRENCY = 3;
+let dexGateInFlight = 0;
+const dexGateWaiters: Array<() => void> = [];
+
+async function withDexGateSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (dexGateInFlight >= DEX_GATE_CONCURRENCY) {
+    await new Promise<void>(resolve => dexGateWaiters.push(resolve));
+  }
+  dexGateInFlight++;
+  try {
+    return await fn();
+  } finally {
+    dexGateInFlight--;
+    const next = dexGateWaiters.shift();
+    if (next) next();
+  }
+}
+
 export function normalizeSymbol(sym: string | null | undefined): string {
   return (sym ?? "").trim().toUpperCase().replace(/^\$/, "");
+}
+
+/** True when a gate reason is a transient Dex outage — never treat as "not a meme". */
+export function isTransientDexGateReason(reason: string | undefined | null): boolean {
+  if (!reason) return false;
+  if (reason === "dex_error" || reason.startsWith("dex_error_")) return true;
+  if (reason.startsWith("dex_http_429")) return true;
+  const m = /^dex_http_(\d+)/.exec(reason);
+  if (!m) return false;
+  const code = Number(m[1]);
+  return code === 429 || code >= 500;
 }
 
 export function isBlockedMint(mint: string): boolean {
@@ -164,8 +194,12 @@ export function evaluateDexPairs(
 }
 
 /**
- * Live DexScreener check (short timeout). Cached ~30m per mint.
- * Fail-open only when Dex is unreachable AND mint is not blocked.
+ * Live DexScreener check (short timeout). Cached ~30m per mint on hard answers.
+ *
+ * Permanent rejects (blocked mint/symbol, no SOL/USDC pair, MC too high) stay
+ * fail-closed. Transient Dex failures (429 / 5xx / network) MUST fail-open:
+ * Helius cursors advance past skipped buys, so a soft-deny permanently drops
+ * real memecoin discoveries. Metadata-service re-checks and ignores junk later.
  */
 export async function checkSolanaMemecoinBuy(mint: string): Promise<MemecoinGateResult> {
   const key = mint.trim();
@@ -174,31 +208,57 @@ export async function checkSolanaMemecoinBuy(mint: string): Promise<MemecoinGate
   const hit = eligibilityCache.get(key);
   if (hit && hit.expires > Date.now()) return hit.result;
 
-  try {
-    const resp = await fetch(
-      `https://api.dexscreener.com/latest/dex/tokens/${key}`,
-      { signal: AbortSignal.timeout(5_000) },
-    );
-    if (!resp.ok) {
-      // Fail-closed on HTTP errors — junk mints were slipping through fail-open.
-      const result: MemecoinGateResult = { ok: false, reason: `dex_http_${resp.status}` };
-      eligibilityCache.set(key, { expires: Date.now() + 2 * 60_000, result });
+  return withDexGateSlot(async () => {
+    // Re-check cache after waiting for a slot (another worker may have filled it).
+    const again = eligibilityCache.get(key);
+    if (again && again.expires > Date.now()) return again.result;
+
+    try {
+      const resp = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${key}`,
+        { signal: AbortSignal.timeout(5_000) },
+      );
+      if (!resp.ok) {
+        const reason = `dex_http_${resp.status}`;
+        if (isTransientDexGateReason(reason)) {
+          // Fail-open — do not poison as "not a meme"; short cache only to ease Dex.
+          const result: MemecoinGateResult = {
+            ok: true,
+            reason: `${reason}_failopen`,
+            quoteOk: false,
+          };
+          eligibilityCache.set(key, { expires: Date.now() + 20_000, result });
+          log.warn({ mint: key.slice(0, 8), status: resp.status }, "Dex gate rate-limit/error — fail-open (record buy)");
+          return result;
+        }
+        // Unexpected 4xx with a body we can't use — fail-open briefly; metadata cleans junk.
+        const result: MemecoinGateResult = {
+          ok: true,
+          reason: `${reason}_failopen`,
+          quoteOk: false,
+        };
+        eligibilityCache.set(key, { expires: Date.now() + 30_000, result });
+        log.warn({ mint: key.slice(0, 8), status: resp.status }, "Dex gate HTTP error — fail-open");
+        return result;
+      }
+      const json = await resp.json() as { pairs?: DexPair[] };
+      const result = evaluateDexPairs(key, json.pairs);
+      eligibilityCache.set(key, { expires: Date.now() + 30 * 60_000, result });
+      if (!result.ok) {
+        log.info({ mint: key.slice(0, 8), reason: result.reason, symbol: result.symbol }, "Memecoin gate rejected buy");
+      }
+      return result;
+    } catch (err) {
+      log.warn({ err, mint: key.slice(0, 8) }, "Dex gate check failed — fail-open");
+      const result: MemecoinGateResult = {
+        ok: true,
+        reason: "dex_error_failopen",
+        quoteOk: false,
+      };
+      eligibilityCache.set(key, { expires: Date.now() + 20_000, result });
       return result;
     }
-    const json = await resp.json() as { pairs?: DexPair[] };
-    const result = evaluateDexPairs(key, json.pairs);
-    eligibilityCache.set(key, { expires: Date.now() + 30 * 60_000, result });
-    if (!result.ok) {
-      log.info({ mint: key.slice(0, 8), reason: result.reason, symbol: result.symbol }, "Memecoin gate rejected buy");
-    }
-    return result;
-  } catch (err) {
-    // Transient network only — short soft-deny so we retry soon (not silent allow).
-    log.debug({ err, mint: key.slice(0, 8) }, "Dex gate check failed — soft deny");
-    const result: MemecoinGateResult = { ok: false, reason: "dex_error" };
-    eligibilityCache.set(key, { expires: Date.now() + 45_000, result });
-    return result;
-  }
+  });
 }
 
 /** Used by Pro qualify / quarantine — symbol + MC sanity without network. */
