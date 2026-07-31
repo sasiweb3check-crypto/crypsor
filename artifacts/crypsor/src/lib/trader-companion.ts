@@ -1,6 +1,6 @@
 /**
- * Dex — desk watcher / observer / trader companion.
- * Rule-based dynamic commentary from book + runner tape. No LLM required.
+ * Dex — desk watcher / observer companion (NOT an auto-trader).
+ * He never places trades. He watches tokens and keeps a live emoji news feed.
  */
 
 import type { RunnerToken } from "@/lib/runner-api";
@@ -12,19 +12,23 @@ import {
   type TraderBook,
   type TraderPosition,
 } from "@/lib/trader-book";
+import type { WatchedToken } from "@/lib/trader-watchlist";
 
 export type CompanionMood = "watching" | "heating" | "entry" | "celebrate" | "warn" | "idle";
 
 export type CompanionLine = {
   mood: CompanionMood;
   text: string;
-  /** Short action chip under the bubble */
   tip?: string;
+  emoji?: string;
+  symbol?: string;
+  at: number;
 };
 
 export type CompanionContext = {
   book: TraderBook;
   feed: RunnerToken[];
+  watchlist?: WatchedToken[];
   focus?: TraderPosition | null;
   justEntered?: boolean;
   justExited?: { multiple: number; symbol: string } | null;
@@ -45,223 +49,362 @@ function tokenById(feed: RunnerToken[], id: number): RunnerToken | undefined {
   return feed.find(t => t.id === id);
 }
 
-/** Build one sharp line for the companion — rotates with time + book state. */
+function fmtMc(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${Math.round(n)}`;
+}
+
+function phaseEmoji(phase: string): string {
+  if (phase === "entry") return "🚀";
+  if (phase === "heating") return "🔥";
+  if (phase === "fading") return "😮‍💨";
+  if (phase === "dead") return "💀";
+  return "👀";
+}
+
+function newsForToken(t: RunnerToken, seed: number, now: number): CompanionLine {
+  const snaps = t.runner.signals.snapCount ?? 0;
+  const vel = t.velocity ?? 1;
+  const gain = t.gainPct ?? 0;
+  const ath = t.athMultiple ?? 1;
+  const phase = t.runner.phase;
+  const sym = t.symbol ?? "?";
+  const mc = fmtMc(t.currentMcUsd);
+  const emoji = phaseEmoji(phase);
+  const blockers = t.runner.blockers ?? [];
+  const reasons = t.runner.reasons ?? [];
+
+  const lines: CompanionLine[] = [];
+
+  if (phase === "entry" && t.runner.alertEligible) {
+    lines.push({
+      mood: "entry",
+      emoji: "🚨",
+      symbol: sym,
+      tip: "ENTRY LIVE",
+      text: `🚨 NEWS · $${sym} cleared the tape (${snaps}/5) — ENTRY lane is HOT. Vel ${vel.toFixed(2)}× · MC ${mc}. Size small, aim 3× 🎯`,
+      at: now,
+    });
+  } else if (phase === "entry" || (phase === "heating" && snaps < 5)) {
+    lines.push({
+      mood: "heating",
+      emoji: "⏳",
+      symbol: sym,
+      tip: `${snaps}/5 snaps`,
+      text: `⏳ NEWS · $${sym} wants ENTRY energy but snaps are ${snaps}/5. Don't ape the wick — Dex is still observing 👀`,
+      at: now,
+    });
+  }
+
+  if (phase === "heating") {
+    lines.push({
+      mood: "heating",
+      emoji: "🔥",
+      symbol: sym,
+      tip: "Heating",
+      text: `🔥 NEWS · $${sym} heating up · vel ${vel.toFixed(2)}× · gain ${gain >= 0 ? "+" : ""}${Math.round(gain)}% · ATH ${ath.toFixed(1)}× · MC ${mc}`,
+      at: now,
+    });
+    lines.push({
+      mood: "watching",
+      emoji: "📡",
+      symbol: sym,
+      tip: "Watching",
+      text: `📡 UPDATE · $${sym} on my board. ${reasons[0] ?? "Momentum building"}. ${snaps < 5 ? `Tape ${snaps}/5 — patience 🧘‍♂️` : "Tape ready — wait for clean velocity ✅"}`,
+      at: now,
+    });
+  }
+
+  if (phase === "radar") {
+    lines.push({
+      mood: "watching",
+      emoji: "👀",
+      symbol: sym,
+      tip: "Radar",
+      text: `👀 NEWS · $${sym} on radar · MC ${mc} · intel ${t.calledIntel ?? "—"} · ${t.calledSmart}S/${t.calledKol}K. No FOMO yet 🧊`,
+      at: now,
+    });
+  }
+
+  if (phase === "fading") {
+    lines.push({
+      mood: "warn",
+      emoji: "😮‍💨",
+      symbol: sym,
+      tip: "Fading",
+      text: `😮‍💨 NEWS · $${sym} fading · vel ${vel.toFixed(2)}× · gain ${Math.round(gain)}%. Don't catch this knife 🗡️`,
+      at: now,
+    });
+  }
+
+  if (phase === "dead") {
+    lines.push({
+      mood: "warn",
+      emoji: "💀",
+      symbol: sym,
+      tip: "Dead",
+      text: `💀 NEWS · $${sym} looks dead on the desk. Tourist bags only — skip 🚫`,
+      at: now,
+    });
+  }
+
+  if (gain >= 100) {
+    lines.push({
+      mood: "celebrate",
+      emoji: "💎",
+      symbol: sym,
+      tip: "Runner",
+      text: `💎 NEWS · $${sym} already +${Math.round(gain)}% from call. Late chase = exit liquidity for early wallets ⚠️`,
+      at: now,
+    });
+  }
+
+  if (blockers[0]) {
+    lines.push({
+      mood: "warn",
+      emoji: "🛑",
+      symbol: sym,
+      tip: "Hold up",
+      text: `🛑 DEX TIP · $${sym}: ${blockers[0]}. Don't force the entry 🙅`,
+      at: now,
+    });
+  }
+
+  if (lines.length === 0) {
+    lines.push({
+      mood: "watching",
+      emoji,
+      symbol: sym,
+      tip: "Watching",
+      text: `${emoji} NEWS · Still watching $${sym} · MC ${mc} · vel ${vel.toFixed(2)}× · snaps ${snaps}/5`,
+      at: now,
+    });
+  }
+
+  return pick(lines, seed + t.id);
+}
+
+/** Headline bubble — rotates; prefers watchlist + open book. */
 export function companionSpeak(ctx: CompanionContext): CompanionLine {
   const now = ctx.now ?? Date.now();
-  const tick = Math.floor(now / 12_000); // rotate ~every 12s
+  const tick = Math.floor(now / 8_000);
   const live = liveMap(ctx.feed);
   const stats = computeBookStats(ctx.book, live);
   const open = ctx.book.positions.filter(isOpen);
-  const heating = ctx.feed.filter(t => t.runner.phase === "heating");
-  const entry = ctx.feed.filter(t => t.runner.phase === "entry" || t.runner.alertEligible);
-  const observing = ctx.feed.filter(
-    t => (t.runner.signals.snapCount ?? 0) < 5
-      && (t.runner.phase === "heating" || t.runner.phase === "radar"),
-  );
+  const watchIds = new Set((ctx.watchlist ?? []).map(w => w.tokenId));
 
-  // Event priority
   if (ctx.justExited) {
     const m = ctx.justExited.multiple;
     if (m >= 3) {
       return {
         mood: "celebrate",
-        text: `${ctx.justExited.symbol} printed ${m.toFixed(1)}×. That's the job — bank it, don't invent a fourth act.`,
-        tip: "3×+ locked",
+        emoji: "🥳",
+        tip: "3×+ BANKED",
+        text: `🥳 BOOM · $${ctx.justExited.symbol} printed ${m.toFixed(1)}×! That's the job — bank it, don't invent act 4 💰`,
+        at: now,
       };
     }
     if (m >= 1.5) {
       return {
         mood: "entry",
-        text: `${ctx.justExited.symbol} closed ${m.toFixed(1)}×. Fine cut. Size the next one from bankroll, not ego.`,
-        tip: "Partial win",
+        emoji: "✅",
+        tip: "Solid cut",
+        text: `✅ CLOSED · $${ctx.justExited.symbol} at ${m.toFixed(1)}×. Fine work. Reload from bankroll, not ego 🧠`,
+        at: now,
       };
     }
     return {
       mood: "warn",
-      text: `${ctx.justExited.symbol} exited ${m.toFixed(2)}×. Losses are tuition — don't revenge-click the same tape.`,
-      tip: "Reset",
+      emoji: "📉",
+      tip: "Lesson",
+      text: `📉 EXIT · $${ctx.justExited.symbol} at ${m.toFixed(2)}×. Tuition paid — no revenge clicks 🧘`,
+      at: now,
     };
   }
 
   if (ctx.justEntered && ctx.focus) {
     return {
       mood: "entry",
-      text: `In on ${ctx.focus.symbol} at $${Math.round(ctx.focus.entryMcUsd).toLocaleString()}. Target ${ctx.focus.targetMultiple}×. I'm watching the snaps — you watch your size.`,
+      emoji: "🎯",
       tip: `Aim ${ctx.focus.targetMultiple}×`,
+      symbol: ctx.focus.symbol,
+      text: `🎯 IN · $${ctx.focus.symbol} @ ${fmtMc(ctx.focus.entryMcUsd)}. Target ${ctx.focus.targetMultiple}×. I'll keep the news rolling — you manage size 💪`,
+      at: now,
     };
   }
 
-  // Focused position coaching
   if (ctx.focus && isOpen(ctx.focus)) {
     const t = tokenById(ctx.feed, ctx.focus.tokenId);
     const mult = positionMultiple(ctx.focus, live[ctx.focus.tokenId]);
-    const target = ctx.focus.targetMultiple || 3;
     if (hitTarget(ctx.focus, live[ctx.focus.tokenId])) {
       return {
         mood: "celebrate",
-        text: `${ctx.focus.symbol} is ${mult.toFixed(1)}× — target hit. Take the win or trail tight. Green that doesn't leave the book isn't green.`,
-        tip: "Exit available",
+        emoji: "🏁",
+        tip: "Target hit",
+        symbol: ctx.focus.symbol,
+        text: `🏁 ALERT · $${ctx.focus.symbol} is ${mult.toFixed(1)}× — TARGET HIT! Take the win or trail tight 💸`,
+        at: now,
       };
     }
-    if (t?.runner.phase === "fading" || t?.runner.phase === "dead") {
-      return {
-        mood: "warn",
-        text: `${ctx.focus.symbol} looks ${t.runner.phase}. Don't average down on a corpse. Exit or accept the lesson.`,
-        tip: "Don't chase",
-      };
-    }
-    if (mult < 0.7) {
-      return {
-        mood: "warn",
-        text: `${ctx.focus.symbol} is underwater at ${mult.toFixed(2)}×. Patience ≠ stubbornness. If velocity dies, you leave.`,
-        tip: "Protect stake",
-      };
-    }
-    if (t && (t.runner.signals.snapCount ?? 0) < 5) {
-      return {
-        mood: "watching",
-        text: `Tape on ${ctx.focus.symbol} is thin — ${t.runner.signals.snapCount ?? 0}/5 snaps. System won't call ENTRY early; neither should you FOMO size.`,
-        tip: "Observe",
-      };
-    }
-    return pick([
-      {
-        mood: "watching" as const,
-        text: `${ctx.focus.symbol} at ${mult.toFixed(2)}× toward ${target}×. Sit on hands. Let velocity prove it.`,
-        tip: "Hold thesis",
-      },
-      {
-        mood: "heating" as const,
-        text: `Still in ${ctx.focus.symbol}. I'm watching MC vs your entry — no new bags until this one speaks.`,
-        tip: "One idea",
-      },
-    ], tick + ctx.focus.tokenId);
+    if (t) return newsForToken(t, tick, now);
+    return {
+      mood: "watching",
+      emoji: "📡",
+      tip: "Holding",
+      symbol: ctx.focus.symbol,
+      text: `📡 BOOK · $${ctx.focus.symbol} at ${mult.toFixed(2)}× toward ${ctx.focus.targetMultiple}×. Sitting on hands ✋`,
+      at: now,
+    };
   }
 
-  // Desk-wide coaching
+  // Watched tokens — Dex keeps commenting
+  const watchedLive = (ctx.watchlist ?? [])
+    .map(w => tokenById(ctx.feed, w.tokenId))
+    .filter((t): t is RunnerToken => !!t);
+  if (watchedLive.length > 0) {
+    const t = pick(watchedLive, tick);
+    return newsForToken(t, tick + 3, now);
+  }
+
   const hitOpen = open.find(p => hitTarget(p, live[p.tokenId]));
   if (hitOpen) {
     return {
       mood: "celebrate",
-      text: `${hitOpen.symbol} crossed ${hitOpen.targetMultiple}× on your book. Don't let a runner become a round-trip.`,
+      emoji: "🎉",
       tip: "Take profit?",
+      symbol: hitOpen.symbol,
+      text: `🎉 BOOK NEWS · $${hitOpen.symbol} crossed ${hitOpen.targetMultiple}×. Don't let a runner become a round-trip 🔄`,
+      at: now,
     };
   }
 
   if (stats.openCount >= 4) {
     return {
       mood: "warn",
-      text: `${stats.openCount} open bags. You're a watcher, not a collector. Cap risk — close the weakest.`,
+      emoji: "⚠️",
       tip: "Too many opens",
+      text: `⚠️ RISK · ${stats.openCount} open bags. You're a watcher, not a collector. Cut the weakest ✂️`,
+      at: now,
     };
   }
 
-  if (entry.length > 0) {
-    const e = pick(entry, tick);
-    const snaps = e.runner.signals.snapCount ?? 0;
-    if (e.runner.alertEligible && e.runner.signals.observationReady) {
-      return {
-        mood: "entry",
-        text: `${e.symbol} cleared observation (${snaps} snaps) — ENTRY lane is live. Size small, target 3×, ignore the chat FOMO.`,
-        tip: "System ENTRY",
-      };
-    }
-    return {
-      mood: "heating",
-      text: `${e.symbol} wants ENTRY energy but tape is ${snaps}/5. Wait — early is how you donate to someone else's exit.`,
-      tip: "Patience",
-    };
+  // Auto desk watch — heating / entry / thin-tape
+  const deskNews = ctx.feed.filter(
+    t => t.runner.phase === "entry" || t.runner.phase === "heating"
+      || ((t.runner.signals.snapCount ?? 0) < 5 && t.runner.phase === "radar"),
+  );
+  if (deskNews.length > 0) {
+    const t = pick(deskNews, tick);
+    return newsForToken(t, tick, now);
   }
 
-  if (heating.length > 0) {
-    const h = pick(heating, tick);
-    const snaps = h.runner.signals.snapCount ?? 0;
-    return pick([
-      {
-        mood: "heating" as const,
-        text: `${h.symbol} heating · vel ${h.velocity.toFixed(2)}× · snaps ${snaps}/5. Watch, don't leap. Observation is the edge.`,
-        tip: "Heating",
-      },
-      {
-        mood: "watching" as const,
-        text: `I like the structure on ${h.symbol}, but I don't buy stories — I buy confirmed velocity after five snaps.`,
-        tip: "Observe first",
-      },
-    ], tick);
-  }
-
-  if (observing.length > 0) {
-    const o = pick(observing, tick);
+  if (open.length > 0) {
+    const p = pick(open, tick);
+    const mult = positionMultiple(p, live[p.tokenId]);
     return {
       mood: "watching",
-      text: `${o.symbol} still building tape (${o.runner.signals.snapCount ?? 0}/5). Good. Bored traders click buttons; paid traders wait.`,
-      tip: "Building tape",
+      emoji: "📊",
+      tip: "Book check",
+      symbol: p.symbol,
+      text: `📊 BOOK · $${p.symbol} ${mult.toFixed(2)}× · open P&L ${stats.openPnl >= 0 ? "+" : ""}$${Math.round(stats.openPnl)} · equity $${Math.round(stats.equity).toLocaleString()} 💼`,
+      at: now,
     };
   }
 
-  if (stats.hits3x > 0 && tick % 5 === 0) {
-    return {
-      mood: "celebrate",
-      text: `Book has ${stats.hits3x}× at 3×+. Equity $${Math.round(stats.equity).toLocaleString()}. Protect the streak — no hero size.`,
-      tip: "Keep edge",
-    };
-  }
-
-  if (open.length === 0) {
+  if (watchIds.size === 0) {
     return pick([
       {
         mood: "idle" as const,
-        text: "Desk is quiet. I'm watching radar. No forced entries — cash is a position.",
+        emoji: "🧘",
         tip: "Stand by",
+        text: "🧘 Desk quiet. Hit Watch on any token and I'll keep the emoji news rolling 📰 — I don't auto-trade, I auto-watch.",
+        at: now,
       },
       {
         mood: "watching" as const,
-        text: "Scanner's hunting early wallets. We don't copy them — we wait for the runner to prove itself.",
+        emoji: "📡",
         tip: "Radar on",
+        text: "📡 Scanning early wallets… we don't copy them. We wait for 5 snaps + velocity 🔥",
+        at: now,
       },
       {
         mood: "idle" as const,
-        text: "Don't buy boredom. When Heating stacks five snaps and velocity holds, we talk size.",
-        tip: "Rules over feels",
+        emoji: "🧊",
+        tip: "Cash is a position",
+        text: "🧊 No forced entries. Bored traders click. Dex waits for Heating with a full tape ✅",
+        at: now,
       },
     ], tick);
   }
 
-  const weak = open
-    .map(p => ({ p, m: positionMultiple(p, live[p.tokenId]) }))
-    .sort((a, b) => a.m - b.m)[0];
-  if (weak && weak.m < 0.85) {
-    return {
-      mood: "warn",
-      text: `${weak.p.symbol} dragging at ${weak.m.toFixed(2)}×. Cut or thesis-check — hope isn't a multiple.`,
-      tip: "Review loser",
-    };
-  }
-
-  return pick([
-    {
-      mood: "watching" as const,
-      text: `${stats.openCount} open · unrealized ${stats.openPnl >= 0 ? "+" : ""}$${Math.round(stats.openPnl)}. Stay patient — 3× is the north star.`,
-      tip: "Book check",
-    },
-    {
-      mood: "heating" as const,
-      text: "I'm the slow trader in the room on purpose. Fast money is usually someone else's exit liquidity.",
-      tip: "Slow is smooth",
-    },
-  ], tick + stats.openCount);
+  return {
+    mood: "watching",
+    emoji: "👀",
+    tip: "Watching",
+    text: `👀 ${watchIds.size} on my watchlist — feed lagging a sec. Still here, still talking 🗣️`,
+    at: now,
+  };
 }
 
-/** Extra one-liners when user hovers / taps companion. */
+/** Rolling news ticker lines for watched + open + hot desk tokens. */
+export function companionNewsFeed(ctx: CompanionContext, limit = 8): CompanionLine[] {
+  const now = ctx.now ?? Date.now();
+  const tick = Math.floor(now / 6_000);
+  const out: CompanionLine[] = [];
+  const seen = new Set<string>();
+
+  const push = (line: CompanionLine) => {
+    const key = `${line.symbol ?? ""}:${line.text.slice(0, 40)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(line);
+  };
+
+  // Headline first
+  push(companionSpeak(ctx));
+
+  const watched = (ctx.watchlist ?? [])
+    .map(w => tokenById(ctx.feed, w.tokenId))
+    .filter((t): t is RunnerToken => !!t);
+
+  watched.forEach((t, i) => push(newsForToken(t, tick + i * 7, now - i * 1_000)));
+
+  for (const p of ctx.book.positions.filter(isOpen).slice(0, 4)) {
+    const t = tokenById(ctx.feed, p.tokenId);
+    if (t) {
+      const mult = positionMultiple(p, t.currentMcUsd);
+      push({
+        mood: hitTarget(p, t.currentMcUsd) ? "celebrate" : "watching",
+        emoji: hitTarget(p, t.currentMcUsd) ? "🏁" : "📌",
+        tip: isOpen(p) ? `${mult.toFixed(2)}×` : "Closed",
+        symbol: p.symbol,
+        text: hitTarget(p, t.currentMcUsd)
+          ? `🏁 BOOK · $${p.symbol} HIT ${p.targetMultiple}× target (${mult.toFixed(1)}× live) — exit time? 💰`
+          : `📌 BOOK · Holding $${p.symbol} @ ${fmtMc(p.entryMcUsd)} → now ${fmtMc(t.currentMcUsd)} · ${mult.toFixed(2)}× toward ${p.targetMultiple}×`,
+        at: now,
+      });
+    }
+  }
+
+  const hot = ctx.feed
+    .filter(t => t.runner.phase === "entry" || t.runner.phase === "heating")
+    .slice(0, 6);
+  hot.forEach((t, i) => push(newsForToken(t, tick + 11 + i, now)));
+
+  return out.slice(0, limit);
+}
+
 export function companionBanter(seed: number): string {
   return pick([
-    "Don't ape the first green candle. Tape first.",
-    "If you need a tip: never market-buy a fading phase.",
-    "3× and leave. Greed writes the postmortem.",
-    "Smart wallets dump. We use them as sensors, not heroes.",
-    "Observation snaps exist so you don't marry a wick.",
-    "Size so wrong feels boring. Right can still print.",
-    "I'm watching. You're clicking. Let's not reverse those jobs.",
-    "No tagged presence + no velocity = sightseeing, not trading.",
+    "🗣️ Reminder: I comment — YOU click. I'm not an auto-trader 🤖❌",
+    "🔥 Tip: never market-buy a fading phase. That's how bags get heavy 🎒",
+    "🎯 3× and leave. Greed writes the postmortem 📝",
+    "👀 Smart wallets dump. Sensors, not heroes 🛰️",
+    "⏳ 5 snaps exist so you don't marry a wick 🕯️",
+    "🧘 Size so a wrong trade feels boring. Right can still print 💵",
+    "📰 Hit Watch and I'll spam the news (with love + emojis)",
+    "🛑 No tagged presence + no velocity = sightseeing, not trading 🎟️",
   ], seed);
 }
