@@ -37,89 +37,102 @@
 }
 
 :root {
-  --radius: 0.25rem;
+  --radius: 0.5rem;
 
-  /* ── Bloomberg Terminal Dark Theme ──────────────────────────────────── */
-  --background:              215 28% 7%;    /* #0d1117 */
-  --foreground:              210 17% 82%;   /* #c9d1d9 */
-  --card:                    214 21% 11%;   /* #161b22 */
-  --card-foreground:         210 17% 82%;
-  --popover:                 214 21% 11%;
-  --popover-foreground:      210 17% 82%;
-  --primary:                 38 92% 50%;    /* #f59e0b amber */
-  --primary-foreground:      215 28% 7%;
-  --secondary:               212 14% 16%;  /* #1c2128 */
-  --secondary-foreground:    210 17% 82%;
-  --muted:                   212 14% 16%;
-  --muted-foreground:        210 12% 57%;  /* #8b949e */
-  --accent:                  212 14% 16%;
-  --accent-foreground:       210 17% 82%;
-  --destructive:             0 84% 60%;    /* #ef4444 */
-  --border:                  212 12% 21%;  /* #30363d */
-  --input:                   212 12% 21%;
-  --ring:                    38 92% 50%;
+  /* Ink desk — teal conviction, not amber terminal */
+  --background:              200 40% 4%;
+  --foreground:              190 20% 92%;
+  --card:                    200 32% 7%;
+  --card-foreground:         190 20% 92%;
+  --popover:                 200 32% 7%;
+  --popover-foreground:      190 20% 92%;
+  --primary:                 168 48% 42%;
+  --primary-foreground:      200 40% 4%;
+  --secondary:               200 24% 12%;
+  --secondary-foreground:    190 16% 82%;
+  --muted:                   200 24% 12%;
+  --muted-foreground:        198 12% 55%;
+  --accent:                  200 24% 12%;
+  --accent-foreground:       190 20% 92%;
+  --destructive:             4 72% 58%;
+  --border:                  200 18% 16%;
+  --input:                   200 18% 16%;
+  --ring:                    168 48% 42%;
 
-  --sidebar:                 215 28% 7%;
-  --sidebar-foreground:      210 17% 82%;
-  --sidebar-primary:         38 92% 50%;
-  --sidebar-primary-foreground: 215 28% 7%;
-  --sidebar-accent:          212 14% 16%;
-  --sidebar-accent-foreground: 210 17% 82%;
-  --sidebar-border:          212 12% 21%;
-  --sidebar-ring:            38 92% 50%;
+  --sidebar:                 200 40% 3%;
+  --sidebar-foreground:      190 20% 92%;
+  --sidebar-primary:         168 48% 42%;
+  --sidebar-primary-foreground: 200 40% 4%;
+  --sidebar-accent:          200 24% 10%;
+  --sidebar-accent-foreground: 190 20% 92%;
+  --sidebar-border:          200 18% 14%;
+  --sidebar-ring:            168 48% 42%;
+
+  --cryp-ink: #050a0f;
+  --cryp-surface: #0b141c;
+  --cryp-elevated: #101b24;
+  --cryp-line: rgba(125, 180, 170, 0.12);
+  --cryp-teal: #3d9a8b;
+  --cryp-mint: #7dd3c0;
+  --cryp-text: #e6eef2;
+  --cryp-mute: #7a8f99;
+  --cryp-gain: #3ecf8e;
+  --cryp-loss: #e85d5d;
+  --cryp-warn: #d4a017;
 }
-
-/* ── Base ─────────────────────────────────────────────────────────────── */
 
 * { box-sizing: border-box; }
 
 html, body { height: 100%; }
 
 body {
-  background-color: #0d1117;
-  color: #c9d1d9;
-  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  background-color: var(--cryp-ink);
+  color: var(--cryp-text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar */
+.font-display {
+  font-family: Syne, "IBM Plex Sans", sans-serif;
+}
+
+.font-mono-num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: #0d1117; }
-::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #484f58; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(125, 180, 170, 0.25); border-radius: 2px; }
 
-/* ── Pulsing dot ─────────────────────────────────────────────────────── */
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
-  50%       { opacity: 0.8; transform: scale(0.9); box-shadow: 0 0 0 4px rgba(34,197,94,0); }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.7; transform: scale(0.92); }
 }
-.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+.pulse-dot { animation: pulse-dot 2.2s ease-in-out infinite; }
 
-/* ── Amber glow ──────────────────────────────────────────────────────── */
-.glow-amber { box-shadow: 0 0 12px rgba(245,158,11,0.2); }
-
-/* ── Terminal gradient text ──────────────────────────────────────────── */
-.gradient-text {
-  background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-.gradient-text-pink {
-  background: linear-gradient(135deg, #f59e0b 0%, #22c55e 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
+.fade-up { animation: fade-up 0.45s ease-out both; }
+.fade-up-delay-1 { animation-delay: 0.06s; }
+.fade-up-delay-2 { animation-delay: 0.12s; }
+.fade-up-delay-3 { animation-delay: 0.18s; }
 
-/* ── pb-safe for mobile ─────────────────────────────────────────────── */
 .pb-safe { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
-
-/* ── Hide scrollbar but keep scroll ─────────────────────────────────── */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-@layer base {
-  * { @apply border-border outline-ring/50; }
+.desk-surface {
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(61, 154, 139, 0.14), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 90% 0%, rgba(20, 80, 90, 0.18), transparent 50%),
+    var(--cryp-ink);
+}
+
+.desk-card {
+  background: linear-gradient(165deg, rgba(16, 27, 36, 0.95), rgba(11, 20, 28, 0.9));
+  border: 1px solid var(--cryp-line);
 }

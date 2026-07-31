@@ -47,6 +47,17 @@ export interface ProScoreV2Input {
   calledMcGrowth?: number | null;
   calledVolumeIntensity?: number | null;
 
+  /** Fraction 0–1 of tagged smart wallets still holding (from GMGN verify). */
+  smartHoldRate?: number | null;
+  /** Fraction 0–1 of tagged KOL wallets still holding. */
+  kolHoldRate?: number | null;
+  /** Paper-hands count among smart sample. */
+  smartPaperHands?: number | null;
+  /** Diamond-hands count among smart+kol sample. */
+  diamondHands?: number | null;
+  /** Combined KOL+smart supply % still held (0–100). */
+  smartKolSupplyPct?: number | null;
+
   currentMcUsd: number | null;
   athMultiple: number | null;
   gainSinceCall: number | null;
@@ -132,36 +143,66 @@ function scoreHolderVelocity(
 }
 
 /**
- * Smart / KOL scoring from 14d quality Pro outcomes:
- *   • Smart ≥1 lifts hit5 (≈32% vs 18% at 0); smart 2–5 best avg ATH
- *   • KOL 1 is the volume sweet spot; raw KOL count alone is weak predictor
- *   • Prefer smart conviction + modest KOL (1–3) over KOL spam (4–9 without smart)
+ * Smart / KOL scoring — counts matter less than currently-holding conviction.
+ * Paper hands dump → demote hard. Diamond + high hold-rate → boost.
  */
-function scoreSmartMoney(kol: number, smart: number): number {
+function scoreSmartMoney(
+  kol: number,
+  smart: number,
+  opts?: {
+    smartHoldRate?: number | null;
+    kolHoldRate?: number | null;
+    smartPaperHands?: number | null;
+    diamondHands?: number | null;
+    smartKolSupplyPct?: number | null;
+  },
+): number {
   const k = Math.max(0, kol);
   const s = Math.max(0, smart);
 
   let smartScore: number;
   if (s <= 0) smartScore = 20;
   else if (s === 1) smartScore = 62;
-  else if (s <= 5) smartScore = 88;   // sweet band
+  else if (s <= 5) smartScore = 88;
   else if (s <= 15) smartScore = 78;
-  else smartScore = 70;               // crowded / late
+  else smartScore = 70;
 
   let kolScore: number;
   if (k <= 0) kolScore = 30;
   else if (k === 1) kolScore = 75;
   else if (k <= 3) kolScore = 82;
-  else if (k <= 9) kolScore = 55;     // noisy without matching smart
+  else if (k <= 9) kolScore = 55;
   else kolScore = 60;
 
-  // Smart carries more weight — data showed smart band moves hit rates more than KOL alone
-  let score = smartScore * 0.62 + kolScore * 0.38;
+  let score = smartScore * 0.55 + kolScore * 0.25;
 
-  // Combo bonus: KOL 1–3 with smart 2–5 (MarsCoin-class early conviction)
-  if (k >= 1 && k <= 3 && s >= 2 && s <= 5) score += 10;
-  if (k >= 1 && s >= 1) score += 4;
+  const shr = opts?.smartHoldRate;
+  const khr = opts?.kolHoldRate;
+  if (shr != null && Number.isFinite(shr)) {
+    // 0% holding smart → crash; 100% holding → full bonus
+    score += (shr - 0.5) * 40;
+  }
+  if (khr != null && Number.isFinite(khr)) {
+    score += (khr - 0.5) * 16;
+  }
+
+  const paper = opts?.smartPaperHands ?? 0;
+  const diamond = opts?.diamondHands ?? 0;
+  if (paper >= 3) score -= 18;
+  else if (paper >= 1) score -= 8;
+  if (diamond >= 2) score += 10;
+  else if (diamond >= 1) score += 5;
+
+  const supply = opts?.smartKolSupplyPct ?? 0;
+  if (supply >= 5) score += 8;
+  else if (supply >= 1) score += 4;
+  else if (s + k > 0 && supply < 0.05) score -= 12; // tagged but emptied bags
+
+  if (k >= 1 && k <= 3 && s >= 2 && s <= 5) score += 8;
+  if (k >= 1 && s >= 1) score += 3;
   if (k === 0 && s === 0) score = 22;
+  // No currently-holding smart is a hard demotion even if tags say smart>0
+  if (s >= 1 && shr != null && shr <= 0) score = Math.min(score, 28);
 
   return clamp(score);
 }
@@ -291,7 +332,13 @@ export function computeProScoreV2(inp: ProScoreV2Input): ProScoreV2Result {
       inp.calledVolumeIntensity,
     ),
     holderVelocity: scoreHolderVelocity(inp.calledHolderVelocity, inp.holderVelocityScore),
-    smartMoney: scoreSmartMoney(inp.calledKolCount, inp.calledSmartCount),
+    smartMoney: scoreSmartMoney(inp.calledKolCount, inp.calledSmartCount, {
+      smartHoldRate: inp.smartHoldRate,
+      kolHoldRate: inp.kolHoldRate,
+      smartPaperHands: inp.smartPaperHands,
+      diamondHands: inp.diamondHands,
+      smartKolSupplyPct: inp.smartKolSupplyPct,
+    }),
     survival: survivalScore,
     security: scoreSecurity(inp),
     liveMomentum: scoreLiveMomentum(inp.gainSinceCall, inp.runStatus, inp.athMultiple),

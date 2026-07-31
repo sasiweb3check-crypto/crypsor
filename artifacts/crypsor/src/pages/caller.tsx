@@ -1,28 +1,35 @@
 /**
- * Pro Caller Page — shows only Very Good (≥75) and Good (55–74) tokens
- * sorted by Pro Score by default.
+ * Crypsor Pro Caller Desk — conviction-first trader surface.
+ * Stats: win rate, survival, edge — not a 2×/5× pill strip.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Copy, ExternalLink, Twitter, Send, Globe,
-  TrendingUp, Zap, Shield, ShieldCheck, ShieldOff,
-  Star, BarChart2,
+  TrendingUp, Shield, Diamond, Hand,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiBase } from "@/lib/api-base";
 import {
   cn, truncateAddress, formatCompactUsd, formatTimeAgo, formatCalledAt,
-  parseApiDate, getGmgnUrl, safeSymbol,
+  getGmgnUrl, safeSymbol,
 } from "@/lib/utils";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface Socials { twitter?: string; telegram?: string; website?: string; }
-type RunStatus   = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
+type RunStatus = "PUMPING" | "RAN" | "SLOW" | "FLAT" | "DEAD";
 type QualityLabel = "very_good" | "good" | "below";
-type SortKey     = "proScore" | "calledAt" | "ath" | "gain" | "intel" | "calledMc" | "survival";
+type AgeTab = "all" | "1h" | "6h" | "24h" | "7d";
+type SortKey = "conviction" | "calledAt" | "ath" | "gain" | "proScore";
+
+interface Conviction {
+  smartHoldRate: number | null;
+  kolHoldRate: number | null;
+  smartHolding: number;
+  kolHolding: number;
+  paperHands: number;
+  diamondHands: number;
+  supplyPctHeld: number;
+}
 
 interface ProToken {
   id: number;
@@ -31,14 +38,11 @@ interface ProToken {
   name: string | null;
   symbol: string | null;
   logoUri: string | null;
-  status: string;
   calledAt: string | null;
   calledMcUsd: number | null;
   calledIntel: number | null;
   calledKol: number;
   calledSmart: number;
-  calledKolSmartScore: number | null;
-  calledHolderVelocity?: number | null;
   currentMcUsd: number | null;
   gainSinceCall: number | null;
   athMultiple: number | null;
@@ -46,38 +50,28 @@ interface ProToken {
   proScore: number;
   qualityLabel: QualityLabel;
   survivalScore?: number | null;
-  entryTier?: string | null;
-  scoreVersion?: string | null;
   currentKol: number;
   currentSmart: number;
-  currentIntel: number | null;
-  lastSnapshotAt: string | null;
   surfacedAt: string | null;
-  surfacedMcUsd: number | null;
+  conviction: Conviction | null;
   kolSmartSource?: string | null;
-  verifiedAt?: string | null;
   secMintRenounced: boolean | null;
   secFreezeRenounced: boolean | null;
   secIsHoneypot: boolean | null;
-  socials: Socials;
+  socials: { twitter?: string; telegram?: string; website?: string };
 }
 
 interface ProStats {
   total: number;
   winRate: number;
-  x1Count: number;
   x2Count: number;
-  x3Count: number;
   x5Count: number;
   x10Count: number;
   x10PlusCount?: number;
-  x100Count: number;
-  x200Count: number;
   bestAth: number | null;
   veryGoodCount: number;
   goodCount: number;
   qualityCount: number;
-  recentCount: number;
   recent1hCount?: number;
   recent6hCount?: number;
   recent7dCount?: number;
@@ -85,826 +79,366 @@ interface ProStats {
   avgSurvival?: number | null;
 }
 
-// ── Run-status badge ──────────────────────────────────────────────────────────
-
-const RUN_META: Record<RunStatus, { label: string; color: string; glow: string }> = {
-  PUMPING: { label: "Pumping", color: "#22c55e", glow: "#22c55e30" },
-  RAN:     { label: "Ran",     color: "#3b82f6", glow: "#3b82f630" },
-  SLOW:    { label: "Slow",    color: "#f59e0b", glow: "#f59e0b30" },
-  FLAT:    { label: "Flat",    color: "#484f58", glow: "#484f5830" },
-  DEAD:    { label: "Dead",    color: "#ef4444", glow: "#ef444430" },
+const RUN: Record<RunStatus, { label: string; color: string }> = {
+  PUMPING: { label: "Running", color: "var(--cryp-gain)" },
+  RAN:     { label: "Printed", color: "#5b9fd4" },
+  SLOW:    { label: "Building", color: "var(--cryp-warn)" },
+  FLAT:    { label: "Flat", color: "var(--cryp-mute)" },
+  DEAD:    { label: "Dead", color: "var(--cryp-loss)" },
 };
 
-function RunBadge({ status }: { status: RunStatus }) {
-  const m = RUN_META[status] ?? RUN_META.FLAT;
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-black tracking-widest uppercase rounded-sm"
-      style={{ color: m.color, background: m.glow, border: `1px solid ${m.color}30` }}
-    >
-      <span className="w-1 h-1 rounded-full shrink-0" style={{ background: m.color }} />
-      {m.label}
-    </span>
-  );
+function pct(n: number | null | undefined) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return `${Math.round(n * 100)}%`;
 }
 
-// ── Quality badge ─────────────────────────────────────────────────────────────
-
-function QualityBadge({ label, score }: { label: QualityLabel; score: number }) {
-  if (label === "very_good") {
-    return (
-      <span
-        className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-black tracking-wider uppercase rounded-full"
-        style={{
-          background: "linear-gradient(135deg, #f59e0b22, #22c55e22)",
-          border: "1px solid #f59e0b50",
-          color: "#f59e0b",
-        }}
+function StatTile({
+  label, value, hint, accent,
+}: { label: string; value: string; hint?: string; accent?: string }) {
+  return (
+    <div className="desk-card px-4 py-3.5 fade-up">
+      <div className="text-[10px] tracking-[0.18em] uppercase text-[var(--cryp-mute)]">{label}</div>
+      <div
+        className="font-display font-mono-num text-2xl font-bold mt-1.5 tracking-tight"
+        style={{ color: accent ?? "var(--cryp-text)" }}
       >
-        <Star className="w-2.5 h-2.5" fill="currentColor" />
-        Very Good · {score.toFixed(0)}
-      </span>
-    );
-  }
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-black tracking-wider uppercase rounded-full"
-      style={{
-        background: "#3b82f615",
-        border: "1px solid #3b82f640",
-        color: "#3b82f6",
-      }}
-    >
-      <BarChart2 className="w-2.5 h-2.5" />
-      Good · {score.toFixed(0)}
-    </span>
-  );
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function gainColor(v: number | null | undefined) {
-  if (v == null) return "text-[#484f58]";
-  if (v > 0)  return "text-[#22c55e]";
-  if (v < 0)  return "text-[#ef4444]";
-  return "text-[#8b949e]";
-}
-
-function fmtGain(pct: number | null | undefined): string {
-  if (pct == null) return "—";
-  const x = pct / 100 + 1;
-  if (Math.abs(x) >= 2)   return `${pct > 0 ? "+" : ""}${x.toFixed(1)}×`;
-  if (pct >= 0)           return `+${pct.toFixed(1)}%`;
-  return `${pct.toFixed(1)}%`;
-}
-
-function fmtAth(x: number | null | undefined): string {
-  if (x == null) return "—";
-  if (x >= 2)   return `${x.toFixed(1)}×`;
-  const pct = (x - 1) * 100;
-  if (pct >= 0) return `+${pct.toFixed(0)}%`;
-  return `${pct.toFixed(0)}%`;
-}
-
-function SecurityIcons({
-  mint, freeze, honeypot,
-}: { mint: boolean | null; freeze: boolean | null; honeypot: boolean | null }) {
-  if (honeypot === true) return (
-    <span title="Honeypot detected" style={{ color: "#ef4444" }}>
-      <ShieldOff className="w-3 h-3" />
-    </span>
-  );
-  if (mint === true || freeze === true) return (
-    <span title={`Renounced: ${[mint && "mint", freeze && "freeze"].filter(Boolean).join(" + ")}`}
-      style={{ color: "#22c55e" }}>
-      <ShieldCheck className="w-3 h-3" />
-    </span>
-  );
-  return <Shield className="w-3 h-3" style={{ color: "#30363d" }} />;
-}
-
-function TokenLogo({ logoUri, address, symbol }: {
-  logoUri?: string | null; address: string; symbol?: string | null;
-}) {
-  const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(
-    (symbol?.slice(0, 2) || "?").replace(/[^\x00-\x7F]/g, "") || "?"
-  )}&background=0a0e1a&color=f59e0b&size=40&bold=true`;
-  const [src, setSrc] = useState(logoUri || fallback);
-  return (
-    <img src={src} alt="" onError={() => setSrc(fallback)}
-      className="w-9 h-9 shrink-0 rounded-lg object-cover"
-      style={{ border: "1px solid rgba(255,255,255,0.08)" }} />
-  );
-}
-
-// ── Stats chip ────────────────────────────────────────────────────────────────
-
-function StatChip({
-  label, value, sub, accent, large,
-}: {
-  label: string; value: string | number; sub?: string;
-  accent?: string; large?: boolean;
-}) {
-  const color = accent ?? "#8b949e";
-  return (
-    <div
-      className="flex flex-col items-center justify-center px-3 py-2.5 rounded-xl gap-0.5"
-      style={{
-        background: `${color}0c`,
-        border: `1px solid ${color}25`,
-        minWidth: large ? 72 : 58,
-      }}
-    >
-      {sub && <div className="text-[7px] text-[#484f58] uppercase tracking-widest">{sub}</div>}
-      <div className={cn(
-        "font-black tracking-tight",
-        large ? "text-2xl" : "text-lg",
-      )} style={{ color }}>
         {value}
       </div>
-      <div className="text-[7px] uppercase tracking-widest" style={{ color: `${color}99` }}>
-        {label}
-      </div>
+      {hint && <div className="text-[11px] text-[var(--cryp-mute)] mt-1">{hint}</div>}
     </div>
   );
 }
 
-// ── Sort button ───────────────────────────────────────────────────────────────
-
-function SortBtn({
-  label, active, asc, onClick,
-}: { label: string; active: boolean; asc: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-0.5 px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest transition-all"
-      style={
-        active
-          ? { background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b40" }
-          : { background: "transparent", color: "#484f58", border: "1px solid #21262d" }
-      }
-    >
-      {label}
-      {active && (
-        <span className="text-[7px]" style={{ color: "#f59e0b80" }}>
-          {asc ? "↑" : "↓"}
-        </span>
-      )}
-    </button>
-  );
-}
-
-// ── Pro Score bar ─────────────────────────────────────────────────────────────
-
-function ProScoreBar({ score }: { score: number }) {
-  const isVG = score >= 75;
-  const isG  = score >= 55;
-  const color = isVG ? "#f59e0b" : isG ? "#3b82f6" : "#484f58";
-  return (
-    <div className="h-0.5 rounded-full overflow-hidden" style={{ background: "#21262d", width: 40 }}>
-      <div
-        className="h-full rounded-full transition-all duration-500"
-        style={{ width: `${Math.min(100, score)}%`, background: color }}
-      />
-    </div>
-  );
-}
-
-// ── Token card ────────────────────────────────────────────────────────────────
-
-function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
+function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
   const { toast } = useToast();
-  const sym = safeSymbol(t.symbol, t.address);
-
-  const isVeryGood = t.qualityLabel === "very_good";
-  const borderColor = isVeryGood ? "rgba(245,158,11,0.28)" : "rgba(59,130,246,0.22)";
-  const accentColor = isVeryGood ? "#f59e0b" : "#3b82f6";
-  const bgGlow = isVeryGood
-    ? "linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(3,6,15,0.4) 55%)"
-    : "linear-gradient(135deg, rgba(59,130,246,0.06) 0%, rgba(3,6,15,0.35) 55%)";
+  const run = RUN[t.runStatus] ?? RUN.FLAT;
+  const c = t.conviction;
+  const holdSmart = c?.smartHolding ?? 0;
+  const holdKol = c?.kolHolding ?? 0;
+  const ath = t.athMultiple ?? 1;
+  const gain = t.gainSinceCall ?? 0;
 
   return (
-    <div
-      onClick={onNavigate}
-      className="relative flex flex-col gap-2.5 px-3 py-3 rounded-xl cursor-pointer transition-all duration-150 group active:scale-[0.995]"
-      style={{
-        background: bgGlow,
-        border: `1px solid ${borderColor}`,
-        boxShadow: isVeryGood ? "0 0 24px rgba(245,158,11,0.06)" : "none",
-      }}
-      onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + "88")}
-      onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}
+    <article
+      className="desk-card group cursor-pointer overflow-hidden transition-transform duration-200 hover:-translate-y-0.5 fade-up"
+      onClick={onOpen}
     >
-      {/* Quality accent strip */}
-      <div
-        className="absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-r"
-        style={{
-          background: isVeryGood
-            ? "linear-gradient(180deg,#f59e0b,#22c55e)"
-            : "linear-gradient(180deg,#3b82f6,#6366f1)",
-        }}
-      />
-
-      {/* Top row: identity + quality */}
-      <div className="flex items-start gap-3 pl-1">
-        <TokenLogo logoUri={t.logoUri} address={t.address} symbol={t.symbol} />
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[12px] font-black text-white truncate max-w-[140px]">{sym}</span>
-            <RunBadge status={t.runStatus} />
-          </div>
-          <div className="mt-1 flex items-center gap-2 flex-wrap">
-            <QualityBadge label={t.qualityLabel} score={t.proScore} />
-            <ProScoreBar score={t.proScore} />
-          </div>
-        </div>
-
-        {/* Primary metrics — always visible */}
-        <div className="flex flex-col items-end gap-0.5 shrink-0">
-          <div className="flex items-center gap-1">
-            <span className="text-[8px] text-[#484f58] uppercase tracking-widest">ATH</span>
-            <span
-              className="text-[13px] font-black tabular-nums"
-              style={{ color: t.athMultiple != null && t.athMultiple >= 2 ? "#f59e0b" : "#c9d1d9" }}
+      <div className="p-4 md:p-5">
+        <div className="flex items-start gap-3">
+          {t.logoUri ? (
+            <img src={t.logoUri} alt="" className="w-11 h-11 object-cover shrink-0" style={{ borderRadius: 4 }} />
+          ) : (
+            <div
+              className="w-11 h-11 flex items-center justify-center font-display font-bold text-sm shrink-0"
+              style={{ background: "rgba(61,154,139,0.15)", color: "var(--cryp-mint)", borderRadius: 4 }}
             >
-              {fmtAth(t.athMultiple)}
-            </span>
-          </div>
-          <span className={cn("text-[11px] font-bold tabular-nums", gainColor(t.gainSinceCall))}>
-            {fmtGain(t.gainSinceCall)}
-          </span>
-        </div>
-      </div>
+              {(safeSymbol(t.symbol, t.address) || "?").slice(0, 2)}
+            </div>
+          )}
 
-      {/* Metrics strip */}
-      <div
-        className="grid grid-cols-3 gap-2 pl-1 rounded-lg px-2 py-1.5"
-        style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.04)" }}
-      >
-        <div>
-          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Entry → Now</div>
-          <div className="text-[9px] text-[#8b949e] tabular-nums truncate">
-            {formatCompactUsd(t.calledMcUsd)} → {formatCompactUsd(t.currentMcUsd)}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-display text-[15px] font-bold truncate">{safeSymbol(t.symbol, t.address) || "—"}</h3>
+              {t.qualityLabel === "very_good" && (
+                <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                  style={{ color: "var(--cryp-mint)", background: "rgba(61,154,139,0.15)" }}>
+                  Elite
+                </span>
+              )}
+              <span className="text-[10px] font-medium" style={{ color: run.color }}>{run.label}</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1 text-[11px] text-[var(--cryp-mute)]">
+              <span className="font-mono-num">{formatCalledAt(t.calledAt)}</span>
+              <span>·</span>
+              <span>Entry {formatCompactUsd(t.calledMcUsd)}</span>
+              {t.calledIntel != null && (
+                <>
+                  <span>·</span>
+                  <span>Intel {Math.round(t.calledIntel)}</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="text-right shrink-0">
+            <div className="font-mono-num text-lg font-semibold" style={{ color: ath >= 2 ? "var(--cryp-gain)" : "var(--cryp-text)" }}>
+              {ath >= 1.05 ? `${ath.toFixed(1)}×` : "—"}
+            </div>
+            <div
+              className="font-mono-num text-[11px] mt-0.5"
+              style={{ color: gain >= 0 ? "var(--cryp-gain)" : "var(--cryp-loss)" }}
+            >
+              {gain >= 0 ? "+" : ""}{gain.toFixed(0)}%
+            </div>
           </div>
         </div>
-        <div>
-          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">Smart / KOL @ call</div>
-          <div className="text-[9px] font-bold tabular-nums">
-            <span style={{ color: "#06b6d4" }}>S{t.calledSmart}</span>
-            <span className="text-[#30363d]"> · </span>
-            <span style={{ color: "#a855f7" }}>K{t.calledKol}</span>
-            {(t.currentSmart !== t.calledSmart || t.currentKol !== t.calledKol) && (
-              <span className="text-[#484f58] font-normal">
-                {" "}(now S{t.currentSmart}·K{t.currentKol})
+
+        {/* Conviction strip */}
+        <div
+          className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3"
+          style={{ borderTop: "1px solid var(--cryp-line)" }}
+        >
+          <div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">Smart hold</div>
+            <div className="font-mono-num text-sm font-semibold mt-0.5">
+              {holdSmart}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledSmart || "—"}</span>
+              {c?.smartHoldRate != null && (
+                <span className="text-[10px] text-[var(--cryp-mute)] ml-1">{pct(c.smartHoldRate)}</span>
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)]">KOL hold</div>
+            <div className="font-mono-num text-sm font-semibold mt-0.5">
+              {holdKol}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledKol || "—"}</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)] flex items-center gap-1">
+              <Diamond className="w-2.5 h-2.5" /> Diamond
+            </div>
+            <div className="font-mono-num text-sm font-semibold mt-0.5" style={{ color: (c?.diamondHands ?? 0) > 0 ? "var(--cryp-mint)" : undefined }}>
+              {c?.diamondHands ?? "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] tracking-wider uppercase text-[var(--cryp-mute)] flex items-center gap-1">
+              <Hand className="w-2.5 h-2.5" /> Paper
+            </div>
+            <div className="font-mono-num text-sm font-semibold mt-0.5" style={{ color: (c?.paperHands ?? 0) >= 2 ? "var(--cryp-loss)" : undefined }}>
+              {c?.paperHands ?? "—"}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 text-[11px] text-[var(--cryp-mute)]">
+            <span className="font-mono-num">Score <strong className="text-[var(--cryp-text)]">{t.proScore.toFixed(0)}</strong></span>
+            {t.survivalScore != null && (
+              <span className="font-mono-num">Survive <strong className="text-[var(--cryp-text)]">{Math.round(t.survivalScore)}</strong></span>
+            )}
+            {t.secMintRenounced && (
+              <span className="flex items-center gap-0.5" style={{ color: "var(--cryp-gain)" }}>
+                <Shield className="w-3 h-3" /> Mint
               </span>
             )}
           </div>
-        </div>
-        <div className="text-right">
-          <div className="text-[7px] uppercase tracking-widest text-[#484f58]">
-            Called{t.survivalScore != null ? ` · survive ${Math.round(t.survivalScore)}` : ""}
-          </div>
-          <div className="flex items-center justify-end gap-1">
-            <div className="flex flex-col items-end leading-tight">
-              <span className="text-[9px] text-[#8b949e] tabular-nums" title={formatCalledAt(t.calledAt)}>
-                {t.calledAt ? `${formatTimeAgo(t.calledAt)} ago` : "—"}
-              </span>
-              <span className="text-[7px] text-[#484f58] tabular-nums">{formatCalledAt(t.calledAt)}</span>
-            </div>
-            <SecurityIcons
-              mint={t.secMintRenounced}
-              freeze={t.secFreezeRenounced}
-              honeypot={t.secIsHoneypot}
-            />
+          <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              className="p-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]"
+              onClick={() => {
+                void navigator.clipboard.writeText(t.address);
+                toast({ title: "CA copied" });
+              }}
+              aria-label="Copy CA"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <a href={getGmgnUrl(t.chain, t.address)} target="_blank" rel="noreferrer" className="p-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]">
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            {t.socials?.twitter && (
+              <a href={t.socials.twitter} target="_blank" rel="noreferrer" className="p-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]">
+                <Twitter className="w-3.5 h-3.5" />
+              </a>
+            )}
+            {t.socials?.telegram && (
+              <a href={t.socials.telegram} target="_blank" rel="noreferrer" className="p-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]">
+                <Send className="w-3.5 h-3.5" />
+              </a>
+            )}
+            {t.socials?.website && (
+              <a href={t.socials.website} target="_blank" rel="noreferrer" className="p-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]">
+                <Globe className="w-3.5 h-3.5" />
+              </a>
+            )}
           </div>
         </div>
       </div>
-
-      {/* Actions — always visible on touch devices, hover-enhanced on desktop */}
-      <div className="flex items-center gap-1 pl-1 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation();
-            navigator.clipboard.writeText(t.address);
-            toast({ title: "Copied", description: t.address.slice(0, 20) + "…" });
-          }}
-          className="p-1.5 rounded-md hover:bg-white/5"
-          aria-label="Copy address"
-        >
-          <Copy className="w-3.5 h-3.5 text-[#484f58]" />
-        </button>
-        <a
-          href={getGmgnUrl(t.chain, t.address)}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={e => e.stopPropagation()}
-          className="p-1.5 rounded-md hover:bg-white/5"
-          aria-label="Open on GMGN"
-        >
-          <ExternalLink className="w-3.5 h-3.5 text-[#484f58]" />
-        </a>
-        {t.socials.twitter && (
-          <a
-            href={t.socials.twitter}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="p-1.5 rounded-md hover:bg-white/5"
-          >
-            <Twitter className="w-3.5 h-3.5 text-[#484f58]" />
-          </a>
-        )}
-        {t.socials.telegram && (
-          <a
-            href={t.socials.telegram}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="p-1.5 rounded-md hover:bg-white/5"
-          >
-            <Send className="w-3.5 h-3.5 text-[#484f58]" />
-          </a>
-        )}
-        {t.socials.website && (
-          <a
-            href={t.socials.website}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="p-1.5 rounded-md hover:bg-white/5"
-          >
-            <Globe className="w-3.5 h-3.5 text-[#484f58]" />
-          </a>
-        )}
-        <span className="ml-auto text-[8px] uppercase tracking-widest text-[#30363d]">Tap for detail</span>
-      </div>
-    </div>
+    </article>
   );
 }
-
-// ── Quality filter tab ────────────────────────────────────────────────────────
-
-// ATH section filters: x5 (5–10×), x10 (10–20×), x10plus (≥20× "10× more")
-// Age windows filter by pro_calls.called_at (UTC)
-type QualityFilter =
-  | "quality" | "very_good" | "good"
-  | "recent" | "1h" | "6h" | "24h" | "7d"
-  | "x5" | "x10" | "x10plus" | "sections";
-
-function withinHours(calledAt: string | null | undefined, hours: number, nowMs: number): boolean {
-  const d = parseApiDate(calledAt);
-  if (!d) return false;
-  return nowMs - d.getTime() <= hours * 3_600_000;
-}
-
-function filterFeed(tokens: ProToken[], quality: QualityFilter, nowMs: number): ProToken[] {
-  switch (quality) {
-    case "very_good":
-      return tokens.filter(t => t.qualityLabel === "very_good");
-    case "good":
-      return tokens.filter(t => t.qualityLabel === "good");
-    case "1h":
-      return tokens.filter(t => withinHours(t.calledAt, 1, nowMs));
-    case "6h":
-      return tokens.filter(t => withinHours(t.calledAt, 6, nowMs));
-    case "recent":
-    case "24h":
-      return tokens.filter(t => withinHours(t.calledAt, 24, nowMs));
-    case "7d":
-      return tokens.filter(t => withinHours(t.calledAt, 24 * 7, nowMs));
-    case "x5":
-      return tokens.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10);
-    case "x10":
-      return tokens.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20);
-    case "x10plus":
-      return tokens.filter(t => (t.athMultiple ?? 0) >= 20);
-    case "sections":
-    case "quality":
-    default:
-      return tokens;
-  }
-}
-
-function sortFeed(tokens: ProToken[], sortKey: SortKey, asc: boolean): ProToken[] {
-  const dir = asc ? 1 : -1;
-  const num = (x: number | null | undefined, fallback = -Infinity) =>
-    x == null || !Number.isFinite(x) ? fallback : x;
-  return [...tokens].sort((a, b) => {
-    switch (sortKey) {
-      case "ath":
-        return (num(a.athMultiple) - num(b.athMultiple)) * dir;
-      case "gain":
-        return (num(a.gainSinceCall) - num(b.gainSinceCall)) * dir;
-      case "intel":
-        return (num(a.currentIntel) - num(b.currentIntel)) * dir;
-      case "calledMc":
-        return (num(a.calledMcUsd) - num(b.calledMcUsd)) * dir;
-      case "calledAt": {
-        const ta = parseApiDate(a.calledAt)?.getTime() ?? 0;
-        const tb = parseApiDate(b.calledAt)?.getTime() ?? 0;
-        return (ta - tb) * dir;
-      }
-      case "survival":
-        return (num(a.survivalScore) - num(b.survivalScore)) * dir;
-      case "proScore":
-      default:
-        return (num(a.proScore) - num(b.proScore)) * dir;
-    }
-  });
-}
-
-function FilterTab({
-  label, active, count, onClick,
-}: { label: string; active: boolean; count?: number; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all"
-      style={
-        active
-          ? { background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b40" }
-          : { background: "transparent", color: "#484f58", border: "1px solid #21262d" }
-      }
-    >
-      {label}
-      {count != null && (
-        <span
-          className="px-1 rounded-full text-[7px] font-black"
-          style={{ background: active ? "#f59e0b30" : "#21262d", color: active ? "#f59e0b" : "#484f58" }}
-        >
-          {count}
-        </span>
-      )}
-    </button>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
-
-const BASE_URL = getApiBase().replace(/\/$/, "");
 
 export default function Caller() {
-  const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
-  const [sortKey, setSortKey]         = useState<SortKey>("proScore");
-  const [sortAsc, setSortAsc]         = useState(false);
-  // Default: three ATH sections (5× / 10× / 10×+)
-  const [qualityFilter, setQF]        = useState<QualityFilter>("sections");
-
-  function setSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortAsc(v => !v);
-      return;
-    }
-    setSortKey(key);
-    setSortAsc(false);
-    // Age sort while stuck on Sections hides brand-new calls (ATH still ~1×).
-    // Jump to 24h so the newest quality call is visible immediately.
-    if (key === "calledAt" && qualityFilter === "sections") {
-      setQF("24h");
-    }
-  }
-
-  function setAgeFilter(f: QualityFilter) {
-    setQF(f);
-    setSortKey("calledAt");
-    setSortAsc(false);
-    // Force a fresh feed so Age isn't looking at a stale cached list
-    void queryClient.invalidateQueries({ queryKey: ["proHistory", "feed"] });
-  }
-
-  // ── Data fetching — one slim feed; tab/sort changes are client-side (instant) ─
+  const [, setLocation] = useLocation();
+  const [age, setAge] = useState<AgeTab>("24h");
+  const [sort, setSort] = useState<SortKey>("calledAt");
+  const [q, setQ] = useState("");
 
   const { data: stats } = useQuery<ProStats>({
-    queryKey: ["proStats"],
-    queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
+    queryKey: ["pro-stats"],
+    queryFn: () => fetch(`${getApiBase()}api/pro/stats`).then(r => r.json()),
+    refetchInterval: 20_000,
+  });
+
+  const { data: hist, isLoading } = useQuery<{ tokens: ProToken[] }>({
+    queryKey: ["pro-history"],
+    queryFn: () => fetch(`${getApiBase()}api/pro/history?limit=200&sort=calledAt&order=desc`).then(r => r.json()),
     refetchInterval: 12_000,
-    staleTime:       6_000,
-    refetchOnWindowFocus: true,
   });
 
-  const { data: historyData, isLoading, dataUpdatedAt } = useQuery<{
-    total: number; totalAll: number; tokens: ProToken[]; latestCalledAt?: string | null;
-  }>({
-    queryKey: ["proHistory", "feed"],
-    queryFn:  () =>
-      fetch(`${BASE_URL}/api/pro/history?quality=feed&sort=calledAt&order=desc&limit=300&_=${Date.now()}`)
-        .then(r => r.json()),
-    refetchInterval: 10_000,
-    staleTime:       5_000,
-    refetchOnWindowFocus: true,
-    placeholderData: (prev) => prev,
-  });
-
-  const feed = historyData?.tokens ?? [];
-
-  // If stats already see a newer call than the feed, refetch feed now (cache lag)
-  useEffect(() => {
-    const statsLatest = stats?.latestCalledAt;
-    if (!statsLatest) return;
-    const feedLatest =
-      historyData?.latestCalledAt ??
-      feed.reduce<string | null>((best, t) => {
-        if (!t.calledAt) return best;
-        if (!best || t.calledAt > best) return t.calledAt;
-        return best;
-      }, null);
-    // Only compare timestamps — totals can differ from feed page size
-    if (!feedLatest || statsLatest > feedLatest) {
-      void queryClient.invalidateQueries({ queryKey: ["proHistory", "feed"] });
-    }
-  }, [stats?.latestCalledAt, historyData?.latestCalledAt, feed, queryClient, dataUpdatedAt]);
-
-  const isSections = qualityFilter === "sections";
-  const effectiveSort: SortKey = (qualityFilter === "1h" || qualityFilter === "6h"
-    || qualityFilter === "24h" || qualityFilter === "7d" || qualityFilter === "recent")
-    && sortKey === "proScore"
-    ? "calledAt"
-    : sortKey;
-  const effectiveAsc = (qualityFilter === "1h" || qualityFilter === "6h"
-    || qualityFilter === "24h" || qualityFilter === "7d" || qualityFilter === "recent")
-    && sortKey === "proScore"
-    ? false
-    : sortAsc;
-
-  const sorted = useMemo(() => {
-    const nowMs = Date.now();
-    return sortFeed(filterFeed(feed, qualityFilter, nowMs), effectiveSort, effectiveAsc);
-  }, [feed, qualityFilter, effectiveSort, effectiveAsc]);
-
-  const sectionX5   = useMemo(
-    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 5 && (t.athMultiple ?? 0) < 10), effectiveSort, effectiveAsc),
-    [feed, effectiveSort, effectiveAsc],
-  );
-  const sectionX10  = useMemo(
-    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 10 && (t.athMultiple ?? 0) < 20), effectiveSort, effectiveAsc),
-    [feed, effectiveSort, effectiveAsc],
-  );
-  const sectionX10p = useMemo(
-    () => sortFeed(feed.filter(t => (t.athMultiple ?? 0) >= 20), effectiveSort, effectiveAsc),
-    [feed, effectiveSort, effectiveAsc],
-  );
-
-  const ageCounts = useMemo(() => {
-    const nowMs = Date.now();
-    return {
-      h1: feed.filter(t => withinHours(t.calledAt, 1, nowMs)).length,
-      h6: feed.filter(t => withinHours(t.calledAt, 6, nowMs)).length,
-      h24: feed.filter(t => withinHours(t.calledAt, 24, nowMs)).length,
-      d7: feed.filter(t => withinHours(t.calledAt, 24 * 7, nowMs)).length,
+  const tokens = useMemo(() => {
+    let list = hist?.tokens ?? [];
+    const now = Date.now();
+    const ageMs: Record<AgeTab, number | null> = {
+      all: null, "1h": 3_600_000, "6h": 6 * 3_600_000, "24h": 24 * 3_600_000, "7d": 7 * 24 * 3_600_000,
     };
-  }, [feed]);
+    const cut = ageMs[age];
+    if (cut != null) {
+      list = list.filter(t => t.calledAt && now - new Date(t.calledAt).getTime() <= cut);
+    }
+    if (q.trim()) {
+      const s = q.trim().toLowerCase();
+      list = list.filter(t =>
+        (t.symbol ?? "").toLowerCase().includes(s)
+        || (t.name ?? "").toLowerCase().includes(s)
+        || t.address.toLowerCase().includes(s),
+      );
+    }
+    const scored = [...list];
+    scored.sort((a, b) => {
+      if (sort === "calledAt") {
+        return (new Date(b.calledAt ?? 0).getTime()) - (new Date(a.calledAt ?? 0).getTime());
+      }
+      if (sort === "ath") return (b.athMultiple ?? 0) - (a.athMultiple ?? 0);
+      if (sort === "gain") return (b.gainSinceCall ?? 0) - (a.gainSinceCall ?? 0);
+      if (sort === "proScore") return (b.proScore ?? 0) - (a.proScore ?? 0);
+      // conviction: smart hold rate then score
+      const ac = a.conviction?.smartHoldRate ?? 0;
+      const bc = b.conviction?.smartHoldRate ?? 0;
+      if (bc !== ac) return bc - ac;
+      return (b.proScore ?? 0) - (a.proScore ?? 0);
+    });
+    return scored;
+  }, [hist, age, sort, q]);
 
-  const totalCalled = stats?.total ?? feed.length;
-  const veryGoodCt  = stats?.veryGoodCount ?? feed.filter(t => t.qualityLabel === "very_good").length;
-  const goodCt      = stats?.goodCount     ?? feed.filter(t => t.qualityLabel === "good").length;
-  const recentCt    = stats?.recentCount   ?? ageCounts.h24;
-  const x5Ct        = stats?.x5Count ?? sectionX5.length;
-  const x10Ct       = stats?.x10Count ?? sectionX10.length;
-  const x10PlusCt   = stats?.x10PlusCount ?? sectionX10p.length;
-
-  const bestAth    = stats?.bestAth ?? null;
-  const winRate    = stats?.winRate ?? 0;
-
-  const latestToken = useMemo(() => {
-    if (!feed.length) return null;
-    return [...feed].sort((a, b) => {
-      const ta = parseApiDate(a.calledAt)?.getTime() ?? 0;
-      const tb = parseApiDate(b.calledAt)?.getTime() ?? 0;
-      return tb - ta;
-    })[0] ?? null;
-  }, [feed]);
+  const latest = hist?.tokens?.[0];
 
   return (
-    <div className="flex flex-col min-h-0 flex-1 gap-3 px-3 py-3 md:px-6 md:py-5 max-w-2xl mx-auto w-full">
+    <div className="px-4 md:px-8 pt-5 md:pt-8 space-y-6">
+      {/* Hero */}
+      <header className="fade-up">
+        <div className="font-display text-[11px] tracking-[0.28em] uppercase text-[var(--cryp-teal)]">
+          Crypsor Pro
+        </div>
+        <h1 className="font-display text-3xl md:text-4xl font-extrabold tracking-tight mt-1.5">
+          Caller desk
+        </h1>
+        <p className="text-[var(--cryp-mute)] text-sm mt-2 max-w-xl leading-relaxed">
+          High-conviction Solana memes verified live on GMGN — smart still holding beats tag counts.
+          {latest?.symbol && (
+            <span className="text-[var(--cryp-text)]"> Latest · {safeSymbol(latest.symbol, latest.address)}</span>
+          )}
+        </p>
+      </header>
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Zap className="w-4 h-4 shrink-0" style={{ color: "#f59e0b" }} />
-            <span className="text-[13px] font-black uppercase tracking-widest text-white">
-              Pro Intel
-            </span>
-            <span
-              className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider"
-              style={{ background: "#f59e0b20", color: "#f59e0b", border: "1px solid #f59e0b30" }}
-            >
-              Score v2 · On-time
-            </span>
-          </div>
-          <p className="text-[9px] text-[#484f58] mt-0.5">
-            {latestToken
-              ? `Latest · ${safeSymbol(latestToken.symbol, latestToken.address)} · ${formatTimeAgo(latestToken.calledAt)} ago · Age tabs show all quality (not just 5×+)`
-              : "Instant filters · Age = called time · Sections = 5×+ only"}
-          </p>
-        </div>
-        <div
-          className="text-right px-2.5 py-1.5 rounded-xl shrink-0"
-          style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}
-        >
-          <div className="text-[14px] font-black text-[#f59e0b] tabular-nums">{totalCalled}</div>
-          <div className="text-[7px] text-[#f59e0b]/70 uppercase tracking-widest">quality</div>
-        </div>
-      </div>
+      {/* KPI row — trader metrics, not milestone chrome */}
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 fade-up fade-up-delay-1">
+        <StatTile
+          label="Win rate ≥2×"
+          value={stats ? `${Math.round(stats.winRate)}%` : "—"}
+          hint={stats ? `${stats.x2Count}/${stats.total} quality calls` : "loading"}
+          accent="var(--cryp-gain)"
+        />
+        <StatTile
+          label="Avg survival"
+          value={stats?.avgSurvival != null ? `${Math.round(stats.avgSurvival)}` : "—"}
+          hint="Structure held since call"
+        />
+        <StatTile
+          label="On desk"
+          value={String(stats?.qualityCount ?? "—")}
+          hint={`${stats?.veryGoodCount ?? 0} elite · ${stats?.goodCount ?? 0} strong`}
+          accent="var(--cryp-mint)"
+        />
+        <StatTile
+          label="Best run"
+          value={stats?.bestAth != null ? `${Number(stats.bestAth).toFixed(1)}×` : "—"}
+          hint={stats?.x10PlusCount ? `${stats.x10PlusCount} above 20×` : "ATH from entry"}
+        />
+      </section>
 
-      {/* ── Stats row ─────────────────────────────────────────────────────── */}
-      <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5 -mx-0.5 px-0.5">
-        <StatChip label="Win Rate" value={`${winRate}%`} accent="#22c55e" large />
-        <StatChip label="Very Good" value={veryGoodCt} accent="#f59e0b" />
-        <StatChip label="Good" value={goodCt} accent="#3b82f6" />
-        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
-        <StatChip label="5×" value={x5Ct} sub="band" accent="#22c55e" />
-        <StatChip label="10×" value={x10Ct} sub="band" accent="#3b82f6" />
-        <StatChip label="10×+" value={x10PlusCt} sub="≥20×" accent="#f59e0b" />
-        <StatChip label="100×" value={stats?.x100Count ?? "—"} accent={stats?.x100Count ? "#ef4444" : undefined} />
-        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
-        <StatChip label="Best ATH" value={bestAth != null ? `${bestAth.toFixed(1)}×` : "—"} accent="#f59e0b" large />
-        {stats?.avgSurvival != null && (
-          <StatChip label="Survive" value={Math.round(stats.avgSurvival)} accent="#06b6d4" />
-        )}
-      </div>
-
-      {/* ── Sticky filter + sort (mobile-friendly) ─────────────────────────── */}
-      <div
-        className="sticky top-12 md:top-0 z-20 -mx-3 px-3 py-2 space-y-2"
-        style={{
-          background: "rgba(3,6,15,0.88)",
-          backdropFilter: "blur(10px)",
-          borderBottom: "1px solid rgba(255,255,255,0.04)",
-        }}
-      >
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-          <FilterTab
-            label="Sections" active={qualityFilter === "sections"}
-            count={x5Ct + x10Ct + x10PlusCt}
-            onClick={() => setQF("sections")}
-          />
-          <FilterTab
-            label="5×" active={qualityFilter === "x5"}
-            count={x5Ct}
-            onClick={() => setQF("x5")}
-          />
-          <FilterTab
-            label="10×" active={qualityFilter === "x10"}
-            count={x10Ct}
-            onClick={() => setQF("x10")}
-          />
-          <FilterTab
-            label="10×+" active={qualityFilter === "x10plus"}
-            count={x10PlusCt}
-            onClick={() => setQF("x10plus")}
-          />
-          <FilterTab
-            label="Very Good" active={qualityFilter === "very_good"}
-            count={veryGoodCt}
-            onClick={() => setQF("very_good")}
-          />
-          <FilterTab
-            label="Good" active={qualityFilter === "good"}
-            count={goodCt}
-            onClick={() => setQF("good")}
-          />
-          <FilterTab
-            label="All Quality" active={qualityFilter === "quality"}
-            count={totalCalled}
-            onClick={() => setQF("quality")}
-          />
-          <div className="w-px self-stretch shrink-0 mx-0.5" style={{ background: "#21262d" }} />
-          <FilterTab
-            label="1h" active={qualityFilter === "1h"}
-            count={stats?.recent1hCount ?? ageCounts.h1}
-            onClick={() => setAgeFilter("1h")}
-          />
-          <FilterTab
-            label="6h" active={qualityFilter === "6h"}
-            count={stats?.recent6hCount ?? ageCounts.h6}
-            onClick={() => setAgeFilter("6h")}
-          />
-          <FilterTab
-            label="24h" active={qualityFilter === "recent" || qualityFilter === "24h"}
-            count={recentCt}
-            onClick={() => setAgeFilter("24h")}
-          />
-          <FilterTab
-            label="7d" active={qualityFilter === "7d"}
-            count={stats?.recent7dCount ?? ageCounts.d7}
-            onClick={() => setAgeFilter("7d")}
-          />
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <span className="text-[8px] uppercase tracking-widest text-[#30363d] shrink-0">Sort</span>
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-            {([
-              { key: "proScore" as SortKey, label: "Score" },
-              { key: "survival" as SortKey, label: "Survive" },
-              { key: "calledAt" as SortKey, label: "Age" },
-              { key: "ath"      as SortKey, label: "ATH" },
-              { key: "gain"     as SortKey, label: "Gain" },
-              { key: "intel"    as SortKey, label: "Intel" },
-            ]).map(s => (
-              <SortBtn key={s.key} label={s.label}
-                active={sortKey === s.key} asc={sortKey === s.key && sortAsc}
-                onClick={() => setSort(s.key)} />
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Pro Score legend ───────────────────────────────────────────────── */}
-      <div
-        className="flex items-center gap-3 px-3 py-2 rounded-xl overflow-x-auto no-scrollbar"
-        style={{ background: "rgba(13,17,23,0.8)", border: "1px solid #21262d" }}
-      >
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Star className="w-2.5 h-2.5" style={{ color: "#f59e0b" }} fill="#f59e0b" />
-          <span className="text-[8px] font-bold" style={{ color: "#f59e0b" }}>Very Good</span>
-          <span className="text-[7px] text-[#484f58]">≥ 75</span>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <BarChart2 className="w-2.5 h-2.5" style={{ color: "#3b82f6" }} />
-          <span className="text-[8px] font-bold" style={{ color: "#3b82f6" }}>Good</span>
-          <span className="text-[7px] text-[#484f58]">55–74</span>
-        </div>
-        <div className="w-px self-stretch shrink-0" style={{ background: "#21262d" }} />
-        <span className="text-[7px] text-[#30363d] whitespace-nowrap">
-          Entry · HV · Smart · Survival · Risk · Momentum
-        </span>
-      </div>
-
-      {/* ── Token list / sections ──────────────────────────────────────────── */}
-      {isLoading ? (
-        <div className="flex flex-col gap-2">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-16 rounded-xl animate-pulse"
-              style={{ background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.05)" }} />
-          ))}
-        </div>
-      ) : isSections ? (
-        <div className="flex flex-col gap-5">
+      {/* Controls */}
+      <section className="flex flex-col sm:flex-row sm:items-center gap-3 fade-up fade-up-delay-2">
+        <div className="flex flex-wrap gap-1">
           {([
-            { key: "x5", title: "5× Club", sub: "5× – 10× ATH from call", accent: "#22c55e", tokens: sectionX5 },
-            { key: "x10", title: "10× Club", sub: "10× – 20× ATH from call", accent: "#3b82f6", tokens: sectionX10 },
-            { key: "x10plus", title: "10×+ Runners", sub: "≥ 20× — well past 10×", accent: "#f59e0b", tokens: sectionX10p },
-          ] as const).map(sec => (
-            <section key={sec.key} className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest"
-                    style={{ background: `${sec.accent}18`, color: sec.accent, border: `1px solid ${sec.accent}40` }}
-                  >
-                    {sec.title}
-                  </span>
-                  <span className="text-[8px] text-[#484f58] truncate">{sec.sub}</span>
-                </div>
-                <span className="text-[10px] font-black tabular-nums" style={{ color: sec.accent }}>
-                  {sec.tokens.length}
-                </span>
-              </div>
-              {sec.tokens.length === 0 ? (
-                <div className="text-[9px] text-[#30363d] px-1 py-3">No tokens in this band yet</div>
-              ) : (
-                <div className="flex flex-col gap-1.5">
-                  {sec.tokens.map(t => (
-                    <TokenRow key={t.id} t={t} onNavigate={() => navigate(`/tokens/${t.id}`)} />
-                  ))}
-                </div>
+            ["1h", "1H"], ["6h", "6H"], ["24h", "24H"], ["7d", "7D"], ["all", "All"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setAge(key)}
+              className={cn(
+                "px-3 py-1.5 text-[11px] font-bold tracking-wider uppercase transition-colors",
+                age === key ? "text-[var(--cryp-ink)]" : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
               )}
-            </section>
+              style={{
+                background: age === key ? "var(--cryp-teal)" : "transparent",
+                border: `1px solid ${age === key ? "var(--cryp-teal)" : "var(--cryp-line)"}`,
+              }}
+            >
+              {label}
+            </button>
           ))}
         </div>
-      ) : sorted.length === 0 ? (
-        <div className="flex flex-col items-center justify-center flex-1 py-20 gap-3">
-          <TrendingUp className="w-10 h-10" style={{ color: "#21262d" }} />
-          <div className="text-[10px] uppercase tracking-widest text-[#484f58]">
-            No tokens in this filter yet
-          </div>
-          <div className="text-[9px] text-[#30363d]">
-            Event-driven intel → Pro Score v2 surfaces quality calls in seconds
-          </div>
+        <div className="flex flex-1 items-center gap-2">
+          <select
+            value={sort}
+            onChange={e => setSort(e.target.value as SortKey)}
+            className="bg-transparent text-[12px] px-2 py-1.5 text-[var(--cryp-text)]"
+            style={{ border: "1px solid var(--cryp-line)" }}
+          >
+            <option value="calledAt">Newest</option>
+            <option value="conviction">Conviction</option>
+            <option value="proScore">Pro score</option>
+            <option value="ath">ATH ×</option>
+            <option value="gain">Gain</option>
+          </select>
+          <input
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Search symbol or CA"
+            className="flex-1 bg-transparent text-[12px] px-3 py-1.5 outline-none placeholder:text-[var(--cryp-mute)]"
+            style={{ border: "1px solid var(--cryp-line)" }}
+          />
         </div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {sorted.map(t => (
-            <TokenRow key={t.id} t={t}
-              onNavigate={() => navigate(`/tokens/${t.id}`)} />
-          ))}
-        </div>
-      )}
+      </section>
 
-      {/* ── Footer ────────────────────────────────────────────────────────── */}
-      {(isSections ? sectionX5.length + sectionX10.length + sectionX10p.length : sorted.length) > 0 && (
-        <div className="flex items-center justify-center gap-2 pt-1">
-          <Zap className="w-2.5 h-2.5 text-[#30363d]" />
-          <span className="text-[8px] text-[#30363d] tracking-widest uppercase">
-            Pro Score v2 · hot snapshots 30s · ATH from called MC
-          </span>
+      {/* Feed */}
+      <section className="space-y-3 fade-up fade-up-delay-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] tracking-[0.2em] uppercase text-[var(--cryp-mute)]">
+            {tokens.length} call{tokens.length === 1 ? "" : "s"}
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-[var(--cryp-mute)]">
+            <TrendingUp className="w-3 h-3" />
+            Live GMGN verify
+          </div>
         </div>
-      )}
+
+        {isLoading && (
+          <div className="desk-card p-8 text-center text-[var(--cryp-mute)] text-sm">Loading desk…</div>
+        )}
+        {!isLoading && tokens.length === 0 && (
+          <div className="desk-card p-10 text-center">
+            <div className="font-display text-lg font-bold">No calls in this window</div>
+            <div className="text-sm text-[var(--cryp-mute)] mt-2">
+              Strict gates: smart still holding · MC $5–40K · live GMGN
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {tokens.map(t => (
+            <TokenCard
+              key={t.id}
+              t={t}
+              onOpen={() => setLocation(`/tokens/${t.id}`)}
+            />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

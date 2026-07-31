@@ -15,6 +15,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { computeProScore, deriveRunStatus } from "../lib/pro-scoring";
+import { convictionFromPayload } from "../lib/gmgn-pro-verify";
 
 const log = logger.child({ module: "pro-snapshots" });
 
@@ -51,6 +52,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         pc.called_holder_velocity,
         pc.called_mc_growth,
         pc.called_volume_intensity,
+        pc.verified_wallets,
         pc.hit_2x,   pc.hit_3x,   pc.hit_5x,   pc.hit_10x,   pc.hit_100x,
         t.market_cap_usd             AS current_mc,
         t.ath_market_cap_usd         AS ath_mc_usd,
@@ -82,6 +84,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       called_kol_count: number | null; called_smart_count: number | null;
       called_holder_velocity: number | null;
       called_mc_growth: number | null; called_volume_intensity: number | null;
+      verified_wallets: unknown;
       hit_2x: boolean | null; hit_3x: boolean | null; hit_5x: boolean | null;
       hit_10x: boolean | null; hit_100x: boolean | null;
       current_mc: string | null; ath_mc_usd: string | null; kol_count: number | null;
@@ -115,6 +118,16 @@ async function snapshotOnce(mode: Mode): Promise<void> {
 
       const runStatus = deriveRunStatus(currentMc || null, calledMc || null, newAth);
 
+      let conviction = null as ReturnType<typeof convictionFromPayload>;
+      if (r.verified_wallets) {
+        try {
+          const raw = typeof r.verified_wallets === "string"
+            ? JSON.parse(String(r.verified_wallets))
+            : r.verified_wallets;
+          conviction = convictionFromPayload(raw);
+        } catch { /* ignore */ }
+      }
+
       const { score: proScore, qualityLabel, survivalScore, entryTier } = computeProScore({
         calledIntelScore:     r.called_intel_score,
         calledKolCount:       r.called_kol_count ?? 0,
@@ -123,6 +136,11 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         calledHolderVelocity: r.called_holder_velocity,
         calledMcGrowth:       r.called_mc_growth,
         calledVolumeIntensity: r.called_volume_intensity,
+        smartHoldRate:        conviction?.smart.holdRate ?? null,
+        kolHoldRate:          conviction?.kol.holdRate ?? null,
+        smartPaperHands:      conviction?.smart.paperHands ?? null,
+        diamondHands:         (conviction?.smart.diamondHands ?? 0) + (conviction?.kol.diamondHands ?? 0),
+        smartKolSupplyPct:    (conviction?.smart.supplyPctHeld ?? 0) + (conviction?.kol.supplyPctHeld ?? 0),
         currentMcUsd:         currentMc || null,
         athMultiple:          newAth,
         gainSinceCall:        gainPct,

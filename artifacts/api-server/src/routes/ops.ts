@@ -170,6 +170,24 @@ router.get("/ops/summary", async (_req, res) => {
       });
     }
 
+    // Discovery inventory (wallet buys → tracked tokens)
+    let tokensTracked = 0;
+    let tokensActive = 0;
+    let buysTotal = 0;
+    try {
+      const inv = await db.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM tracked_tokens) AS tokens,
+          (SELECT COUNT(*)::int FROM tracked_tokens
+             WHERE COALESCE(status, '') NOT IN ('ignored', 'archive')) AS active,
+          (SELECT COUNT(*)::int FROM token_buys) AS buys
+      `);
+      const row = inv.rows[0] as Record<string, unknown> | undefined;
+      tokensTracked = Number(row?.tokens ?? 0);
+      tokensActive = Number(row?.active ?? 0);
+      buysTotal = Number(row?.buys ?? 0);
+    } catch { /* tables may lag */ }
+
     const walletErrors = (monitorStatus.lastScannedWallets ?? []).filter(
       w => w.status === "error" || w.status === "no_key",
     );
@@ -177,6 +195,12 @@ router.get("/ops/summary", async (_req, res) => {
     const heliusSvc = healthMonitor.getAll().find(s => s.name === "helius-scanner");
     const body = {
       ts: new Date().toISOString(),
+      inventory: {
+        tokensTracked,
+        tokensActive,
+        buysTotal,
+        walletsTracked: monitorStatus.walletsTracked,
+      },
       helius: {
         configured: heliusConfigured,
         lastError: monitorStatus.heliusLastError ?? counters.lastHeliusError ?? heliusSvc?.lastError ?? null,
