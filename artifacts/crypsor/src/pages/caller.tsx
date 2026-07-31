@@ -479,8 +479,10 @@ export default function Caller() {
   const { data: stats } = useQuery<ProStats>({
     queryKey: ["proStats"],
     queryFn:  () => fetch(`${BASE_URL}/api/pro/stats`).then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime:       20_000,
+    // Server caches ~15s; poll less aggressively to keep Render free responsive.
+    refetchInterval: 60_000,
+    staleTime:       45_000,
+    refetchOnWindowFocus: true,
   });
 
   // "recent" = quality tokens from last 24 h, sorted by calledAt desc
@@ -491,33 +493,21 @@ export default function Caller() {
   const { data: historyData, isLoading } = useQuery<{ total: number; totalAll: number; tokens: ProToken[] }>({
     queryKey: ["proHistory", qualityFilter, sortKey, sortAsc ? "asc" : "desc"],
     queryFn:  () =>
-      fetch(`${BASE_URL}/api/pro/history?quality=${apiQuality}&sort=${apiSort}&order=${apiOrder}`)
+      fetch(`${BASE_URL}/api/pro/history?quality=${apiQuality}&sort=${apiSort}&order=${apiOrder}&limit=150`)
         .then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime:       20_000,
+    refetchInterval: 60_000,
+    staleTime:       45_000,
+    refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
   });
 
-  const tokens      = historyData?.tokens ?? [];
+  // Server already sorts/filters — keep order as returned.
+  const sorted      = historyData?.tokens ?? [];
   // stats.total = quality tokens only (very_good + good)
   const totalCalled = stats?.total ?? 0;
   const veryGoodCt  = stats?.veryGoodCount ?? 0;
   const goodCt      = stats?.goodCount     ?? 0;
   const recentCt    = stats?.recentCount   ?? 0;
-
-  // Client-side sort — "recent" tab always sorts by calledAt DESC
-  const sorted = [...tokens].sort((a, b) => {
-    if (qualityFilter === "recent") {
-      return new Date(b.calledAt).getTime() - new Date(a.calledAt).getTime();
-    }
-    let diff = 0;
-    if      (sortKey === "ath")      diff = (b.athMultiple ?? 0)           - (a.athMultiple ?? 0);
-    else if (sortKey === "gain")     diff = (b.gainSinceCall ?? -Infinity)  - (a.gainSinceCall ?? -Infinity);
-    else if (sortKey === "intel")    diff = (b.currentIntel ?? 0)           - (a.currentIntel ?? 0);
-    else if (sortKey === "calledMc") diff = (b.calledMcUsd ?? 0)            - (a.calledMcUsd ?? 0);
-    else if (sortKey === "calledAt") diff = new Date(b.calledAt).getTime()  - new Date(a.calledAt).getTime();
-    else                             diff = (b.proScore ?? 0)               - (a.proScore ?? 0);
-    return sortAsc ? -diff : diff;
-  });
 
   const bestAth    = stats?.bestAth ?? null;
   const winRate    = stats?.winRate ?? 0;

@@ -46,7 +46,8 @@ function useHeliusOk() {
   const { data } = useQuery<{ running: boolean; heliusConfigured: boolean }>({
     queryKey: ["monitor-status-mini"],
     queryFn: () => fetch(`${getApiBase()}api/monitor/status`).then(r => r.json()),
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
+    staleTime: 45_000,
     staleTime: 20_000,
   });
   return data?.heliusConfigured;

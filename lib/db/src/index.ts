@@ -34,6 +34,13 @@ const requiresSsl =
 export const pool = new Pool({
   connectionString: databaseUrl,
   ssl: requiresSsl ? { rejectUnauthorized: false } : undefined,
+  // Keep the free Render + Aiven path snappy: small pool, fail fast on
+  // cold connects, recycle idle clients so TLS sessions stay warm.
+  max: Number(process.env.PG_POOL_MAX ?? 8),
+  min: Number(process.env.PG_POOL_MIN ?? 1),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  allowExitOnIdle: false,
 });
 export const db = drizzle(pool, { schema });
 
