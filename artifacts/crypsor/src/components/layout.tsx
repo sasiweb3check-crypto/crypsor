@@ -30,6 +30,7 @@ const PRIMARY_NAV: NavItem[] = [
 const SECONDARY_NAV: NavItem[] = [
   { href: "/wallets",   label: "Wallets",   icon: Wallet,     desc: "Monitored wallets" },
   { href: "/intel-log", label: "Score Log", icon: ScrollText, desc: "Intel score history" },
+  { href: "/ops",       label: "Ops",       icon: Activity,   desc: "Buys · API · alerts" },
   { href: "/settings",  label: "Settings",  icon: Settings,   desc: "API keys & alerts" },
 ];
 
@@ -48,7 +49,6 @@ function useHeliusOk() {
     queryFn: () => fetch(`${getApiBase()}api/monitor/status`).then(r => r.json()),
     refetchInterval: 60_000,
     staleTime: 45_000,
-    staleTime: 20_000,
   });
   return data?.heliusConfigured;
 }

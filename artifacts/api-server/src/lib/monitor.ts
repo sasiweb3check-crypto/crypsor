@@ -32,6 +32,7 @@ import { startProSnapshots } from "../pipeline/pro-snapshots";
 import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
+import { opsLog } from "./ops-log";
 
 // ── Ignore lists ──────────────────────────────────────────────────────────────
 
@@ -110,8 +111,9 @@ async function fetchHeliusTxs(
   apiKey: string,
   limit = 100,
   attempt = 0,
-): Promise<{ txs: HeliusTx[]; error: string | null }> {
+): Promise<{ txs: HeliusTx[]; error: string | null; latencyMs: number }> {
   const MAX_ATTEMPTS = 3;
+  const t0 = Date.now();
   // Use an explicit AbortController so we can clearTimeout after success,
   // avoiding the "MaxListenersExceededWarning" that leaks with AbortSignal.timeout.
   const controller = new AbortController();
@@ -123,6 +125,7 @@ async function fetchHeliusTxs(
       { signal: controller.signal },
     );
     clearTimeout(timer);
+    const latencyMs = Date.now() - t0;
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       const isRetryable = resp.status === 429 || resp.status >= 500;
@@ -131,19 +134,31 @@ async function fetchHeliusTxs(
         await new Promise(r => setTimeout(r, delay));
         return fetchHeliusTxs(address, apiKey, limit, attempt + 1);
       }
-      return { txs: [], error: `Helius HTTP ${resp.status}: ${text.slice(0, 120)}` };
+      const error = `Helius HTTP ${resp.status}: ${text.slice(0, 120)}`;
+      opsLog("helius", "error", error, { wallet: address.slice(0, 8), status: resp.status }, latencyMs);
+      healthMonitor.error("helius-scanner", error);
+      return { txs: [], error, latencyMs };
     }
     const txs = await resp.json() as HeliusTx[];
-    return { txs: Array.isArray(txs) ? txs : [], error: null };
+    healthMonitor.ok("helius-scanner", latencyMs);
+    // Success is aggregated in scan-cycle opsLog — avoid flooding per wallet
+    if (latencyMs > 8_000) {
+      opsLog("helius", "warn", `Helius slow · ${latencyMs}ms`, { wallet: address.slice(0, 8) }, latencyMs);
+    }
+    return { txs: Array.isArray(txs) ? txs : [], error: null, latencyMs };
   } catch (err: unknown) {
     clearTimeout(timer);
+    const latencyMs = Date.now() - t0;
     const isAbort = err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError" || err.message.includes("timed out"));
     if (isAbort && attempt < MAX_ATTEMPTS - 1) {
       logger.warn({ wallet: address, attempt }, "Helius request timed out — retrying");
       await new Promise(r => setTimeout(r, (attempt + 1) * 3_000));
       return fetchHeliusTxs(address, apiKey, limit, attempt + 1);
     }
-    return { txs: [], error: isAbort ? "Helius request timed out" : String(err) };
+    const error = isAbort ? "Helius request timed out" : String(err);
+    opsLog("helius", "error", error, { wallet: address.slice(0, 8) }, latencyMs);
+    healthMonitor.error("helius-scanner", error);
+    return { txs: [], error, latencyMs };
   }
 }
 
@@ -306,6 +321,11 @@ async function scanSolanaWallet(
       });
       if (recorded) {
         result.buysFound++;
+        opsLog("wallet_buy", "info", `Buy · ${wallet.label || wallet.address.slice(0, 6)}`, {
+          mint: transfer.mint.slice(0, 8),
+          walletId: wallet.id,
+          symbol: dex?.symbol ?? null,
+        });
         eventBus.emit("token:bought", {
           tokenId, tokenAddress: transfer.mint, chain: "solana",
           walletId: wallet.id, priceUsd: dex?.priceUsd ?? null,
@@ -459,6 +479,29 @@ export async function runScan(): Promise<void> {
     queueSize: pipelineQueue.totalWaiting(),
     services: healthMonitor.getAll(),
   };
+
+  const errWallets = results.filter(r => r.status === "error" || r.status === "no_key");
+  opsLog(
+    "scan",
+    errWallets.length ? "warn" : "info",
+    `Scan cycle · ${cycleBuys} new buys · ${results.length} wallets` +
+      (errWallets.length ? ` · ${errWallets.length} errors` : ""),
+    {
+      buys: cycleBuys,
+      wallets: results.length,
+      errors: errWallets.length,
+      sampleError: errWallets[0]?.lastError ?? null,
+    },
+  );
+  if (!heliusKey) {
+    const last = (runScan as { _lastNoKey?: number })._lastNoKey ?? 0;
+    if (Date.now() - last > 300_000) {
+      (runScan as { _lastNoKey?: number })._lastNoKey = Date.now();
+      opsLog("blocker", "error", "Helius key missing — Solana buys silent", {
+        wallets: allWallets.filter(w => w.chain === "solana").length,
+      });
+    }
+  }
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────

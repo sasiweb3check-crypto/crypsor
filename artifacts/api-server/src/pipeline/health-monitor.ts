@@ -111,6 +111,9 @@ for (const name of [
   "intelligence-engine",
   "token-updater",
   "holders-refresh",
+  "helius-scanner",
+  "caller-alerts",
+  "pro-scanner",
 ]) {
   healthMonitor.register(name);
 }

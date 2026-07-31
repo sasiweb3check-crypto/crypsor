@@ -11,6 +11,7 @@ import holdersRouter  from "./holders";
 import intelLogRouter from "./intel-log";
 import callerRouter   from "./caller";
 import proRouter      from "./pro";
+import opsRouter      from "./ops";
 import { sseHandler } from "../pipeline/sse-gateway";
 
 const router: IRouter = Router();
@@ -27,6 +28,7 @@ router.use("/holders",   holdersRouter);
 router.use(intelLogRouter);
 router.use(callerRouter);
 router.use(proRouter);
+router.use(opsRouter);
 router.get("/events",    sseHandler);
 
 export default router;

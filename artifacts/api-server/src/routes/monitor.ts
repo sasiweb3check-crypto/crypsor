@@ -5,7 +5,14 @@ const router = Router();
 
 // GET /api/monitor/status
 router.get("/status", (_req, res) => {
-  res.json(monitorStatus);
+  const services = monitorStatus.pipeline?.services ?? [];
+  const engines = Object.fromEntries(
+    services.map(s => [s.name, s.status === "ok"]),
+  );
+  res.json({
+    ...monitorStatus,
+    engines,
+  });
 });
 
 // POST /api/monitor/scan  — trigger an immediate scan

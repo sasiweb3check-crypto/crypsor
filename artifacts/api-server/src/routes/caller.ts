@@ -418,24 +418,33 @@ router.get("/caller/kol-smart-status", async (_req, res) => {
 });
 
 // ── POST /api/caller/telegram/test ────────────────────────────────────────────
+// Optional body: { botToken?, chatId? } — falls back to saved settings.
 
 router.post("/caller/telegram/test", async (req, res) => {
   try {
+    const body = (req.body ?? {}) as { botToken?: string; chatId?: string };
     const rows = await db.select().from(settings)
       .where(sql`key IN ('telegram_bot_token', 'telegram_chat_id')`);
-    const botToken = (rows.find(r => r.key === "telegram_bot_token")?.value ?? "").trim();
-    const chatIdRaw = (rows.find(r => r.key === "telegram_chat_id")?.value ?? "").trim();
+    const botToken = (
+      (typeof body.botToken === "string" && body.botToken.trim()) ||
+      (rows.find(r => r.key === "telegram_bot_token")?.value ?? "")
+    ).trim();
+    const chatIdRaw = (
+      (typeof body.chatId === "string" && body.chatId.trim()) ||
+      (rows.find(r => r.key === "telegram_chat_id")?.value ?? "")
+    ).trim();
     if (!botToken || !chatIdRaw) {
-      res.status(400).json({ error: "Save bot token and chat ID first." });
+      const { opsLog } = await import("../lib/ops-log");
+      opsLog("telegram", "warn", "Test skipped — missing bot token or chat id");
+      res.status(400).json({ error: "Save bot token and chat ID first (or pass them in the request)." });
       return;
     }
-    // Telegram accepts numeric chat ids as numbers; keep string for @channel
     const chat_id = /^-?\d+$/.test(chatIdRaw) ? Number(chatIdRaw) : chatIdRaw;
 
-    // Plain text first — MarkdownV2 is brittle and caused false "server error" failures
     const text = "Crypsor Caller — test OK. Alerts are configured.";
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12_000);
+    const t0 = Date.now();
     let tgRes: Response;
     try {
       tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -448,6 +457,8 @@ router.post("/caller/telegram/test", async (req, res) => {
       clearTimeout(timer);
     }
 
+    const { opsLog } = await import("../lib/ops-log");
+    const latencyMs = Date.now() - t0;
     const bodyText = await tgRes.text().catch(() => "");
     if (!tgRes.ok) {
       let detail = bodyText.slice(0, 400);
@@ -455,15 +466,21 @@ router.post("/caller/telegram/test", async (req, res) => {
         const j = JSON.parse(bodyText) as { description?: string };
         if (j.description) detail = j.description;
       } catch { /* keep raw */ }
+      opsLog("telegram", "error", `Test failed: ${detail}`, { latencyMs }, latencyMs);
       res.status(400).json({ error: `Telegram: ${detail}` });
       return;
     }
-    res.json({ ok: true });
+    opsLog("telegram", "info", "Telegram test OK", { latencyMs }, latencyMs);
+    res.json({ ok: true, latencyMs });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("telegram test error", err);
+    try {
+      const { opsLog } = await import("../lib/ops-log");
+      opsLog("telegram", "error", `Test exception: ${msg.slice(0, 180)}`);
+    } catch { /* ignore */ }
     res.status(500).json({
-      error: msg.includes("abort")
+      error: msg.includes("abort") || msg.includes("Abort")
         ? "Telegram request timed out — check outbound network from the API host."
         : `Telegram test failed: ${msg}`,
     });
