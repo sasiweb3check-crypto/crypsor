@@ -159,7 +159,7 @@ router.get("/ops/summary", async (_req, res) => {
       blockers.push({
         code: "pending_first_calls",
         level: "warn",
-        msg: `${pendingFirstCalls} Pro call(s) in very_good queue (alerts now require confidence gates)`,
+        msg: `${pendingFirstCalls} very_good call(s) waiting on ENTRY gates — open Waiting lane to see holds`,
       });
     }
     if (qualityBelowBlocked > 0 && pendingFirstCalls === 0) {

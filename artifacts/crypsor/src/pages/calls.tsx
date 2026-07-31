@@ -8,6 +8,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   Copy, ExternalLink, Flame, Zap, Trophy, TrendingUp, ChevronDown, ChevronUp,
+  Hourglass,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -19,6 +20,7 @@ import {
   fetchCallsFeed, fetchCallsStats,
   type CallCard, type CallMode, type StatsPeriod,
 } from "@/lib/calls-api";
+import { OPS_SUMMARY_KEY, fetchOpsSummary } from "@/lib/ops-api";
 
 const STATS_PERIODS: { id: StatsPeriod; label: string }[] = [
   { id: "1d", label: "1D" },
@@ -88,6 +90,104 @@ function LiveBar({ now, peak }: { now: number; peak: number }) {
         <span className="font-mono-num text-[var(--cryp-gain)]">Peak {peak.toFixed(1)}× ✓</span>
       </div>
     </div>
+  );
+}
+
+function WaitingCardView({ c }: { c: CallCard }) {
+  const [, setLocation] = useLocation();
+  const [imgBroken, setImgBroken] = useState(false);
+  const imgSrc = safeImageUrl(c.logoUri, c.address, c.symbol);
+  const sym = safeSymbol(c.symbol, c.address) || "?";
+  const phase = c.runnerPhase ?? "radar";
+  const snaps = c.snapCount ?? 0;
+  const need = c.snapsNeeded ?? Math.max(0, 5 - snaps);
+  const phaseColor =
+    phase === "entry" ? "var(--cryp-gain)"
+      : phase === "heating" ? "var(--cryp-warn)"
+        : "var(--cryp-teal)";
+
+  return (
+    <article
+      className="call-card fade-up cursor-pointer transition-transform duration-200 active:scale-[0.99] hover:-translate-y-0.5"
+      onClick={() => setLocation(`/calls/${c.id}`)}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setLocation(`/calls/${c.id}`);
+        }
+      }}
+    >
+      <div className="flex items-start gap-3">
+        {!imgBroken ? (
+          <img
+            src={imgSrc}
+            alt=""
+            className="w-11 h-11 rounded-full object-cover shrink-0"
+            style={{ background: "var(--cryp-elevated)", border: "1px solid var(--cryp-line)" }}
+            onError={() => setImgBroken(true)}
+          />
+        ) : (
+          <div
+            className="w-11 h-11 rounded-full shrink-0 flex items-center justify-center text-[11px] font-bold"
+            style={{ background: "rgba(245,158,11,0.16)", color: "var(--cryp-warn)" }}
+          >
+            {sym.slice(0, 2)}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-display font-bold text-[15px]">${sym}</h3>
+            <span
+              className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5"
+              style={{ color: "var(--cryp-ink)", background: phaseColor }}
+            >
+              {c.runnerLabel ?? phase} {c.runnerScore ?? ""}
+            </span>
+            {c.alertEligible && (
+              <span className="text-[9px] font-bold uppercase text-[var(--cryp-mint)]">Ready</span>
+            )}
+          </div>
+          <div className="text-[11px] text-[var(--cryp-mute)] mt-0.5 font-mono-num">
+            {truncateAddress(c.address)}
+            {c.calledAt ? ` · ${formatTimeAgo(c.calledAt)} ago` : ""}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 px-2.5 py-2 rounded-lg text-[12px] leading-snug"
+        style={{
+          background: "rgba(245,158,11,0.08)",
+          border: "1px solid rgba(245,158,11,0.22)",
+          color: "var(--cryp-warn)",
+        }}
+      >
+        <span className="font-semibold">Hold · </span>
+        {c.holdReason ?? c.blockers?.[0] ?? "Waiting on ENTRY gates"}
+      </div>
+
+      <div className="grid grid-cols-4 gap-2 mt-3">
+        {[
+          { label: "Snaps", value: `${snaps}/5` },
+          { label: "Need", value: need > 0 ? String(need) : "ok" },
+          { label: "Now", value: `${(c.nowMultiple ?? 1).toFixed(2)}×` },
+          { label: "Entry", value: formatCompactUsd(c.calledMcUsd) },
+        ].map(m => (
+          <div key={m.label}>
+            <div className="text-[9px] uppercase tracking-wider text-[var(--cryp-mute)]">{m.label}</div>
+            <div className="font-mono-num text-[13px] font-semibold mt-0.5">{m.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {(c.blockers?.length ?? 0) > 0 && (
+        <div className="mt-3 pt-3 text-[11px] text-[var(--cryp-mute)]" style={{ borderTop: "1px solid var(--cryp-line)" }}>
+          <span className="text-[var(--cryp-warn)] font-semibold">Gates · </span>
+          {c.blockers!.join(" · ")}
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -299,7 +399,11 @@ function CallCardView({ c }: { c: CallCard }) {
 }
 
 export default function CallsPage() {
-  const [mode, setMode] = useState<CallMode>("best");
+  const [mode, setMode] = useState<CallMode>(() => {
+    if (typeof window === "undefined") return "best";
+    const q = new URLSearchParams(window.location.search).get("mode");
+    return q === "waiting" || q === "hot" || q === "latest" || q === "best" ? q : "best";
+  });
   const [period, setPeriod] = useState<StatsPeriod>("7d");
 
   const { data: stats } = useQuery({
@@ -309,11 +413,18 @@ export default function CallsPage() {
     placeholderData: keepPreviousData,
   });
 
+  const { data: opsSummary } = useQuery({
+    queryKey: OPS_SUMMARY_KEY,
+    queryFn: fetchOpsSummary,
+    refetchInterval: 20_000,
+    staleTime: 10_000,
+  });
+
   const {
     data, isLoading, isFetching, isError, error, refetch,
   } = useQuery({
     queryKey: CALLS_FEED_KEY(mode),
-    queryFn: () => fetchCallsFeed(mode, mode === "best" ? 8 : 40),
+    queryFn: () => fetchCallsFeed(mode, mode === "best" ? 8 : mode === "waiting" ? 24 : 40),
     refetchInterval: 12_000,
     staleTime: 6_000,
     placeholderData: keepPreviousData,
@@ -322,9 +433,13 @@ export default function CallsPage() {
 
   const cards = data?.cards ?? [];
   const universe = data?.universe ?? stats?.universe ?? 0;
+  const pendingN = data?.pendingFirstCalls
+    ?? opsSummary?.telegram?.pendingFirstCalls
+    ?? 0;
 
   const modes = useMemo(() => ([
     { id: "best" as const, label: "Best", icon: Trophy },
+    { id: "waiting" as const, label: "Waiting", icon: Hourglass },
     { id: "hot" as const, label: "Hot", icon: Flame },
     { id: "latest" as const, label: "Latest", icon: Zap },
   ]), []);
@@ -405,24 +520,36 @@ export default function CallsPage() {
         />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
         {modes.map(m => {
           const Icon = m.icon;
           const active = mode === m.id;
+          const count = m.id === "waiting" ? pendingN : null;
           return (
             <button
               key={m.id}
               type="button"
-              onClick={() => setMode(m.id)}
+              onClick={() => {
+                setMode(m.id);
+                const url = new URL(window.location.href);
+                if (m.id === "best") url.searchParams.delete("mode");
+                else url.searchParams.set("mode", m.id);
+                window.history.replaceState({}, "", url.pathname + url.search);
+              }}
               className={cn(
-                "flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[12px] font-bold transition-colors",
+                "flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[12px] font-bold transition-colors shrink-0",
                 active
-                  ? "bg-[var(--cryp-teal)] text-[var(--cryp-ink)]"
+                  ? m.id === "waiting"
+                    ? "bg-[var(--cryp-warn)] text-[var(--cryp-ink)]"
+                    : "bg-[var(--cryp-teal)] text-[var(--cryp-ink)]"
                   : "text-[var(--cryp-mute)] bg-[rgba(16,27,36,0.9)] border border-[var(--cryp-line)]",
               )}
             >
               <Icon className="w-3.5 h-3.5" />
               {m.label}
+              {count != null && count > 0 && (
+                <span className="font-mono-num opacity-80">{count}</span>
+              )}
             </button>
           );
         })}
@@ -431,6 +558,11 @@ export default function CallsPage() {
       {mode === "best" && (
         <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed fade-up">
           ENTRY-served + proper very_good only — not the raw good desk flood. Aim: a few clear calls.
+        </p>
+      )}
+      {mode === "waiting" && (
+        <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed fade-up">
+          Ops “pending first calls” — very_good coins held for snaps / freshness / smart-hold before Telegram ENTRY.
         </p>
       )}
 
@@ -462,10 +594,16 @@ export default function CallsPage() {
         )}
         {!isLoading && !isError && cards.length === 0 && (
           <div className="call-card text-center py-12 text-[12px] text-[var(--cryp-mute)] uppercase tracking-widest">
-            No quality calls yet — scanning wallets
+            {mode === "waiting"
+              ? "Nothing waiting — queue clear"
+              : "No quality calls yet — scanning wallets"}
           </div>
         )}
-        {cards.map(c => <CallCardView key={c.id} c={c} />)}
+        {cards.map(c => (
+          mode === "waiting"
+            ? <WaitingCardView key={c.id} c={c} />
+            : <CallCardView key={c.id} c={c} />
+        ))}
       </div>
     </div>
   );
