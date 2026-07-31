@@ -57,6 +57,8 @@ export type CallCard = {
   creatorAddress: string | null;
   creatorCreatedCount: number | null;
   socials: { twitter?: string; telegram?: string; website?: string };
+  entryServed?: boolean;
+  properServe?: boolean;
 };
 
 export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
@@ -64,6 +66,7 @@ export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
 export type CallStats = {
   period?: StatsPeriod | string;
   days?: number;
+  scope?: string;
   winRate: number;
   wins: number;
   signals: number;
@@ -72,6 +75,9 @@ export type CallStats = {
   avgX: number;
   bestX: number;
   bestSymbol: string | null;
+  deskRaw?: number;
+  telegramN?: number;
+  note?: string;
   universe?: number;
 };
 

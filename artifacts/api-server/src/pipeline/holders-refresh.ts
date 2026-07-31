@@ -29,7 +29,7 @@ import { buildHolderIntel }      from "../lib/holder-intel";
 
 const REFRESH_INTERVAL_MS  = 60_000;         // 60 s between momentum-refresh cycles
 const STARTUP_DELAY_MS     = 45_000;         // stagger so other services boot first
-const INITIAL_FETCH_DELAY  = 12_000;         // 12 s after token:bought
+const INITIAL_FETCH_DELAY  = 5_000;          // 5 s after token:bought — holders needed early for Best Calls
 const INITIAL_FETCH_COOLDOWN = 5 * 60_000;  // max one initial fetch per 5 min per token
 
 // In-memory cooldown: prevents duplicate initial fetches per token
@@ -147,9 +147,60 @@ function registerQueueHandler(): void {
 
 // ── Periodic momentum-refresh cycle ──────────────────────────────────────────
 
+async function enqueueProCallHolderGaps(): Promise<number> {
+  // Priority: recent Best Calls missing holder snapshots (was ~32% of 1D desk).
+  try {
+    const gaps = await db.execute(sql`
+      SELECT t.id, t.address, t.chain, t.name, t.symbol, t.market_cap_usd AS "marketCapUsd"
+      FROM pro_calls pc
+      JOIN tracked_tokens t ON t.id = pc.token_id
+      WHERE pc.called_at >= NOW() - INTERVAL '6 hours'
+        AND (
+          pc.surfaced_at IS NOT NULL
+          OR pc.quality_label IN ('very_good', 'good')
+          OR pc.call_alert_sent_at IS NOT NULL
+          OR pc.runner_alert_sent_at IS NOT NULL
+        )
+        AND t.latest_holder_snapshot_id IS NULL
+        AND COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+      ORDER BY pc.called_at DESC
+      LIMIT 12
+    `);
+    let n = 0;
+    for (const row of gaps.rows as Array<{
+      id: number; address: string; chain: string;
+      name: string | null; symbol: string | null; marketCapUsd: string | null;
+    }>) {
+      const added = pipelineQueue.enqueue<HoldersJobData>(
+        "holders",
+        {
+          tokenId:      Number(row.id),
+          address:      String(row.address),
+          chain:        String(row.chain ?? "solana"),
+          name:         row.name,
+          symbol:       row.symbol,
+          marketCapUsd: row.marketCapUsd,
+          snapshotType: "discovery",
+        },
+        {
+          priority: 9,
+          dedupKey: `holders:${row.id}:pro-gap`,
+        },
+      );
+      if (added) n++;
+    }
+    return n;
+  } catch (err) {
+    logger.warn({ err }, "Holders refresh: pro-call gap enqueue failed");
+    return 0;
+  }
+}
+
 async function refreshCycle(): Promise<void> {
   const t0 = Date.now();
   try {
+    const proGaps = await enqueueProCallHolderGaps();
+
     // Refresh tokens that EITHER have active momentum OR have stale / missing
     // holder data. This ensures archived tokens with zero recent buys still get
     // live GMGN snapshots rather than freezing at whatever was last fetched.
@@ -192,12 +243,12 @@ async function refreshCycle(): Promise<void> {
       )
       .limit(30); // cap per cycle — prevents flooding the queue with hundreds of jobs at startup
 
-    if (tokens.length === 0) {
+    if (tokens.length === 0 && proGaps === 0) {
       healthMonitor.ok("holders-refresh", Date.now() - t0);
       return;
     }
 
-    logger.info({ tokens: tokens.length }, "Holders refresh: enqueueing momentum tokens");
+    logger.info({ tokens: tokens.length, proGaps }, "Holders refresh: enqueueing momentum tokens");
 
     let enqueued = 0;
     let skipped  = 0;
@@ -225,7 +276,7 @@ async function refreshCycle(): Promise<void> {
 
     healthMonitor.ok("holders-refresh", Date.now() - t0);
     logger.info(
-      { enqueued, skipped, ms: Date.now() - t0 },
+      { enqueued, skipped, proGaps, ms: Date.now() - t0 },
       "Holders refresh: cycle enqueued",
     );
   } catch (err) {
