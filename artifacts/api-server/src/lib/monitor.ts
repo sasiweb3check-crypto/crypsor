@@ -33,23 +33,15 @@ import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
 import { opsLog } from "./ops-log";
+import {
+  SOLANA_BLOCKED_MINTS,
+  checkSolanaMemecoinBuy,
+  isBlockedMint,
+} from "./solana-memecoin-gate";
 
 // ── Ignore lists ──────────────────────────────────────────────────────────────
 
-const SOLANA_IGNORE = new Set([
-  "So11111111111111111111111111111111111111112",
-  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-  "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
-  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-  "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",
-  "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj",
-  "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
-  "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",
-  "he1iusmfkpAdwvxLNGV8Y1iSbj4rAyfzmiUEqLdjoxc",
-  "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
-  "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
-]);
+const SOLANA_IGNORE = SOLANA_BLOCKED_MINTS;
 
 const EVM_IGNORE = new Set([
   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
@@ -328,8 +320,20 @@ async function scanSolanaWallet(
     );
 
     for (const transfer of received) {
-      // No Dex await here — upsert enriches async; metadata-service also listens.
-      const tokenId = await upsertToken(transfer.mint, "solana", {});
+      if (isBlockedMint(transfer.mint)) continue;
+      // SOL/USDC pair + symbol/MC gate — skip stables, cbBTC, USD1, etc.
+      const gate = await checkSolanaMemecoinBuy(transfer.mint);
+      if (!gate.ok) {
+        opsLog("wallet_buy", "info", `Skipped non-meme · ${gate.reason}`, {
+          mint: transfer.mint.slice(0, 8),
+          symbol: gate.symbol ?? null,
+        });
+        continue;
+      }
+      // No Dex await for enrich — upsert enriches async; metadata-service also listens.
+      const tokenId = await upsertToken(transfer.mint, "solana", {
+        symbol: gate.symbol ?? null,
+      });
       const boughtAt = tx.timestamp ? new Date(tx.timestamp * 1000) : new Date();
       const recorded = await recordBuy({
         walletId: wallet.id, tokenId,
@@ -342,6 +346,7 @@ async function scanSolanaWallet(
         opsLog("wallet_buy", "info", `Buy · ${wallet.label || wallet.address.slice(0, 6)}`, {
           mint: transfer.mint.slice(0, 8),
           walletId: wallet.id,
+          symbol: gate.symbol ?? null,
         });
         eventBus.emit("token:bought", {
           tokenId, tokenAddress: transfer.mint, chain: "solana",

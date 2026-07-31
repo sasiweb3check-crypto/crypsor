@@ -25,6 +25,12 @@ import { healthMonitor } from "./health-monitor";
 import { fetchPumpFun } from "./price-service";
 import { pipelineQueue }       from "../lib/job-queue";
 import { updateTokenMetadata } from "./token-updater";
+import {
+  evaluateDexPairs,
+  isBlockedSymbol,
+  isProBannedToken,
+} from "../lib/solana-memecoin-gate";
+import { opsLog } from "../lib/ops-log";
 
 // ── Helius DAS — token image resolver ─────────────────────────────────────────
 // Replaces the blocked PumpFun frontend-api (HTTP 530 from Cloudflare).
@@ -259,6 +265,42 @@ async function enrichToken(job: MetadataJobData): Promise<void> {
     }
 
     if (!data) return;
+
+    // Re-check SOL/USDC pair + blocked symbols once Dex lists the token.
+    // Bonding tokens (no pairs yet) stay; junk majors/stables get ignored.
+    if (job.chain === "solana" || job.chain === "sol") {
+      const pairs = Array.isArray(data.rawPairs)
+        ? (data.rawPairs as Parameters<typeof evaluateDexPairs>[1])
+        : (rawPayload && typeof rawPayload === "object" && Array.isArray((rawPayload as { pairs?: unknown[] }).pairs)
+          ? ((rawPayload as { pairs: Parameters<typeof evaluateDexPairs>[1] }).pairs)
+          : null);
+      const mcNum = data.marketCapUsd != null ? parseFloat(data.marketCapUsd) : null;
+      const ban = isProBannedToken({
+        address: job.tokenAddress,
+        symbol: data.symbol,
+        calledMcUsd: mcNum,
+      });
+      const gate = pairs
+        ? evaluateDexPairs(job.tokenAddress, pairs)
+        : { ok: !ban.banned && !isBlockedSymbol(data.symbol), reason: ban.reason ?? "ok", symbol: data.symbol };
+
+      if (!gate.ok || ban.banned) {
+        const reason = ban.reason ?? gate.reason ?? "non_meme";
+        await db.update(tracked_tokens)
+          .set({
+            status: "ignored",
+            symbol: data.symbol,
+            lastStatusChangeAt: new Date(),
+          })
+          .where(eq(tracked_tokens.id, job.tokenId));
+        opsLog("wallet_buy", "info", `Ignored non-meme after list · ${reason}`, {
+          tokenId: job.tokenId,
+          mint: job.tokenAddress.slice(0, 8),
+          symbol: data.symbol,
+        });
+        return;
+      }
+    }
 
     // Write via TokenUpdater (stores raw_metadata + core fields)
     await updateTokenMetadata(job.tokenId, {

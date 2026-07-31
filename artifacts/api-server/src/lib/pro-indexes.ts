@@ -1,5 +1,12 @@
 import { pool } from "@workspace/db";
 import { logger } from "./logger";
+import {
+  BLOCKED_SYMBOLS,
+  MAX_ABSURD_MC_USD,
+  MAX_DISCOVERY_MC_USD,
+  MAX_PRO_ENTRY_MC_USD,
+  SOLANA_BLOCKED_MINTS,
+} from "./solana-memecoin-gate";
 
 /** Idempotent schema patches for Pro GMGN verify freeze + alerts + snapshots. */
 const SCHEMA_STATEMENTS = [
@@ -36,6 +43,51 @@ const STATEMENTS = [
      ON pro_snapshots (pro_call_id, snapshot_at DESC)`,
 ];
 
+/** One-shot demote / ignore USD1, cbBTC, absurd MC, Track-C (smart=0) junk. */
+async function quarantineBadMcOutcomes(): Promise<void> {
+  const mints = [...SOLANA_BLOCKED_MINTS];
+  const symbols = [...BLOCKED_SYMBOLS];
+  try {
+    const ignored = await pool.query(
+      `UPDATE tracked_tokens
+       SET status = 'ignored', last_status_change_at = NOW()
+       WHERE COALESCE(status, '') <> 'ignored'
+         AND (
+           address = ANY($1::text[])
+           OR UPPER(COALESCE(symbol, '')) = ANY($2::text[])
+           OR COALESCE(NULLIF(market_cap_usd, '')::numeric, 0) > $3
+         )`,
+      [mints, symbols, MAX_ABSURD_MC_USD],
+    );
+    const demoted = await pool.query(
+      `UPDATE pro_calls pc
+       SET quality_label = 'below',
+           surfaced_at = NULL
+       FROM tracked_tokens t
+       WHERE pc.token_id = t.id
+         AND COALESCE(pc.quality_label, '') IN ('good', 'very_good', 'average')
+         AND (
+           t.address = ANY($1::text[])
+           OR UPPER(COALESCE(t.symbol, '')) = ANY($2::text[])
+           OR COALESCE(NULLIF(pc.called_mc_usd, '')::numeric, 0) > $3
+           OR COALESCE(NULLIF(pc.called_mc_usd, '')::numeric, 0) > $4
+           OR COALESCE(pc.called_smart_count, 0) < 1
+           OR COALESCE(NULLIF(t.market_cap_usd, '')::numeric, 0) > $5
+         )`,
+      [mints, symbols, MAX_PRO_ENTRY_MC_USD, MAX_DISCOVERY_MC_USD, MAX_ABSURD_MC_USD],
+    );
+    logger.info(
+      {
+        ignoredTokens: ignored.rowCount ?? 0,
+        demotedProCalls: demoted.rowCount ?? 0,
+      },
+      "quarantined bad MC / non-meme / smart=0 Pro outcomes",
+    );
+  } catch (err) {
+    logger.warn({ err }, "quarantineBadMcOutcomes failed (non-fatal)");
+  }
+}
+
 export async function ensureProIndexes(): Promise<void> {
   // Don't block boot/health — schema + indexes in the background.
   void (async () => {
@@ -54,6 +106,7 @@ export async function ensureProIndexes(): Promise<void> {
         logger.warn({ err, sqlText }, "pro index ensure failed");
       }
     }
+    await quarantineBadMcOutcomes();
     logger.info("pro schema + indexes ensured");
   })();
 }

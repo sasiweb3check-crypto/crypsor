@@ -167,32 +167,19 @@ function computeHolderVelocityScore(
 }
 
 // ── 4. KOL / Smart Signal Score ───────────────────────────────────────────────
-// Two sources of KOL/smart signal, takes the higher of both:
-//
-//  A) GMGN holder classification — density of KOL + smart holders vs total.
-//     kolWeight   = (kolCount  / total) * 100 * 2.5  (capped at 100)
-//     smartWeight = (smartCount / total) * 100 * 2.0  (capped at 100)
-//
-//  B) Tracked wallet buys — any wallet in walletdatasource that bought is a
-//     high-conviction signal regardless of label. Score = distinctCount * 25
-//     (1 wallet = 25, 2 = 50, 3 = 75, 4+ = 100).
-//
-// Using max() means GMGN data takes over when available, but tracked wallet
-// buys provide a reliable fallback when GMGN holder data hasn't arrived yet.
+// GMGN holder classification only — Crypsor tracked wallets are sensors for
+// discovery, NEVER a KOL/smart metric (inflated MarsCoin / dump scores).
 
 function computeKolSmartScore(
   holderKolCount:        number,
   holderSmartCount:      number,
   holderCount:           number,
-  distinctTrackedWallets = 0,
 ): number {
-  // Source A: GMGN holder classification
-  const gmgnScore = holderCount > 0
-    ? (holderKolCount / holderCount) * 100 * 2.5 + (holderSmartCount / holderCount) * 100 * 2.0
-    : 0;
-  // Source B: tracked wallet buys (each distinct wallet = 25 pts, cap 100)
-  const trackedScore = Math.min(100, distinctTrackedWallets * 25);
-  return clamp(Math.round(Math.max(gmgnScore, trackedScore)));
+  if (holderCount <= 0) return 0;
+  const gmgnScore =
+    (holderKolCount / holderCount) * 100 * 2.5 +
+    (holderSmartCount / holderCount) * 100 * 2.0;
+  return clamp(Math.round(gmgnScore));
 }
 
 // ── Quality label from final score ────────────────────────────────────────────
@@ -414,7 +401,9 @@ export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promi
       const holderVelResult       = computeHolderVelocityScore(hSnaps, t.holderCount, cohortVelocities[group]);
       const holderVelocityScore   = r1(clamp(holderVelResult.score));
       const distinctTracked       = distinctSmartWalletsByToken.get(t.id)?.size ?? 0;
-      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount, distinctTracked)));
+      // Tracked wallets are discovery sensors only — never feed kolSmartScore
+      const kolSmartScore         = r1(clamp(computeKolSmartScore(t.holderKolCount, t.holderSmartCount, t.holderCount)));
+      void distinctTracked; // retained for log diagnostics only
       const liquidityHealthScore  = r1(clamp(computeLiquidityHealthScore(t.liquidityUsd, t.lowLiquidityFlag, pSnaps)));
 
       const ageHrs  = (Date.now() - t.firstDetectedAt.getTime()) / 3_600_000;
@@ -505,9 +494,7 @@ export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promi
           mcGrowthScore, volumeIntensityScore, holderVelocityScore, kolSmartScore, liquidityHealthScore,
           ageMultiplier: ageMult, tokenAgeHours: r1(ageHrs),
           marketCapUsd: t.marketCapUsd, volume24hUsd: t.volume24hUsd, liquidityUsd: t.liquidityUsd, peakMcUsd: newPeak,
-          // Log raw GMGN counts only. Pro qualify does a live GMGN verify and must
-          // not treat Crypsor tracked-wallet buys as KOL (that inflated MarsCoin etc.).
-          // distinctTracked still feeds kolSmartScore via computeKolSmartScore above.
+          // Log raw GMGN counts only. Tracked Crypsor wallets are sensors — never KOL metrics.
           holderCount: t.holderCount,
           holderKolCount: t.holderKolCount ?? 0,
           holderSmartCount: t.holderSmartCount ?? 0,

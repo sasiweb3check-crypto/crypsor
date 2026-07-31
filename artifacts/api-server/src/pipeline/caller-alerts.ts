@@ -1,7 +1,7 @@
 /**
  * Pro Caller Alerts — rebuilt from scratch
  *
- * 1. First Call alert — once when a token enters Pro (good | very_good) and is
+ * 1. First Call alert — once when a token enters Pro as very_good and is
  *    scored. Stored on pro_calls.call_alert_sent_at (never on tracked_tokens).
  *
  * 2. Milestone alerts — each of 2× / 5× / 10× / 20× from called_mc fires once.
@@ -295,7 +295,7 @@ async function checkAndAlert(): Promise<void> {
       t.sec_is_honeypot        AS "secHoneypot"
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
-    WHERE pc.quality_label IN ('very_good', 'good')
+    WHERE pc.quality_label IN ('very_good')
       AND (
         pc.call_alert_sent_at IS NULL
         OR COALESCE(pc.ath_multiple, 1) >= 2
