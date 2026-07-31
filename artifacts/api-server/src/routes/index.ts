@@ -15,6 +15,7 @@ import runnerRouter   from "./runner";
 import traderRouter   from "./trader";
 import callsRouter    from "./calls";
 import opsRouter      from "./ops";
+import walletIntelRouter from "./wallet-intel";
 import { sseHandler } from "../pipeline/sse-gateway";
 
 const router: IRouter = Router();
@@ -31,6 +32,7 @@ router.use("/holders",   holdersRouter);
 router.use(intelLogRouter);
 router.use(callerRouter);
 router.use(callsRouter);
+router.use(walletIntelRouter);
 router.use(runnerRouter);
 router.use(traderRouter);
 router.use(proRouter);

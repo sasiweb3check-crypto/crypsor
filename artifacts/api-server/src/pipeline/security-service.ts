@@ -16,18 +16,18 @@
  */
 
 import { db } from "@workspace/db";
-import { tracked_tokens, wallet_profiles } from "@workspace/db";
-import { eq, or, isNull, lt, sql, and } from "drizzle-orm";
+import { tracked_tokens } from "@workspace/db";
+import { eq, or, isNull, lt, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { eventBus, type TokenBoughtEvent } from "./event-bus";
 import {
   fetchTokenSecurity,
   fetchTokenPool,
-  fetchWalletProfile,
   CHAIN_MAP,
   nextProxy,
   type GmgnSecurityData,
 } from "../lib/gmgn-client";
+import { enrichAndPersistWalletProfile } from "../lib/wallet-profile-enrich";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;   // 5 min between refresh cycles
 const STARTUP_DELAY_MS    = 60_000;        // wait 60 s after boot
@@ -140,67 +140,21 @@ async function fetchCreatorProfile(
   creatorAddress: string,
   tokenId: number,
 ): Promise<void> {
-  const proxy      = nextProxy();
-  const [profileRes] = await Promise.all([
-    fetchWalletProfile(chain, creatorAddress, proxy),
-  ]);
-
-  if (!profileRes.ok) return;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = (profileRes.data as any)?.data ?? (profileRes.data as any) ?? {};
-
-  const totalPnl       = parseFloat(data?.total_profit_usd     ?? data?.pnl             ?? "0") || null;
-  const realizedPnl    = parseFloat(data?.realized_profit      ?? data?.realized_pnl    ?? "0") || null;
-  const unrealizedPnl  = parseFloat(data?.unrealized_profit    ?? data?.unrealized_pnl  ?? "0") || null;
-  const winRate        = parseFloat(data?.winrate              ?? data?.win_rate         ?? "0") || null;
-  const avgHoldTimeSec = data?.avg_hold_duration ?? data?.avg_hold_time ?? null;
-  const totalTrades    = data?.total_trade_count ?? data?.total_trades  ?? null;
-  const solBalance     = parseFloat(data?.sol_balance ?? "0") || null;
-  const labels: string[] = [
-    ...(data?.tags ?? []),
-    ...(data?.maker_token_tags ?? []),
-    "dev",  // always tag creator as dev
-  ].filter(Boolean);
-
-  await db.insert(wallet_profiles).values({
-    walletAddress:    creatorAddress,
-    labels:           [...new Set(labels)],
-    twitterName:      data?.twitter_name     ?? null,
-    twitterUsername:  data?.twitter_username ?? null,
-    totalPnlUsd:      totalPnl,
-    realizedPnlUsd:   realizedPnl,
-    unrealizedPnlUsd: unrealizedPnl,
-    winRate:          winRate && winRate > 1 ? winRate / 100 : winRate,
-    avgHoldTimeSec:   avgHoldTimeSec != null ? Math.round(Number(avgHoldTimeSec)) : null,
-    totalTradeCount:  totalTrades   != null ? Math.round(Number(totalTrades))    : null,
-    solBalance,
-    gmgnProfile:      profileRes.data,
-    profileFetchedAt: new Date(),
-    lastSeenAt:       new Date(),
-  }).onConflictDoUpdate({
-    target: wallet_profiles.walletAddress,
-    set: {
-      labels:           sql`ARRAY(SELECT DISTINCT unnest(wallet_profiles.labels || excluded.labels))`,
-      twitterName:      sql`COALESCE(NULLIF(excluded.twitter_name, ''), wallet_profiles.twitter_name)`,
-      twitterUsername:  sql`COALESCE(NULLIF(excluded.twitter_username, ''), wallet_profiles.twitter_username)`,
-      totalPnlUsd:      sql`excluded.total_pnl_usd`,
-      realizedPnlUsd:   sql`excluded.realized_pnl_usd`,
-      unrealizedPnlUsd: sql`excluded.unrealized_pnl_usd`,
-      winRate:          sql`excluded.win_rate`,
-      avgHoldTimeSec:   sql`excluded.avg_hold_time_sec`,
-      totalTradeCount:  sql`excluded.total_trade_count`,
-      solBalance:       sql`excluded.sol_balance`,
-      gmgnProfile:      sql`excluded.gmgn_profile`,
-      profileFetchedAt: sql`excluded.profile_fetched_at`,
-      lastSeenAt:       sql`excluded.last_seen_at`,
-    },
+  const enriched = await enrichAndPersistWalletProfile(chain, creatorAddress, {
+    extraLabels: ["dev"],
+    fetchHoldings: false,
   });
-
-  log.info(
-    { creatorAddress: creatorAddress.slice(0, 8) + "…", tokenId, winRate, totalPnl },
-    "Creator profile upserted",
-  );
+  if (enriched.ok) {
+    log.info(
+      {
+        creatorAddress: creatorAddress.slice(0, 8) + "…",
+        tokenId,
+        winRate: enriched.winRate,
+        totalPnl: enriched.totalPnlUsd,
+      },
+      "Creator profile upserted",
+    );
+  }
 }
 
 // ── Refresh cycle ─────────────────────────────────────────────────────────────

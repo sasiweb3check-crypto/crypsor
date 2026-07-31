@@ -238,7 +238,7 @@ async function settleOutcomes(): Promise<void> {
     if (credited > 0) log.info({ tokenId: r.token_id, credited }, "Crypsor wallet wins credited");
   }
 
-  // Losses: aged calls that never hit 2×
+  // Losses: aged calls that never hit 2× — never credit loss if win already exists
   const losses = await db.execute(sql`
     SELECT pc.token_id
     FROM pro_calls pc
@@ -253,7 +253,7 @@ async function settleOutcomes(): Promise<void> {
           AND NOT EXISTS (
             SELECT 1 FROM crypsor_wallet_token_events x
             WHERE x.wallet_address = e.wallet_address
-              AND x.token_id = pc.token_id AND x.role = 'loss'
+              AND x.token_id = pc.token_id AND x.role IN ('loss', 'win')
           )
       )
     ORDER BY pc.called_at ASC
@@ -267,19 +267,27 @@ async function settleOutcomes(): Promise<void> {
 }
 
 async function seedRecentTokens(): Promise<void> {
-  // Catch tokens that already have holder snapshots but weren't queued
+  // Catch tokens that already have holder snapshots but weren't judged yet
   const rows = await db.execute(sql`
     SELECT t.id
     FROM tracked_tokens t
     JOIN pro_calls pc ON pc.token_id = t.id
     WHERE t.latest_holder_snapshot_id IS NOT NULL
-      AND pc.called_at >= NOW() - INTERVAL '48 hours'
-      AND NOT EXISTS (
+      AND pc.called_at >= NOW() - INTERVAL '72 hours'
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM crypsor_wallet_token_events e
+          WHERE e.token_id = t.id AND e.role = 'observed'
+        )
+        OR t.last_holders_updated_at > NOW() - INTERVAL '2 hours'
+      )
+    ORDER BY
+      (NOT EXISTS (
         SELECT 1 FROM crypsor_wallet_token_events e
         WHERE e.token_id = t.id AND e.role = 'observed'
-      )
-    ORDER BY pc.called_at DESC
-    LIMIT 15
+      )) DESC,
+      pc.called_at DESC
+    LIMIT 25
   `);
   for (const r of rows.rows as Array<{ id: number }>) {
     enqueueWalletIntel(Number(r.id));
