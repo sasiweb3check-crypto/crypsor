@@ -368,7 +368,7 @@ function TokenRow({ t, onNavigate }: { t: ProToken; onNavigate: () => void }) {
           <div className="flex items-center justify-end gap-1">
             <div className="flex flex-col items-end leading-tight">
               <span className="text-[9px] text-[#8b949e] tabular-nums" title={formatCalledAt(t.calledAt)}>
-                {formatTimeAgo(t.calledAt)} ago
+                {t.calledAt ? `${formatTimeAgo(t.calledAt)} ago` : "—"}
               </span>
               <span className="text-[7px] text-[#484f58] tabular-nums">{formatCalledAt(t.calledAt)}</span>
             </div>
