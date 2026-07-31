@@ -11,7 +11,7 @@ services:
     # free = spins down after idle (ok for first bring-up). Upgrade to starter for always-on pipeline.
     plan: free
     region: oregon
-    buildCommand: corepack enable && pnpm install --no-frozen-lockfile && pnpm --filter @workspace/api-server run build
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start
     healthCheckPath: /api/healthz
     envVars:
