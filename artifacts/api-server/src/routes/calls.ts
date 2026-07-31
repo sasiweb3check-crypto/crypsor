@@ -2,6 +2,7 @@
  * Best Calls API — lightweight FOMO-style desk
  *
  * GET /api/calls/feed   — ranked call cards (wallet quality, MC-agnostic)
+ * GET /api/calls/waiting — very_good queue held for ENTRY gates (Ops pending)
  * GET /api/calls/stats  — win rate · highest X · signals · avg X
  * GET /api/calls/token/:id — single card detail
  */
@@ -13,6 +14,12 @@ import { apiFail, apiOk } from "../lib/api-envelope";
 import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
 import { extractSocials } from "../lib/socials";
 import { computeCallQuality, type CallQualityLabel } from "../lib/call-quality";
+import { convictionFieldsFromVerified } from "../lib/pro-confidence";
+import {
+  computeRunnerScore,
+  MIN_ENTRY_OBSERVATION_SNAPS,
+  type RunnerPhase,
+} from "../lib/runner-score";
 
 const router = Router();
 
@@ -428,10 +435,240 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
   return { cards: cards.slice(0, limit), universe };
 }
 
+export type WaitingCallCard = CallCard & {
+  runnerPhase: RunnerPhase;
+  runnerScore: number;
+  runnerLabel: string;
+  alertEligible: boolean;
+  blockers: string[];
+  snapCount: number;
+  snapsNeeded: number;
+  observationReady: boolean;
+  /** One-line why Telegram ENTRY is held. */
+  holdReason: string;
+};
+
+async function loadWaitingCalls(limit: number): Promise<{
+  cards: WaitingCallCard[];
+  pendingFirstCalls: number;
+}> {
+  const cacheKey = `calls:waiting:v1:${limit}`;
+  const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
+  if (cached?.cards) return cached;
+
+  const rows = await db.execute(sql`
+    SELECT
+      pc.token_id, pc.called_at, pc.called_mc_usd,
+      pc.called_kol_count, pc.called_smart_count, pc.called_intel_score,
+      pc.called_holder_velocity,
+      pc.ath_multiple, pc.pro_score, pc.quality_label,
+      pc.hit_2x, pc.hit_5x, pc.hit_10x, pc.surfaced_at,
+      pc.call_alert_sent_at, pc.runner_alert_sent_at,
+      pc.runner_score, pc.runner_phase, pc.verified_wallets,
+      GREATEST(
+        COALESCE(pc.observation_snap_count, 0),
+        (SELECT COUNT(*)::int FROM pro_snapshots ps WHERE ps.pro_call_id = pc.id)
+      )::int AS snap_count,
+      t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+      t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
+      t.raw_metadata, t.holder_count, t.latest_holder_snapshot_id,
+      t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
+      t.holder_quality_score, t.holder_velocity_score,
+      t.volume_intensity_score,
+      t.sec_is_honeypot, t.sec_mint_renounced, t.sec_freeze_renounced,
+      t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
+      t.sec_creator_created_count, t.token_created_at, t.first_detected_at
+    FROM pro_calls pc
+    JOIN tracked_tokens t ON t.id = pc.token_id
+    WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+      AND pc.quality_label = 'very_good'
+      AND pc.call_alert_sent_at IS NULL
+      AND pc.runner_alert_sent_at IS NULL
+    ORDER BY pc.called_at DESC NULLS LAST
+    LIMIT ${Math.min(Math.max(limit, 1), 40)}
+  `);
+
+  const cards: WaitingCallCard[] = (rows.rows as Array<Record<string, unknown>>).map(r => {
+    const calledMc = r.called_mc_usd != null ? parseFloat(String(r.called_mc_usd)) : null;
+    const currentMc = r.market_cap_usd != null ? parseFloat(String(r.market_cap_usd)) || null : null;
+    const athMultiple = Number(r.ath_multiple ?? 1) || 1;
+    const athMcRaw = r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) : null;
+    const athMc = athMcRaw && athMcRaw > 0
+      ? athMcRaw
+      : (calledMc && athMultiple > 1 ? calledMc * athMultiple : currentMc);
+    const gainPct = calledMc && currentMc && calledMc > 0
+      ? ((currentMc - calledMc) / calledMc) * 100
+      : null;
+    const nowMultiple = calledMc && currentMc && calledMc > 0
+      ? Math.round((currentMc / calledMc) * 100) / 100
+      : 1;
+    const velocity = calledMc && currentMc && calledMc > 0 ? currentMc / calledMc : 1;
+    const ageMin = r.called_at
+      ? (Date.now() - new Date(String(r.called_at)).getTime()) / 60_000
+      : 9999;
+    const snapCount = Number(r.snap_count ?? 0) || 0;
+    const vw = convictionFieldsFromVerified(r.verified_wallets);
+    const prevPhase = r.runner_phase != null ? String(r.runner_phase) as RunnerPhase : null;
+    const prevScore = r.runner_score != null ? Number(r.runner_score) : null;
+    const runner = computeRunnerScore({
+      calledIntelScore: r.called_intel_score != null ? Number(r.called_intel_score) : null,
+      calledSmartCount: Number(r.called_smart_count ?? 0),
+      calledKolCount: Number(r.called_kol_count ?? 0),
+      calledMcUsd: calledMc,
+      currentMcUsd: currentMc,
+      athMultiple,
+      gainPct: gainPct ?? 0,
+      ageMinutes: ageMin,
+      velocity,
+      snapDeltaPct: null,
+      liveSmart: Number(r.live_smart ?? 0),
+      liveKol: Number(r.live_kol ?? 0),
+      secIsHoneypot: r.sec_is_honeypot as boolean | null,
+      secMintRenounced: r.sec_mint_renounced as boolean | null,
+      secFreezeRenounced: r.sec_freeze_renounced as boolean | null,
+      holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+      volumeIntensityScore: r.volume_intensity_score != null ? Number(r.volume_intensity_score) : null,
+      smartHoldRate: vw.smartHoldRate,
+      prevPhase,
+      prevScore,
+      snapCount,
+    });
+
+    const ageSrc = r.token_created_at ?? r.first_detected_at;
+    const firstSeen = ageSrc ? new Date(String(ageSrc)).getTime() : null;
+    const tokenAgeMin = firstSeen != null && Number.isFinite(firstSeen)
+      ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000))
+      : null;
+
+    const q = computeCallQuality({
+      walletBuys: 0,
+      calledKol: Number(r.called_kol_count ?? 0),
+      calledSmart: Number(r.called_smart_count ?? 0),
+      liveKol: Number(r.live_kol ?? 0),
+      liveSmart: Number(r.live_smart ?? 0),
+      holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+      holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+      avgWalletWinRate: null,
+      proScore: Number(r.pro_score ?? 0),
+      qualityLabel: String(r.quality_label ?? ""),
+      athMultiple,
+      honeypot: r.sec_is_honeypot as boolean | null,
+      ctoFlag: r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag),
+      creatorClose: r.sec_creator_close == null ? null : Boolean(r.sec_creator_close),
+      creatorCreatedCount: r.sec_creator_created_count != null
+        ? Number(r.sec_creator_created_count)
+        : null,
+    });
+
+    const snapsNeeded = Math.max(0, MIN_ENTRY_OBSERVATION_SNAPS - snapCount);
+    const holdReason = runner.alertEligible && runner.phase === "entry"
+      ? "Ready — next alert cycle should ping"
+      : runner.blockers[0]
+        ?? (!runner.signals.observationReady
+          ? `Observing ${snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS} snaps`
+          : runner.phase === "heating"
+            ? "Heating — waiting for ENTRY velocity"
+            : runner.phase === "radar"
+              ? "Radar — building structure"
+              : `Held · ${runner.label}`);
+
+    const base: CallCard = {
+      id: Number(r.token_id),
+      address: String(r.address),
+      chain: String(r.chain ?? "solana"),
+      name: (r.name as string | null) ?? null,
+      symbol: (r.symbol as string | null) ?? null,
+      logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+      calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+      calledMcUsd: calledMc,
+      currentMcUsd: currentMc,
+      athMcUsd: athMc,
+      gainPct,
+      nowMultiple,
+      athMultiple: Math.round(athMultiple * 100) / 100,
+      walletBuys: 0,
+      buyVolumeHintUsd: null,
+      calledKol: Number(r.called_kol_count ?? 0),
+      calledSmart: Number(r.called_smart_count ?? 0),
+      liveKol: Number(r.live_kol ?? 0),
+      liveSmart: Number(r.live_smart ?? 0),
+      holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+      avgWalletWinRate: null,
+      holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+      proScore: Number(r.pro_score ?? 0),
+      qualityLabel: String(r.quality_label ?? "very_good"),
+      callScore: q.score,
+      callLabel: q.label,
+      reasons: q.reasons,
+      hit2x: Boolean(r.hit_2x) || athMultiple >= 2,
+      hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
+      hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
+      volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+      tokenAgeMin,
+      ctoFlag: r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag),
+      creatorClose: r.sec_creator_close == null ? null : Boolean(r.sec_creator_close),
+      creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
+      creatorCreatedCount: r.sec_creator_created_count != null
+        ? Number(r.sec_creator_created_count)
+        : null,
+      socials: extractSocials(r.raw_metadata),
+      entryServed: false,
+      properServe: snapCount >= 5
+        && r.latest_holder_snapshot_id != null
+        && (Number(r.called_smart_count ?? 0) + Number(r.called_kol_count ?? 0)) >= 1,
+    };
+
+    return {
+      ...base,
+      runnerPhase: runner.phase,
+      runnerScore: runner.score,
+      runnerLabel: runner.label,
+      alertEligible: runner.alertEligible,
+      blockers: runner.blockers,
+      snapCount,
+      snapsNeeded,
+      observationReady: runner.signals.observationReady,
+      holdReason,
+      reasons: [
+        holdReason,
+        ...runner.reasons.slice(0, 2),
+      ].slice(0, 4),
+    };
+  });
+
+  // Fresh / near-ENTRY first, then heating, then stale desk leftovers
+  const phaseRank = (p: RunnerPhase) =>
+    p === "entry" ? 0 : p === "heating" ? 1 : p === "radar" ? 2 : 3;
+  cards.sort((a, b) => {
+    if (a.alertEligible !== b.alertEligible) return a.alertEligible ? -1 : 1;
+    const pd = phaseRank(a.runnerPhase) - phaseRank(b.runnerPhase);
+    if (pd !== 0) return pd;
+    return (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
+  });
+
+  const payload = { cards, pendingFirstCalls: cards.length };
+  await proCacheSet(cacheKey, payload, 6);
+  return payload;
+}
+
 router.get("/calls/feed", async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "40"), 10) || 40, 1), 80);
-    const mode = String(req.query.mode ?? "latest"); // latest | best | hot
+    const mode = String(req.query.mode ?? "latest"); // latest | best | hot | waiting
+
+    if (mode === "waiting") {
+      const pack = await loadWaitingCalls(limit);
+      res.setHeader("Cache-Control", "private, max-age=4");
+      res.json(apiOk({
+        cards: pack.cards,
+        total: pack.cards.length,
+        universe: pack.pendingFirstCalls,
+        mode: "waiting",
+        pendingFirstCalls: pack.pendingFirstCalls,
+        note: "Waiting = very_good not yet ENTRY-served — held for snaps / confidence gates",
+      }));
+      return;
+    }
 
     let pack: { cards: CallCard[]; universe: number };
     try {
@@ -476,6 +713,22 @@ router.get("/calls/feed", async (req, res) => {
   } catch (err) {
     console.error("calls feed error", err);
     res.status(500).json(apiFail("Internal server error", "calls_feed"));
+  }
+});
+
+router.get("/calls/waiting", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "24"), 10) || 24, 1), 40);
+    const pack = await loadWaitingCalls(limit);
+    res.setHeader("Cache-Control", "private, max-age=4");
+    res.json(apiOk({
+      cards: pack.cards,
+      pendingFirstCalls: pack.pendingFirstCalls,
+      note: "Ops pending first calls — very_good held for ENTRY gates",
+    }));
+  } catch (err) {
+    console.error("calls waiting error", err);
+    res.status(500).json(apiFail("Internal server error", "calls_waiting"));
   }
 });
 

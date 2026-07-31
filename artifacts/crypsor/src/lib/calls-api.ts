@@ -59,6 +59,16 @@ export type CallCard = {
   socials: { twitter?: string; telegram?: string; website?: string };
   entryServed?: boolean;
   properServe?: boolean;
+  /** Present on Waiting lane */
+  runnerPhase?: string;
+  runnerScore?: number;
+  runnerLabel?: string;
+  alertEligible?: boolean;
+  blockers?: string[];
+  snapCount?: number;
+  snapsNeeded?: number;
+  observationReady?: boolean;
+  holdReason?: string;
 };
 
 export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
@@ -81,10 +91,11 @@ export type CallStats = {
   universe?: number;
 };
 
-export type CallMode = "best" | "latest" | "hot";
+export type CallMode = "best" | "latest" | "hot" | "waiting";
 
 export const CALLS_FEED_KEY = (mode: CallMode) => ["calls-feed", mode] as const;
 export const CALLS_STATS_KEY = (period: StatsPeriod = "7d") => ["calls-stats", period] as const;
+export const CALLS_WAITING_KEY = ["calls-waiting"] as const;
 
 export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
   return callsFetch<{
@@ -93,7 +104,16 @@ export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
     universe: number;
     mode: string;
     note?: string;
+    pendingFirstCalls?: number;
   }>(`api/calls/feed?mode=${mode}&limit=${limit}`);
+}
+
+export function fetchCallsWaiting(limit = 24) {
+  return callsFetch<{
+    cards: CallCard[];
+    pendingFirstCalls: number;
+    note?: string;
+  }>(`api/calls/waiting?limit=${limit}`);
 }
 
 export function fetchCallsStats(period: StatsPeriod = "7d") {

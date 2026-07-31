@@ -3,9 +3,10 @@
  * Polls /api/ops/summary + /api/ops/log — no heavy DB writes on the hot path.
  */
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
-  Activity, AlertTriangle, Wifi, WifiOff, Send, Zap, RefreshCw,
+  Activity, AlertTriangle, Wifi, WifiOff, Send, Zap, RefreshCw, Hourglass,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api-base";
 import {
@@ -20,7 +21,8 @@ import {
   type OpsKind,
   type OpsLevel,
 } from "@/lib/ops-api";
-import { cn, formatTimeAgo } from "@/lib/utils";
+import { CALLS_WAITING_KEY, fetchCallsWaiting } from "@/lib/calls-api";
+import { cn, formatTimeAgo, safeSymbol } from "@/lib/utils";
 
 const API_LABEL = getApiBase().replace(/\/$/, "") || "(same origin)";
 
@@ -48,6 +50,71 @@ function Pill({
         <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color }}>{label}</span>
       </div>
       {sub && <span className="text-[9px] text-[#8b949e] pl-3">{sub}</span>}
+    </div>
+  );
+}
+
+function WaitingQueuePanel({ count }: { count: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: CALLS_WAITING_KEY,
+    queryFn: () => fetchCallsWaiting(12),
+    refetchInterval: 15_000,
+    staleTime: 8_000,
+  });
+  const cards = data?.cards ?? [];
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-[#f59e0b]">
+          <Hourglass className="w-3 h-3" />
+          Waiting · {count} pending first call{count === 1 ? "" : "s"}
+        </div>
+        <Link href="/?mode=waiting">
+          <span className="text-[9px] uppercase tracking-widest text-[#8b949e] hover:text-[#f59e0b] cursor-pointer">
+            Full list →
+          </span>
+        </Link>
+      </div>
+      <div
+        className="rounded-xl divide-y overflow-hidden"
+        style={{ border: "1px solid #f59e0b35", background: "rgba(245,158,11,0.04)" }}
+      >
+        {isLoading && cards.length === 0 && (
+          <div className="px-3 py-4 text-[10px] text-[#484f58] uppercase tracking-widest">
+            Loading queue…
+          </div>
+        )}
+        {!isLoading && cards.length === 0 && (
+          <div className="px-3 py-4 text-[10px] text-[#484f58] uppercase tracking-widest">
+            Queue empty
+          </div>
+        )}
+        {cards.slice(0, 8).map(c => (
+          <Link key={c.id} href={`/calls/${c.id}`}>
+            <div className="flex items-start gap-2 px-3 py-2.5 cursor-pointer hover:bg-[rgba(245,158,11,0.08)]">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[12px] font-bold text-[#e6edf3]">
+                    ${safeSymbol(c.symbol, c.address)}
+                  </span>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-[#f59e0b]">
+                    {c.runnerLabel ?? c.runnerPhase ?? "hold"}
+                  </span>
+                  {c.snapCount != null && (
+                    <span className="text-[9px] font-mono text-[#8b949e]">
+                      snaps {c.snapCount}/5
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-[#f59e0b]/90 mt-0.5 truncate">
+                  {c.holdReason ?? c.blockers?.[0] ?? "Held for ENTRY gates"}
+                </div>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
@@ -377,9 +444,21 @@ export default function OpsPage() {
             >
               <span className="font-bold uppercase tracking-wider mr-2">{b.code}</span>
               {b.msg}
+              {b.code === "pending_first_calls" && (
+                <Link href="/?mode=waiting">
+                  <span className="ml-2 underline underline-offset-2 cursor-pointer font-semibold">
+                    Open Waiting →
+                  </span>
+                </Link>
+              )}
             </div>
           ))}
         </div>
+      )}
+
+      {/* Pending first calls — live hold reasons */}
+      {(summary?.telegram.pendingFirstCalls ?? 0) > 0 && (
+        <WaitingQueuePanel count={summary!.telegram.pendingFirstCalls} />
       )}
 
       {/* Wallet errors from last scan */}
