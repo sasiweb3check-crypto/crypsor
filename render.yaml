@@ -30,7 +30,7 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        sync: false
+        value: https://crypsor-web.onrender.com
 
   - type: web
     name: crypsor-web
