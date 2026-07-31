@@ -12,3 +12,4 @@ export * from "./social_signals";
 export * from "./token_traders";
 export * from "./pro_calls";
 export * from "./pro_snapshots";
+export * from "./dex_agent";

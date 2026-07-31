@@ -30,6 +30,61 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS runner_phase text`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS velocity real`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS phase_changed integer DEFAULT 0`,
+  // Dex Autopilot paper agent
+  `CREATE TABLE IF NOT EXISTS dex_agent_state (
+     id serial PRIMARY KEY,
+     enabled boolean NOT NULL DEFAULT true,
+     bankroll_usd real NOT NULL DEFAULT 1000,
+     realized_pnl_usd real NOT NULL DEFAULT 0,
+     trades_opened integer NOT NULL DEFAULT 0,
+     trades_closed integer NOT NULL DEFAULT 0,
+     hits_3x integer NOT NULL DEFAULT 0,
+     updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE TABLE IF NOT EXISTS dex_positions (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL,
+     pro_call_id integer,
+     address text NOT NULL,
+     symbol text,
+     stake_usd real NOT NULL,
+     remaining_stake_usd real NOT NULL,
+     entry_mc_usd real NOT NULL,
+     entry_at timestamptz NOT NULL DEFAULT NOW(),
+     entry_phase text,
+     entry_score real,
+     entry_velocity real,
+     entry_snap_count integer,
+     pattern_key text,
+     peak_multiple real DEFAULT 1,
+     moon_bag_taken boolean NOT NULL DEFAULT false,
+     status text NOT NULL DEFAULT 'open',
+     exit_mc_usd real,
+     exit_at timestamptz,
+     exit_reason text,
+     realized_pnl_usd real DEFAULT 0
+   )`,
+  `CREATE TABLE IF NOT EXISTS dex_agent_events (
+     id serial PRIMARY KEY,
+     created_at timestamptz NOT NULL DEFAULT NOW(),
+     kind text NOT NULL,
+     level text NOT NULL DEFAULT 'info',
+     msg text NOT NULL,
+     token_id integer,
+     symbol text,
+     meta text
+   )`,
+  `CREATE TABLE IF NOT EXISTS dex_patterns (
+     id serial PRIMARY KEY,
+     pattern_key text NOT NULL UNIQUE,
+     samples integer NOT NULL DEFAULT 0,
+     wins_3x integer NOT NULL DEFAULT 0,
+     losses integer NOT NULL DEFAULT 0,
+     sum_exit_multiple real NOT NULL DEFAULT 0,
+     best_multiple real DEFAULT 1,
+     last_seen_at timestamptz NOT NULL DEFAULT NOW(),
+     notes text
+   )`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */
@@ -122,18 +177,18 @@ async function quarantineBadMcOutcomes(): Promise<void> {
 }
 
 export async function ensureProIndexes(): Promise<void> {
-  // Don't block boot/health — schema + indexes in the background.
-  void (async () => {
-    for (const sqlText of SCHEMA_STATEMENTS) {
-      try {
-        await pool.query(sqlText);
-      } catch (err) {
-        logger.warn({ err, sqlText }, "pro schema ensure failed");
-      }
+  // Schema ALTERs/CREATEs first (Dex agent needs tables before first tick).
+  for (const sqlText of SCHEMA_STATEMENTS) {
+    try {
+      await pool.query(sqlText);
+    } catch (err) {
+      logger.warn({ err, sqlText }, "pro schema ensure failed");
     }
+  }
+  // Indexes + quarantine in the background — CONCURRENTLY must not block boot.
+  void (async () => {
     for (const sqlText of STATEMENTS) {
       try {
-        // CONCURRENTLY cannot run inside a transaction; use bare pool.query.
         await pool.query(sqlText);
       } catch (err) {
         logger.warn({ err, sqlText }, "pro index ensure failed");
