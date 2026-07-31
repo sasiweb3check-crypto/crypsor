@@ -26,6 +26,7 @@ import {
 import {
   applyVerifyToTrackedToken,
   convictionFromPayload,
+  qualitySignalsFromPayload,
   verifyTokenKolSmart,
   walletsPayload,
   type GmgnProVerifyResult,
@@ -448,12 +449,14 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
       const runStatus = deriveRunStatus(currentMc || null, calledMc || null, athMultiple);
 
       let conviction: ReturnType<typeof convictionFromPayload> = null;
+      let quality: ReturnType<typeof qualitySignalsFromPayload> | null = null;
       if (r.verified_wallets) {
         try {
           const raw = typeof r.verified_wallets === "string"
             ? JSON.parse(String(r.verified_wallets))
             : r.verified_wallets;
           conviction = convictionFromPayload(raw);
+          quality = qualitySignalsFromPayload(raw);
         } catch { /* ignore */ }
       }
 
@@ -483,7 +486,14 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
         secFreezeRenounced: r.sec_freeze_renounced as boolean | null,
         secTop10HolderRate: r.sec_top10_holder_rate != null ? Number(r.sec_top10_holder_rate) : null,
         secLpLocked: r.sec_lp_locked as boolean | null,
-        secRatTraderAmtRate: r.sec_rat_trader_amt_rate != null ? Number(r.sec_rat_trader_amt_rate) : null,
+        secRatTraderAmtRate: r.sec_rat_trader_amt_rate != null
+          ? Number(r.sec_rat_trader_amt_rate)
+          : (quality?.ratPct ?? null),
+        bundlerPct: quality?.bundlerPct ?? null,
+        sniperHoldRate: quality?.sniperHoldRate ?? null,
+        freshWalletRate: quality?.freshWalletRate ?? null,
+        botDegenRate: quality?.botDegenRate ?? null,
+        entrapmentPct: quality?.entrapmentPct ?? null,
       });
 
       const ban = isProBannedToken({

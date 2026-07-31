@@ -316,11 +316,13 @@ router.get("/ops/gmgn-check", async (req, res) => {
       note = `OpenAPI failed (${openApi.error ?? openApi.status}); scrape partially working`;
     }
 
+    const { openApiLimiterStatus } = await import("../lib/gmgn-openapi");
     res.json({
       ok: openApi.ok || okCount > 0,
       mint,
       latencyMs: Date.now() - t0,
       openApi,
+      limiter: openApiLimiterStatus(),
       scrape: {
         proxy: proxy ? "pool" : "direct",
         okCount,

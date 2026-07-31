@@ -15,7 +15,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { computeProScore, deriveRunStatus } from "../lib/pro-scoring";
-import { convictionFromPayload } from "../lib/gmgn-pro-verify";
+import { convictionFromPayload, qualitySignalsFromPayload } from "../lib/gmgn-pro-verify";
 
 const log = logger.child({ module: "pro-snapshots" });
 
@@ -119,12 +119,14 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       const runStatus = deriveRunStatus(currentMc || null, calledMc || null, newAth);
 
       let conviction = null as ReturnType<typeof convictionFromPayload>;
+      let quality = null as ReturnType<typeof qualitySignalsFromPayload> | null;
       if (r.verified_wallets) {
         try {
           const raw = typeof r.verified_wallets === "string"
             ? JSON.parse(String(r.verified_wallets))
             : r.verified_wallets;
           conviction = convictionFromPayload(raw);
+          quality = qualitySignalsFromPayload(raw);
         } catch { /* ignore */ }
       }
 
@@ -153,7 +155,12 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         secFreezeRenounced:   r.sec_freeze_renounced,
         secTop10HolderRate:   r.sec_top10_holder_rate,
         secLpLocked:          r.sec_lp_locked,
-        secRatTraderAmtRate:  r.sec_rat_trader_amt_rate,
+        secRatTraderAmtRate:  r.sec_rat_trader_amt_rate ?? quality?.ratPct ?? null,
+        bundlerPct:           quality?.bundlerPct ?? null,
+        sniperHoldRate:       quality?.sniperHoldRate ?? null,
+        freshWalletRate:      quality?.freshWalletRate ?? null,
+        botDegenRate:         quality?.botDegenRate ?? null,
+        entrapmentPct:        quality?.entrapmentPct ?? null,
       });
 
       const kolDelta = (r.kol_count ?? 0) - (r.called_kol_count ?? 0);

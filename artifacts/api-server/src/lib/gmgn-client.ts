@@ -424,7 +424,53 @@ export async function fetchTokenSecurity(
 ): Promise<{ ok: boolean; security: GmgnSecurityData; raw: unknown }> {
   const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
 
-  // ── RugCheck (primary — Solana only; skip for EVM chains) ────────────────
+  // ── Official OpenAPI security (preferred when key present) ───────────────
+  try {
+    const { hasGmgnOpenApiKey, gmgnOpenApiGet } = await import("./gmgn-openapi");
+    if (hasGmgnOpenApiKey()) {
+      const open = await gmgnOpenApiGet("/v1/token/security", { chain: c, address });
+      if (open.ok) {
+        const d = ((open.data as { data?: Record<string, unknown> })?.data ?? {}) as Record<string, unknown>;
+        const honeypotRaw = d.is_honeypot ?? d.honeypot;
+        const isHoneypot =
+          honeypotRaw === true || honeypotRaw === "yes" || honeypotRaw === 1 ? true
+            : honeypotRaw === false || honeypotRaw === "no" || honeypotRaw === 0 ? false
+              : null;
+        const top10 = d.top_10_holder_rate != null ? Number(d.top_10_holder_rate) : null;
+        const security: GmgnSecurityData = {
+          isHoneypot,
+          ownerRenounced: null,
+          mintRenounced: typeof d.renounced_mint === "boolean" ? d.renounced_mint : null,
+          freezeRenounced: typeof d.renounced_freeze_account === "boolean"
+            ? d.renounced_freeze_account : null,
+          openSource: d.open_source === "yes" || d.open_source === 1 ? true
+            : d.open_source === "no" || d.open_source === 0 ? false : null,
+          top10HolderRate: top10 != null && Number.isFinite(top10) ? top10 : null,
+          rugRatio: null,
+          sniperCount: d.sniper_count != null ? Number(d.sniper_count) : null,
+          creatorAddress: typeof d.creator_address === "string" ? d.creator_address : null,
+          creatorClose: String(d.creator_token_status ?? "").includes("close") ? true
+            : String(d.creator_token_status ?? "").includes("hold") ? false : null,
+          creatorTokenStatus: typeof d.creator_token_status === "string"
+            ? d.creator_token_status : null,
+          buyTax: d.buy_tax != null ? Number(d.buy_tax) : null,
+          sellTax: d.sell_tax != null ? Number(d.sell_tax) : null,
+          lpLocked: String(d.burn_status ?? "").toLowerCase() === "burn" ? true : null,
+          lpLockPercent: d.burn_ratio != null ? Number(d.burn_ratio) : null,
+          ctoFlag: null,
+          bluechipOwnerPct: null,
+          ratTraderAmtRate: d.rat_trader_amount_rate != null
+            ? Number(d.rat_trader_amount_rate) : null,
+          creatorCreatedCount: null,
+        };
+        return { ok: true, security, raw: { openapi: open.data } };
+      }
+    }
+  } catch {
+    // fall through to RugCheck + scrape
+  }
+
+  // ── RugCheck (fallback — Solana only; skip for EVM chains) ───────────────
   let rugReport: RugCheckReport | null = null;
   let rugOk = false;
   if (c === "sol") {

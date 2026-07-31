@@ -74,6 +74,13 @@ export interface ProScoreV2Input {
   secTop10HolderRate: number | null;
   secLpLocked: boolean | null;
   secRatTraderAmtRate: number | null;
+
+  /** OpenAPI token/info quality signals (optional). */
+  bundlerPct?: number | null;
+  sniperHoldRate?: number | null;
+  freshWalletRate?: number | null;
+  botDegenRate?: number | null;
+  entrapmentPct?: number | null;
 }
 
 export interface ProScoreV2Result {
@@ -288,6 +295,14 @@ function scoreSecurity(inp: ProScoreV2Input): number {
   }
   if (inp.secLpLocked === true) score += 12;
   if (inp.secRatTraderAmtRate != null && inp.secRatTraderAmtRate > 0.3) score -= 15;
+  // OpenAPI dump/sybil signals (fractions 0–1)
+  if (inp.bundlerPct != null && inp.bundlerPct > 0.35) score -= 12;
+  else if (inp.bundlerPct != null && inp.bundlerPct > 0.2) score -= 6;
+  if (inp.sniperHoldRate != null && inp.sniperHoldRate > 0.4) score -= 10;
+  if (inp.freshWalletRate != null && inp.freshWalletRate > 0.5) score -= 10;
+  else if (inp.freshWalletRate != null && inp.freshWalletRate > 0.3) score -= 5;
+  if (inp.botDegenRate != null && inp.botDegenRate > 0.25) score -= 8;
+  if (inp.entrapmentPct != null && inp.entrapmentPct > 0.4) score -= 8;
   return clamp(score);
 }
 

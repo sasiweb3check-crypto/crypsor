@@ -1,16 +1,15 @@
 /**
  * GMGN Official OpenAPI client — https://openapi.gmgn.ai
  *
- * This is the supported path for GMGN_API_KEY (from https://gmgn.ai/ai).
- * It does NOT scrape gmgn.ai website endpoints, so Cloudflare bot challenges
- * on the site do not apply the same way.
- *
- * Auth (read / "exist"):
+ * Auth (https://gmgn.ai/ai):
  *   Header: X-APIKEY: <key>
  *   Query:  timestamp (unix sec) + client_id (uuid)
  *
- * Important: putting GMGN_API_KEY on gmgn.ai scrape requests does NOT bypass
- * Cloudflare. Use this OpenAPI host instead.
+ * Rate limit (docs): leaky bucket rate=20, capacity=20.
+ * Route weights: token info/security/pool=1, holders/traders=5, kline=2, trenches=3.
+ * On RATE_LIMIT_BANNED respect reset_at — do NOT spam (extends ban).
+ *
+ * Website scrape of gmgn.ai is a separate path; the API key does not bypass CF there.
  */
 
 import { randomUUID } from "node:crypto";
@@ -21,10 +20,29 @@ const log = rootLogger.child({ module: "gmgn-openapi" });
 
 const OPENAPI_HOST = (process.env.GMGN_OPENAPI_HOST ?? "https://openapi.gmgn.ai").replace(/\/$/, "");
 
-/** Collapse parallel remaps of the same OpenAPI path (pro-verify used to fan out). */
+/** Docs: leaky-bucket rate=20 capacity=20 */
+const BUCKET_CAPACITY = 20;
+const BUCKET_RATE_PER_SEC = 18; // stay slightly under advertised 20
+const CACHE_TTL_MS = 12_000;
+
+const ROUTE_WEIGHT: Record<string, number> = {
+  "/v1/token/info": 1,
+  "/v1/token/security": 1,
+  "/v1/token/pool_info": 1,
+  "/v1/market/token_top_holders": 5,
+  "/v1/market/token_top_traders": 5,
+  "/v1/market/rank": 1,
+  "/v1/market/token_kline": 2,
+  "/v1/trenches": 3,
+};
+
 const inflight = new Map<string, Promise<GmgnResult>>();
 const recent = new Map<string, { at: number; result: GmgnResult }>();
-const CACHE_TTL_MS = 8_000;
+
+let tokens = BUCKET_CAPACITY;
+let lastRefillMs = Date.now();
+let bannedUntilMs = 0;
+let waitChain: Promise<void> = Promise.resolve();
 
 export type OpenApiScrapeKind =
   | "token_info"
@@ -39,6 +57,72 @@ export type OpenApiScrapeKind =
 
 export function hasGmgnOpenApiKey(): boolean {
   return Boolean(process.env.GMGN_API_KEY?.trim());
+}
+
+export function openApiLimiterStatus(): {
+  tokens: number;
+  bannedUntilMs: number;
+  banned: boolean;
+  host: string;
+} {
+  refill();
+  return {
+    tokens: Math.floor(tokens * 10) / 10,
+    bannedUntilMs,
+    banned: Date.now() < bannedUntilMs,
+    host: OPENAPI_HOST,
+  };
+}
+
+function routeWeight(path: string): number {
+  return ROUTE_WEIGHT[path] ?? 1;
+}
+
+function refill(): void {
+  const now = Date.now();
+  const elapsed = (now - lastRefillMs) / 1000;
+  if (elapsed <= 0) return;
+  tokens = Math.min(BUCKET_CAPACITY, tokens + elapsed * BUCKET_RATE_PER_SEC);
+  lastRefillMs = now;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+/** Serialize acquires so parallel callers share one bucket cleanly. */
+async function acquireWeight(weight: number): Promise<void> {
+  const run = waitChain.then(async () => {
+    for (;;) {
+      const now = Date.now();
+      if (now < bannedUntilMs) {
+        await sleep(Math.min(bannedUntilMs - now + 50, 60_000));
+        continue;
+      }
+      refill();
+      if (tokens >= weight) {
+        tokens -= weight;
+        return;
+      }
+      const need = weight - tokens;
+      const waitMs = Math.ceil((need / BUCKET_RATE_PER_SEC) * 1000) + 25;
+      await sleep(Math.min(waitMs, 5_000));
+    }
+  });
+  waitChain = run.catch(() => undefined);
+  await run;
+}
+
+function markBanned(resetAtSec?: number): void {
+  const until = resetAtSec && resetAtSec > 0
+    ? resetAtSec * 1000
+    : Date.now() + 60_000;
+  bannedUntilMs = Math.max(bannedUntilMs, until);
+  tokens = 0;
+  log.warn(
+    { bannedUntil: new Date(bannedUntilMs).toISOString() },
+    "GMGN OpenAPI rate-limited — pausing requests",
+  );
 }
 
 function buildAuthQuery(): { timestamp: number; client_id: string } {
@@ -65,8 +149,16 @@ function cacheKey(path: string, query: Record<string, string | number | undefine
   return `${path}?${JSON.stringify(authless)}`;
 }
 
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+function unwrapOpenApiData(json: unknown): Record<string, unknown> {
+  return asRecord(asRecord(json).data);
+}
+
 /**
- * Authenticated GET against OpenAPI. Returns same GmgnResult shape as scrape client.
+ * Authenticated GET against OpenAPI with weight-aware rate limiting.
  */
 export async function gmgnOpenApiGet(
   path: string,
@@ -84,7 +176,9 @@ export async function gmgnOpenApiGet(
   const existing = inflight.get(ck);
   if (existing) return existing;
 
+  const weight = routeWeight(path);
   const run = (async (): Promise<GmgnResult> => {
+    await acquireWeight(weight);
     const auth = buildAuthQuery();
     const url = buildUrl(path, { ...query, ...auth });
     try {
@@ -96,7 +190,7 @@ export async function gmgnOpenApiGet(
           "User-Agent": "crypsor/1.0 (gmgn-openapi)",
           Accept: "application/json",
         },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(18_000),
       });
       const text = await resp.text();
       if (!text || text.trimStart().startsWith("<")) {
@@ -112,19 +206,31 @@ export async function gmgnOpenApiGet(
       } catch {
         return { ok: false, status: resp.status, data: { error: "invalid_json", body: text.slice(0, 120) } };
       }
-      const code = (json as { code?: number })?.code;
-      // OpenAPI often returns HTTP 200 with business code in body
+
+      const body = asRecord(json);
+      const code = body.code as number | undefined;
+      const errName = String(body.error ?? "");
+      const resetAt = typeof body.reset_at === "number" ? body.reset_at : undefined;
+
+      if (
+        resp.status === 429
+        || code === 429
+        || errName === "RATE_LIMIT_EXCEEDED"
+        || errName === "RATE_LIMIT_BANNED"
+      ) {
+        markBanned(resetAt);
+        return {
+          ok: false,
+          status: 429,
+          data: { error: errName || "RATE_LIMIT", message: body.message, reset_at: resetAt },
+        };
+      }
+
       const businessOk = code === 0 || code === undefined;
       const ok = resp.ok && businessOk;
       if (!ok) {
         log.warn(
-          {
-            path,
-            status: resp.status,
-            code,
-            error: (json as { error?: string })?.error,
-            message: (json as { message?: string })?.message,
-          },
+          { path, status: resp.status, code, error: body.error, message: body.message },
           "GMGN OpenAPI request failed",
         );
       }
@@ -155,11 +261,9 @@ export function rewriteScrapeUrlToOpenApi(scrapeUrl: string): MappedOpenApi | nu
     const host = u.hostname;
     if (host !== "gmgn.ai" && host !== "www.gmgn.ai") return null;
 
-    // /api/v1/token_info/{chain}/{addr}
     let m = u.pathname.match(/^\/api\/v1\/token_info\/([^/]+)\/([^/]+)$/);
     if (m) return { kind: "token_info", path: "/v1/token/info", query: { chain: m[1], address: m[2] } };
 
-    // token_stat / token_link / wallet_tags / holder_stat → all live inside /v1/token/info
     m = u.pathname.match(/^\/api\/v1\/token_stat\/([^/]+)\/([^/]+)$/);
     if (m) return { kind: "token_stat", path: "/v1/token/info", query: { chain: m[1], address: m[2] } };
 
@@ -174,11 +278,9 @@ export function rewriteScrapeUrlToOpenApi(scrapeUrl: string): MappedOpenApi | nu
     m = u.pathname.match(/^\/vas\/api\/v1\/token_holder_stat\/([^/]+)\/([^/]+)$/);
     if (m) return { kind: "holder_stat", path: "/v1/token/info", query: { chain: m[1], address: m[2] } };
 
-    // /api/v1/token_pool/{chain}/{addr}
     m = u.pathname.match(/^\/api\/v1\/token_pool(?:_info)?\/([^/]+)\/([^/]+)$/);
     if (m) return { kind: "pool_info", path: "/v1/token/pool_info", query: { chain: m[1], address: m[2] } };
 
-    // /vas/api/v1/token_holders/{chain}/{addr}
     m = u.pathname.match(/^\/vas\/api\/v1\/token_holders\/([^/]+)\/([^/]+)$/);
     if (m) {
       return {
@@ -196,7 +298,6 @@ export function rewriteScrapeUrlToOpenApi(scrapeUrl: string): MappedOpenApi | nu
       };
     }
 
-    // /defi/quotation/v1/tokens/top_traders/{chain}/{addr}
     m = u.pathname.match(/^\/defi\/quotation\/v1\/tokens\/top_traders\/([^/]+)\/([^/]+)$/);
     if (m) {
       return {
@@ -213,7 +314,6 @@ export function rewriteScrapeUrlToOpenApi(scrapeUrl: string): MappedOpenApi | nu
       };
     }
 
-    // /api/v1/rank/{chain}/swaps/{interval}
     m = u.pathname.match(/^\/api\/v1\/rank\/([^/]+)\/swaps\/([^/]+)$/);
     if (m) {
       return {
@@ -227,15 +327,6 @@ export function rewriteScrapeUrlToOpenApi(scrapeUrl: string): MappedOpenApi | nu
   } catch {
     return null;
   }
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-}
-
-function unwrapOpenApiData(json: unknown): Record<string, unknown> {
-  const root = asRecord(json);
-  return asRecord(root.data);
 }
 
 /** Reshape OpenAPI token/info into the scrape envelope callers already unwrap. */
@@ -254,7 +345,6 @@ function reshapeForScrapeKind(kind: OpenApiScrapeKind, result: GmgnResult): Gmgn
       return { ok: true, status: result.status, data: { code: 0, data: link } };
 
     case "token_stat":
-      // Scrape token_stat is flat; OpenAPI nests under `stat` (+ a few siblings)
       return {
         ok: true,
         status: result.status,
@@ -269,7 +359,6 @@ function reshapeForScrapeKind(kind: OpenApiScrapeKind, result: GmgnResult): Gmgn
       };
 
     case "holder_stat":
-      // Map OpenAPI tags/stat into scrape holder_stat field names
       return {
         ok: true,
         status: result.status,
@@ -339,26 +428,83 @@ export async function tryGmgnOpenApi(scrapeUrl: string): Promise<GmgnResult | nu
   return result;
 }
 
+/** One-shot Pro bundle: info + security + KOL/smart holders (weight ~12). */
+export async function fetchOpenApiTokenBundle(
+  chain: string,
+  address: string,
+  holderLimit = 40,
+): Promise<{
+  info: GmgnResult;
+  security: GmgnResult;
+  kolHolders: GmgnResult;
+  smartHolders: GmgnResult;
+}> {
+  // Sequential acquire inside each get — fire in parallel; bucket serializes tokens.
+  const [info, security, kolHolders, smartHolders] = await Promise.all([
+    gmgnOpenApiGet("/v1/token/info", { chain, address }),
+    gmgnOpenApiGet("/v1/token/security", { chain, address }),
+    gmgnOpenApiGet("/v1/market/token_top_holders", {
+      chain,
+      address,
+      limit: holderLimit,
+      tag: "renowned",
+      order_by: "amount_percentage",
+      direction: "desc",
+    }),
+    gmgnOpenApiGet("/v1/market/token_top_holders", {
+      chain,
+      address,
+      limit: holderLimit,
+      tag: "smart_degen",
+      order_by: "amount_percentage",
+      direction: "desc",
+    }),
+  ]);
+  return {
+    info,
+    security,
+    kolHolders: normalizeListEnvelope(kolHolders),
+    smartHolders: normalizeListEnvelope(smartHolders),
+  };
+}
+
 export async function openApiHealthCheck(mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"): Promise<{
   configured: boolean;
   ok: boolean;
   status: number;
   error?: string;
   host: string;
+  limiter?: ReturnType<typeof openApiLimiterStatus>;
+  sample?: {
+    symbol?: string;
+    smartWallets?: number;
+    renownedWallets?: number;
+    top10HolderRate?: number;
+  };
 }> {
   if (!hasGmgnOpenApiKey()) {
     return { configured: false, ok: false, status: 0, error: "GMGN_API_KEY not set", host: OPENAPI_HOST };
   }
   const r = await gmgnOpenApiGet("/v1/token/info", { chain: "sol", address: mint });
   const body = asRecord(r.data);
-  const err = !r.ok
-    ? String(body.error ?? body.message ?? r.status)
-    : undefined;
+  const info = unwrapOpenApiData(r.data);
+  const tags = asRecord(info.wallet_tags_stat);
+  const stat = asRecord(info.stat);
+  const err = !r.ok ? String(body.error ?? body.message ?? r.status) : undefined;
   return {
     configured: true,
     ok: r.ok,
     status: r.status,
     error: err,
     host: OPENAPI_HOST,
+    limiter: openApiLimiterStatus(),
+    sample: r.ok
+      ? {
+          symbol: typeof info.symbol === "string" ? info.symbol : undefined,
+          smartWallets: typeof tags.smart_wallets === "number" ? tags.smart_wallets : undefined,
+          renownedWallets: typeof tags.renowned_wallets === "number" ? tags.renowned_wallets : undefined,
+          top10HolderRate: stat.top_10_holder_rate != null ? Number(stat.top_10_holder_rate) : undefined,
+        }
+      : undefined,
   };
 }
