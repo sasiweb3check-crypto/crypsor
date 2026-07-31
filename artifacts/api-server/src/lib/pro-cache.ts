@@ -86,10 +86,14 @@ export async function invalidateProCaches(): Promise<void> {
       // Known keys — keep simple (no KEYS scan on Redis)
       const keys = [
         "pro:stats:v2",
-        "pro:feed:v2:300",
-        "pro:feed:v2:400",
         "pro:feed:v2:150",
         "pro:feed:v2:200",
+        "pro:feed:v2:300",
+        "pro:feed:v2:400",
+        "pro:feed:v4:150",
+        "pro:feed:v4:200",
+        "pro:feed:v4:300",
+        "pro:feed:v4:400",
       ];
       if (keys.length) await r.del(...keys);
     }

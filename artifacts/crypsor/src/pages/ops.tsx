@@ -70,6 +70,12 @@ interface OpsSummary {
   };
   buys: { sessionCount: number; lastBuyAt: string | null };
   blockers: Array<{ code: string; level: OpsLevel; msg: string }>;
+  gmgn?: {
+    ok: boolean;
+    latencyMs: number;
+    results: Array<{ name: string; ok: boolean; status: number; blocked?: boolean }>;
+    note: string;
+  } | null;
 }
 
 function levelColor(level: OpsLevel) {
@@ -133,6 +139,22 @@ export default function OpsPage() {
     retry: 1,
   });
 
+  const { data: gmgnCheck, refetch: refetchGmgn, isFetching: fetchingGmgn } = useQuery<{
+    ok: boolean;
+    latencyMs: number;
+    note: string;
+    results: Array<{ name: string; ok: boolean; status: number; blocked?: boolean }>;
+  }>({
+    queryKey: ["opsGmgnCheck"],
+    queryFn: () => fetch(`${BASE}/api/ops/gmgn-check`).then(r => {
+      if (!r.ok) throw new Error(`gmgn ${r.status}`);
+      return r.json();
+    }),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+    retry: 0,
+  });
+
   const events = logData?.events ?? [];
   const blockers = summary?.blockers ?? [];
 
@@ -193,6 +215,51 @@ export default function OpsPage() {
         {ping
           ? `API reachable · ${BASE || "(same origin)"} · ping ${formatTimeAgo(ping.ts) || "now"}`
           : `API unreachable — Failed to fetch. Base: ${BASE || "/"} · ${pingError instanceof Error ? pingError.message : "check VITE_API_URL / CORS / cold start"}`}
+      </div>
+
+      {/* GMGN from deployed API */}
+      <div
+        className="px-3 py-2.5 space-y-1.5"
+        style={{
+          background: gmgnCheck?.ok ? "rgba(61,154,139,0.08)" : "rgba(232,93,93,0.08)",
+          border: `1px solid ${gmgnCheck?.ok ? "rgba(61,154,139,0.25)" : "rgba(232,93,93,0.25)"}`,
+        }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] font-bold uppercase tracking-widest"
+            style={{ color: gmgnCheck?.ok ? "var(--cryp-mint)" : "var(--cryp-loss)" }}>
+            GMGN {gmgnCheck?.ok ? "reachable" : gmgnCheck ? "blocked / failing" : "checking…"}
+            {gmgnCheck?.latencyMs != null && (
+              <span className="font-mono-num font-normal opacity-70"> · {gmgnCheck.latencyMs}ms</span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => void refetchGmgn()}
+            className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]"
+          >
+            {fetchingGmgn ? "…" : "Retest"}
+          </button>
+        </div>
+        {gmgnCheck?.note && (
+          <div className="text-[10px] text-[var(--cryp-mute)]">{gmgnCheck.note}</div>
+        )}
+        {gmgnCheck?.results && (
+          <div className="flex flex-wrap gap-1.5">
+            {gmgnCheck.results.map(r => (
+              <span
+                key={r.name}
+                className="text-[9px] font-mono-num px-1.5 py-0.5"
+                style={{
+                  color: r.ok ? "var(--cryp-gain)" : "var(--cryp-loss)",
+                  background: r.ok ? "rgba(62,207,142,0.1)" : "rgba(232,93,93,0.1)",
+                }}
+              >
+                {r.name} {r.ok ? "ok" : r.blocked ? "cf" : r.status}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Status pills */}

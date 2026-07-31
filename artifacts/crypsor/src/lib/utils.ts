@@ -1,8 +1,24 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import { getApiBase } from "@/lib/api-base"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
+}
+
+/**
+ * Turn relative API asset paths into absolute URLs.
+ * `/api/assets/...` must hit the API host — never the SPA origin
+ * (SPA rewrite returns HTML and images appear broken).
+ */
+export function resolveMediaUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const s = String(url).trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s) || s.startsWith("data:") || s.startsWith("blob:")) return s;
+  const base = getApiBase().replace(/\/$/, "");
+  if (s.startsWith("/")) return `${base}${s}`;
+  return `${base}/${s}`;
 }
 
 export function truncateAddress(address: string): string {
@@ -147,10 +163,11 @@ export function safeImageUrl(
   address: string | null | undefined,
   symbol: string | null | undefined,
 ): string {
-  if (logoUri) return logoUri;
+  const resolved = resolveMediaUrl(logoUri);
+  if (resolved) return resolved;
   if (address) return `https://static.jup.ag/images/tokens/${address}.png`;
-  const name = symbol || address?.slice(0, 4) || '?';
-  return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=1a2030&color=f59e0b&size=64`;
+  const name = symbol || address?.slice(0, 4) || "?";
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0b141c&color=7dd3c0&size=64`;
 }
 
 /**
