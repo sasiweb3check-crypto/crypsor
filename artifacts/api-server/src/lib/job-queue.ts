@@ -47,6 +47,8 @@ interface PendingJob<T = unknown> {
   data:        T;
   priority:    number;
   addedAt:     number;
+  /** Earliest time this job may run (delayMs support). */
+  notBefore:   number;
   dedupKey:    string | undefined;
   attempts:    number;
   maxAttempts: number;
@@ -75,6 +77,7 @@ export class PipelineQueue {
   private active   = new Map<QueueName, number>();
   private handlers = new Map<QueueName, JobHandler<unknown>>();
   private stats    = new Map<QueueName, { processed: number; failed: number }>();
+  private wakeTimers = new Map<QueueName, ReturnType<typeof setTimeout>>();
 
   constructor() {
     for (const name of Object.keys(QUEUE_CONFIG) as QueueName[]) {
@@ -109,12 +112,14 @@ export class PipelineQueue {
 
     if (dedupKey) deduped.add(dedupKey);
 
+    const delayMs = opts.delayMs && opts.delayMs > 0 ? opts.delayMs : 0;
     const job: PendingJob<T> = {
       id:          `${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
       data,
       priority:    opts.priority ?? 0,
       addedAt:     Date.now(),
+      notBefore:   Date.now() + delayMs,
       dedupKey,
       attempts:    0,
       maxAttempts: QUEUE_CONFIG[name].maxAttempts,
@@ -126,13 +131,23 @@ export class PipelineQueue {
     if (idx === -1) queue.push(job as PendingJob);
     else            queue.splice(idx, 0, job as PendingJob);
 
-    if (opts.delayMs && opts.delayMs > 0) {
-      setTimeout(() => { void this._drain(name); }, opts.delayMs);
+    if (delayMs > 0) {
+      this._scheduleWake(name, delayMs);
     } else {
       setImmediate(() => { void this._drain(name); });
     }
 
     return true;
+  }
+
+  private _scheduleWake(name: QueueName, delayMs: number): void {
+    const existing = this.wakeTimers.get(name);
+    if (existing) return; // a wake is already pending; drain will reschedule if needed
+    const timer = setTimeout(() => {
+      this.wakeTimers.delete(name);
+      void this._drain(name);
+    }, Math.min(Math.max(delayMs, 1), 60_000));
+    this.wakeTimers.set(name, timer);
   }
 
   // ── Drain ─────────────────────────────────────────────────────────────────────
@@ -143,8 +158,21 @@ export class PipelineQueue {
     if (active >= config.concurrency) return;
 
     const queue = this.queues.get(name)!;
-    const job   = queue.shift();
-    if (!job) return;
+    const now = Date.now();
+    const readyIdx = queue.findIndex(j => j.notBefore <= now);
+    if (readyIdx === -1) {
+      // Nothing ready — wake when the soonest delayed job becomes eligible
+      let soonest = Infinity;
+      for (const j of queue) {
+        if (j.notBefore < soonest) soonest = j.notBefore;
+      }
+      if (Number.isFinite(soonest) && soonest > now) {
+        this._scheduleWake(name, soonest - now);
+      }
+      return;
+    }
+
+    const job = queue.splice(readyIdx, 1)[0]!;
 
     // Clear dedup as soon as job starts so re-enqueue after completion works
     if (job.dedupKey) {
@@ -161,7 +189,6 @@ export class PipelineQueue {
       return;
     }
 
-    let retrying = false;
     try {
       job.attempts++;
       await handler(job.data, job.attempts);
@@ -169,9 +196,9 @@ export class PipelineQueue {
     } catch (err) {
       log.warn({ queue: name, jobId: job.id, attempt: job.attempts, err }, "Job failed");
       if (job.attempts < job.maxAttempts) {
-        retrying = true;
         const delay = 2_000 * job.attempts;
         if (job.dedupKey) this.dedup.get(name)!.add(job.dedupKey);
+        job.notBefore = Date.now() + delay;
         setTimeout(() => {
           const q = this.queues.get(name)!;
           q.unshift(job);
@@ -181,12 +208,7 @@ export class PipelineQueue {
         this.stats.get(name)!.failed++;
       }
     } finally {
-      if (!retrying) {
-        this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
-      } else {
-        // Release the slot while waiting for the backoff re-queue.
-        this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
-      }
+      this.active.set(name, Math.max(0, (this.active.get(name) ?? 1) - 1));
       setImmediate(() => { void this._drain(name); });
     }
   }
@@ -214,7 +236,8 @@ export class PipelineQueue {
   }
 
   async close(): Promise<void> {
-    // In-process queue — nothing durable to tear down.
+    for (const t of this.wakeTimers.values()) clearTimeout(t);
+    this.wakeTimers.clear();
   }
 }
 

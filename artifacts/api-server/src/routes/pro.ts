@@ -87,12 +87,32 @@ type SlimToken = {
     kolHoldRate: number | null;
     smartHolding: number;
     kolHolding: number;
+    /** Tagged wallet totals at verify — denominator for holding/total. */
+    smartTotal: number;
+    kolTotal: number;
     paperHands: number;
     diamondHands: number;
     supplyPctHeld: number;
+    verifiedAt: string | null;
   } | null;
   kolSmartSource: string | null;
 };
+
+function parseVwSocials(raw: unknown): { twitter?: string; telegram?: string; website?: string } {
+  if (!raw) return {};
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const s = (o as { socials?: Record<string, unknown> })?.socials;
+    if (!s || typeof s !== "object") return {};
+    const out: { twitter?: string; telegram?: string; website?: string } = {};
+    if (typeof s.twitter === "string" && s.twitter) out.twitter = s.twitter;
+    if (typeof s.telegram === "string" && s.telegram) out.telegram = s.telegram;
+    if (typeof s.website === "string" && s.website) out.website = s.website;
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 function parseConviction(raw: unknown): SlimToken["conviction"] {
   if (!raw) return null;
@@ -102,14 +122,20 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
     const c = (o as { conviction?: { kol?: Record<string, number>; smart?: Record<string, number> } }).conviction;
     const holding = (o as { holding?: { kol?: number; smart?: number } }).holding;
     if (!c?.smart && !c?.kol && !holding) return null;
+    const verifiedAt = typeof (o as { fetchedAt?: unknown }).fetchedAt === "string"
+      ? String((o as { fetchedAt: string }).fetchedAt)
+      : null;
     return {
       smartHoldRate: c?.smart?.holdRate ?? null,
       kolHoldRate: c?.kol?.holdRate ?? null,
       smartHolding: holding?.smart ?? c?.smart?.holding ?? 0,
       kolHolding: holding?.kol ?? c?.kol?.holding ?? 0,
+      smartTotal: c?.smart?.total ?? holding?.smart ?? 0,
+      kolTotal: c?.kol?.total ?? holding?.kol ?? 0,
       paperHands: (c?.smart?.paperHands ?? 0) + (c?.kol?.paperHands ?? 0),
       diamondHands: (c?.smart?.diamondHands ?? 0) + (c?.kol?.diamondHands ?? 0),
       supplyPctHeld: (c?.smart?.supplyPctHeld ?? 0) + (c?.kol?.supplyPctHeld ?? 0),
+      verifiedAt,
     };
   } catch {
     return null;
@@ -117,7 +143,7 @@ function parseConviction(raw: unknown): SlimToken["conviction"] {
 }
 
 async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; total: number }> {
-  const cacheKey = `pro:feed:v4:${limit}`;
+  const cacheKey = `pro:feed:v5:${limit}`;
   const cached = await proCacheGet<{ tokens: SlimToken[]; total: number }>(cacheKey);
 
   // Cheap freshness check — stats/total can move while feed cache still holds old rows
@@ -165,6 +191,7 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       t.logo_uri, t.image_path,
       t.status,
       t.market_cap_usd,
+      t.raw_metadata,
       t.intelligence_score AS live_intel,
       t.holder_kol_count   AS live_kol,
       t.holder_smart_count AS live_smart,
@@ -226,7 +253,10 @@ async function loadQualityFeed(limit: number): Promise<{ tokens: SlimToken[]; to
       secMintRenounced: call.sec_mint_renounced as boolean | null,
       secFreezeRenounced: call.sec_freeze_renounced as boolean | null,
       secIsHoneypot: call.sec_is_honeypot as boolean | null,
-      socials: {},
+      socials: {
+        ...extractSocials(call.raw_metadata),
+        ...parseVwSocials(call.verified_wallets),
+      },
       conviction: parseConviction(call.verified_wallets),
       kolSmartSource: call.kol_smart_source != null ? String(call.kol_smart_source) : null,
     };
@@ -498,7 +528,10 @@ router.get("/pro/token/:tokenId", async (req, res) => {
 
     const calledMc = r.called_mc_usd ? parseFloat(String(r.called_mc_usd)) : null;
     const currentMc = r.market_cap_usd ? parseFloat(String(r.market_cap_usd)) : null;
-    const socials = extractSocials(r.raw_metadata);
+    const socials = {
+      ...extractSocials(r.raw_metadata),
+      ...parseVwSocials(r.verified_wallets),
+    };
     const runStatus = deriveRunStatus(currentMc, calledMc, Number(r.ath_multiple ?? 1));
 
     const snapshots = (snapResult.rows as Array<Record<string, unknown>>).map(s => ({
@@ -570,6 +603,19 @@ router.get("/pro/token/:tokenId", async (req, res) => {
     });
 
     res.json({
+      token: {
+        id: Number(r.token_id),
+        address: String(r.address ?? ""),
+        chain: String(r.chain ?? "solana"),
+        name: (r.name as string | null) ?? null,
+        symbol: (r.symbol as string | null) ?? null,
+        logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+        marketCapUsd: r.market_cap_usd != null ? String(r.market_cap_usd) : null,
+        liquidityUsd: r.liquidity_usd != null ? String(r.liquidity_usd) : null,
+        holderCount: r.holder_count != null ? Number(r.holder_count) : 0,
+        intelligenceScore: r.intelligence_score != null ? Number(r.intelligence_score) : undefined,
+        status: String(r.status ?? "active"),
+      },
       proCall: {
         id:               Number(r.id),
         calledAt:         r.called_at,

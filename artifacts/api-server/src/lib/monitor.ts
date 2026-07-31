@@ -10,10 +10,10 @@
 
 import { db } from "@workspace/db";
 import { walletdatasource, tracked_tokens, token_buys, token_sells, settings } from "@workspace/db";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, gte, lte } from "drizzle-orm";
 import { logger } from "./logger";
 import { eventBus } from "../pipeline/event-bus";
-import { nextJob, markScanned, markFailed, startScheduler } from "../pipeline/scheduler";
+import { claimDueBatch, markScanned, markFailed, startScheduler } from "../pipeline/scheduler";
 import { startPriceService } from "../pipeline/price-service";
 import { startMetadataService } from "../pipeline/metadata-service";
 import { startLifecycleEngine } from "../pipeline/lifecycle-engine";
@@ -193,6 +193,37 @@ async function fetchEvmTxs(address: string, chain: string): Promise<{ txs: Ether
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 const lastSigByWallet = new Map<number, string>();
+const CURSOR_KEY = (walletId: number) => `helius_cursor:${walletId}`;
+
+async function loadHeliusCursor(walletId: number): Promise<string | null> {
+  const mem = lastSigByWallet.get(walletId);
+  if (mem) return mem;
+  try {
+    const rows = await db.select({ value: settings.value }).from(settings)
+      .where(eq(settings.key, CURSOR_KEY(walletId))).limit(1);
+    const sig = rows[0]?.value?.trim() || null;
+    if (sig) lastSigByWallet.set(walletId, sig);
+    return sig;
+  } catch {
+    return null;
+  }
+}
+
+async function saveHeliusCursor(walletId: number, signature: string): Promise<void> {
+  lastSigByWallet.set(walletId, signature);
+  try {
+    await db.insert(settings).values({
+      key: CURSOR_KEY(walletId),
+      value: signature,
+      updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: settings.key,
+      set: { value: signature, updatedAt: new Date() },
+    });
+  } catch {
+    /* non-fatal — memory cursor still advances this process */
+  }
+}
 
 function enrichTokenAsync(tokenId: number, chain: string, address: string): void {
   fetchDexScreener(chain, address).then(dex => {
@@ -267,8 +298,21 @@ async function recordBuy(opts: {
   txHash?: string | null; boughtAt?: Date;
 }): Promise<boolean> {
   if (opts.txHash) {
+    // Dedup by tx globally and by wallet+token+tx (same buy path)
     const dup = await db.select({ id: token_buys.id }).from(token_buys)
       .where(eq(token_buys.txHash, opts.txHash)).limit(1);
+    if (dup.length > 0) return false;
+  } else if (opts.boughtAt) {
+    // No signature — soft-dedup same wallet/token within 2s window
+    const windowStart = new Date(opts.boughtAt.getTime() - 2_000);
+    const windowEnd = new Date(opts.boughtAt.getTime() + 2_000);
+    const dup = await db.select({ id: token_buys.id }).from(token_buys)
+      .where(and(
+        eq(token_buys.walletId, opts.walletId),
+        eq(token_buys.tokenId, opts.tokenId),
+        gte(token_buys.boughtAt, windowStart),
+        lte(token_buys.boughtAt, windowEnd),
+      )).limit(1);
     if (dup.length > 0) return false;
   }
   await db.insert(token_buys).values({
@@ -299,12 +343,13 @@ async function scanSolanaWallet(
   }
 
   monitorStatus.heliusLastError = null;
-  const lastKnown = lastSigByWallet.get(wallet.id);
+  const lastKnown = await loadHeliusCursor(wallet.id);
+  // True cold start = never seen this wallet (no persisted cursor). Seed only
+  // a small window so we do not re-walk history after every deploy.
+  // After restart with a persisted cursor, process everything newer than it.
   const coldStart = !lastKnown;
-  // After process restart, seed cursor and only process a small newest window
-  // so we do not re-walk 100 txs × N wallets and hang the scan cycle.
   if (coldStart && txs[0]) {
-    lastSigByWallet.set(wallet.id, txs[0].signature);
+    await saveHeliusCursor(wallet.id, txs[0].signature);
   }
   let walked = 0;
   const maxWalk = coldStart ? 12 : 100;
@@ -402,7 +447,7 @@ async function scanSolanaWallet(
     }
   }
 
-  if (txs[0]) lastSigByWallet.set(wallet.id, txs[0].signature);
+  if (txs[0]) await saveHeliusCursor(wallet.id, txs[0].signature);
   result.status = "ok";
   return result;
 }
@@ -451,26 +496,29 @@ async function getHeliusKey(): Promise<string | null> {
   return rows[0]?.value?.trim() || process.env.HELIUS_API_KEY?.trim() || null;
 }
 
+const MAX_WALLETS_PER_CYCLE = 30;
+
 export async function runScan(): Promise<void> {
   monitorStatus.pipeline = {
     queueSize: pipelineQueue.totalWaiting(),
     services: healthMonitor.getAll(),
   };
-  const [allWallets, heliusKey] = await Promise.all([
-    db.select().from(walletdatasource),
+  const [walletCountRow, heliusKey, dueWallets] = await Promise.all([
+    db.select({ c: count() }).from(walletdatasource),
     getHeliusKey(),
+    claimDueBatch(MAX_WALLETS_PER_CYCLE),
   ]);
-  monitorStatus.walletsTracked = allWallets.length;
+  monitorStatus.walletsTracked = Number(walletCountRow[0]?.c ?? 0);
   monitorStatus.heliusConfigured = !!heliusKey;
   // Heartbeat so Ops does not look "blank" while a long cycle runs
   monitorStatus.lastScanAt = monitorStatus.lastScanAt ?? new Date().toISOString();
-  if (!allWallets.length) return;
+  if (!monitorStatus.walletsTracked) return;
 
   const results: WalletScanResult[] = [];
   let cycleBuys = 0;
 
-  // Concurrent scanning — all wallets in parallel
-  await Promise.allSettled(allWallets.map(async (w) => {
+  // Due wallets only (scheduler next_scan_at + backoff) — not all wallets every cycle
+  await Promise.allSettled(dueWallets.map(async (w) => {
     try {
       let r: WalletScanResult;
       if (w.chain === "solana") {
@@ -511,11 +559,12 @@ export async function runScan(): Promise<void> {
   opsLog(
     "scan",
     errWallets.length ? "warn" : "info",
-    `Scan cycle · ${cycleBuys} new buys · ${results.length} wallets` +
+    `Scan cycle · ${cycleBuys} new buys · ${results.length}/${monitorStatus.walletsTracked} due wallets` +
       (errWallets.length ? ` · ${errWallets.length} errors` : ""),
     {
       buys: cycleBuys,
       wallets: results.length,
+      tracked: monitorStatus.walletsTracked,
       errors: errWallets.length,
       sampleError: errWallets[0]?.lastError ?? null,
     },
@@ -525,7 +574,7 @@ export async function runScan(): Promise<void> {
     if (Date.now() - last > 300_000) {
       (runScan as { _lastNoKey?: number })._lastNoKey = Date.now();
       opsLog("blocker", "error", "Helius key missing — Solana buys silent", {
-        wallets: allWallets.filter(w => w.chain === "solana").length,
+        wallets: dueWallets.filter(w => w.chain === "solana").length,
       });
     }
   }

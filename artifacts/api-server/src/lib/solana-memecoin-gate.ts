@@ -177,8 +177,9 @@ export async function checkSolanaMemecoinBuy(mint: string): Promise<MemecoinGate
       { signal: AbortSignal.timeout(5_000) },
     );
     if (!resp.ok) {
-      const result: MemecoinGateResult = { ok: true, reason: `dex_http_${resp.status}_allow` };
-      eligibilityCache.set(key, { expires: Date.now() + 5 * 60_000, result });
+      // Fail-closed on HTTP errors — junk mints were slipping through fail-open.
+      const result: MemecoinGateResult = { ok: false, reason: `dex_http_${resp.status}` };
+      eligibilityCache.set(key, { expires: Date.now() + 2 * 60_000, result });
       return result;
     }
     const json = await resp.json() as { pairs?: DexPair[] };
@@ -189,9 +190,10 @@ export async function checkSolanaMemecoinBuy(mint: string): Promise<MemecoinGate
     }
     return result;
   } catch (err) {
-    log.debug({ err, mint: key.slice(0, 8) }, "Dex gate check failed — allow once");
-    const result: MemecoinGateResult = { ok: true, reason: "dex_error_allow" };
-    eligibilityCache.set(key, { expires: Date.now() + 2 * 60_000, result });
+    // Transient network only — short soft-deny so we retry soon (not silent allow).
+    log.debug({ err, mint: key.slice(0, 8) }, "Dex gate check failed — soft deny");
+    const result: MemecoinGateResult = { ok: false, reason: "dex_error" };
+    eligibilityCache.set(key, { expires: Date.now() + 45_000, result });
     return result;
   }
 }

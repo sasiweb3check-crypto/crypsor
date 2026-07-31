@@ -56,6 +56,18 @@ export function queueSize(): number {
   return queue.length;
 }
 
+/** Enqueue due wallets and claim up to `limit` for the current scan cycle. */
+export async function claimDueBatch(limit = 30): Promise<WalletJob[]> {
+  await enqueueDue();
+  const out: WalletJob[] = [];
+  while (out.length < limit) {
+    const job = nextJob();
+    if (!job) break;
+    out.push(job);
+  }
+  return out;
+}
+
 /** Called after a successful wallet scan */
 export async function markScanned(walletId: number, nextScanMs = 120_000): Promise<void> {
   try {

@@ -85,10 +85,12 @@ interface ProPack {
       } | null;
       kol?: VerifiedWallet[];
       smart?: VerifiedWallet[];
+      socials?: { twitter?: string; telegram?: string; website?: string };
     } | null;
     socials?: { twitter?: string; telegram?: string; website?: string };
     kolSmartSource?: string | null;
   } | null;
+  token?: TokenBase | null;
   postmortem: {
     headline: string;
     summary: string;
@@ -196,35 +198,38 @@ export default function TokenDetailPage() {
   const [, setLocation] = useLocation();
   const id = params?.id ? parseInt(params.id, 10) : null;
   const BASE = getApiBase();
+  const [imgBroken, setImgBroken] = useState(false);
 
-  const { data: token, isLoading } = useQuery<TokenBase>({
+  const {
+    data: token,
+    isLoading: tokenLoading,
+    isError: tokenError,
+  } = useQuery<TokenBase>({
     queryKey: ["token", id],
     queryFn: async () => {
       const r = await fetch(`${BASE}api/tokens/${id}`);
       if (!r.ok) throw new Error(`${r.status}`);
       return r.json();
     },
-    enabled: id != null,
+    enabled: id != null && Number.isFinite(id),
+    retry: 1,
   });
 
-  const { data: pack } = useQuery<ProPack>({
+  const {
+    data: pack,
+    isLoading: packLoading,
+    isError: packError,
+  } = useQuery<ProPack>({
     queryKey: ["pro-token", id],
     queryFn: async () => {
       const r = await fetch(`${BASE}api/pro/token/${id}`);
       if (!r.ok) throw new Error(`${r.status}`);
       return r.json();
     },
-    enabled: id != null,
+    enabled: id != null && Number.isFinite(id),
     refetchInterval: 20_000,
+    retry: 1,
   });
-
-  if (isLoading || !token) {
-    return (
-      <div className="px-4 md:px-8 pt-8 text-[var(--cryp-mute)] text-sm">
-        Loading…
-      </div>
-    );
-  }
 
   const pc = pack?.proCall ?? null;
   const pm = pack?.postmortem ?? null;
@@ -233,7 +238,11 @@ export default function TokenDetailPage() {
   const smartW = (vw?.smart ?? []) as VerifiedWallet[];
   const kolC = vw?.conviction?.kol;
   const smartC = vw?.conviction?.smart;
-  const socials = pm?.socials ?? pc?.socials ?? {};
+  const socials = {
+    ...(vw?.socials ?? {}),
+    ...(pc?.socials ?? {}),
+    ...(pm?.socials ?? {}),
+  };
   const snaps = (pack?.snapshots ?? [])
     .filter(s => s.gainPct != null)
     .map(s => ({
@@ -243,8 +252,67 @@ export default function TokenDetailPage() {
 
   const ath = pc?.athMultiple ?? pm?.now.athMultiple ?? 1;
   const gain = pm?.now.gainPct ?? null;
-  const [imgBroken, setImgBroken] = useState(false);
-  const imgSrc = safeImageUrl(token.logoUri, token.address, token.symbol);
+
+  // Prefer /tokens/:id; fall back to any token stub on the pro pack
+  const display: TokenBase | null = token ?? (pack?.token as TokenBase | null) ?? (
+    pc
+      ? {
+          id: id!,
+          address: "",
+          chain: "solana",
+          name: null,
+          symbol: null,
+          logoUri: null,
+          marketCapUsd: pc.currentMcUsd != null ? String(pc.currentMcUsd) : null,
+          liquidityUsd: null,
+          holderCount: 0,
+          status: "active",
+        }
+      : null
+  );
+
+  if (id == null || !Number.isFinite(id)) {
+    return (
+      <div className="px-4 md:px-8 pt-8 text-sm text-[var(--cryp-mute)]">
+        Invalid token id.{" "}
+        <button type="button" className="underline" onClick={() => setLocation("/")}>Back to desk</button>
+      </div>
+    );
+  }
+
+  if ((tokenLoading || packLoading) && !display && !pc) {
+    return (
+      <div className="px-4 md:px-8 pt-8 text-[var(--cryp-mute)] text-sm">
+        Loading…
+      </div>
+    );
+  }
+
+  if ((tokenError && packError) || (!display && !pc && !tokenLoading && !packLoading)) {
+    return (
+      <div className="px-4 md:px-8 pt-8 space-y-3">
+        <button
+          type="button"
+          onClick={() => setLocation("/")}
+          className="inline-flex items-center gap-1.5 text-[12px] text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back to desk
+        </button>
+        <div className="desk-card p-6 text-sm text-[var(--cryp-mute)]">
+          Couldn’t load this token. It may have been removed, or the API is unreachable.
+        </div>
+      </div>
+    );
+  }
+
+  const symbol = safeSymbol(display?.symbol ?? null, display?.address ?? "");
+  const address = display?.address || "";
+  const chain = display?.chain || "solana";
+  const imgSrc = safeImageUrl(display?.logoUri ?? null, address, display?.symbol ?? null);
+  const smartTotal = smartC?.total ?? pc?.calledSmartCount ?? 0;
+  const kolTotal = kolC?.total ?? pc?.calledKolCount ?? 0;
+  const smartHolding = smartC?.holding ?? vw?.holding?.smart ?? pc?.calledSmartCount ?? 0;
+  const kolHolding = kolC?.holding ?? vw?.holding?.kol ?? pc?.calledKolCount ?? 0;
 
   return (
     <div className="px-4 md:px-8 pt-4 md:pt-6 pb-8 space-y-5 max-w-5xl">
@@ -256,10 +324,9 @@ export default function TokenDetailPage() {
         <ArrowLeft className="w-3.5 h-3.5" /> Back to desk
       </button>
 
-      {/* Header */}
       <header className="desk-card p-5 fade-up">
         <div className="flex items-start gap-4">
-          {!imgBroken ? (
+          {!imgBroken && address ? (
             <img
               src={imgSrc}
               alt=""
@@ -272,12 +339,12 @@ export default function TokenDetailPage() {
               className="w-14 h-14 flex items-center justify-center font-display font-bold"
               style={{ background: "rgba(61,154,139,0.15)", color: "var(--cryp-mint)", borderRadius: 4 }}
             >
-              {(safeSymbol(token.symbol, token.address) || "?").slice(0, 2)}
+              {(symbol || "?").slice(0, 2)}
             </div>
           )}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="font-display text-2xl font-extrabold">{safeSymbol(token.symbol, token.address) || "—"}</h1>
+              <h1 className="font-display text-2xl font-extrabold">{symbol || "—"}</h1>
               {pc?.qualityLabel === "very_good" && (
                 <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5"
                   style={{ color: "var(--cryp-mint)", background: "rgba(61,154,139,0.15)" }}>Elite</span>
@@ -286,18 +353,21 @@ export default function TokenDetailPage() {
                 <span className="text-[11px] text-[var(--cryp-mute)]">{pc.runStatus}</span>
               )}
             </div>
-            <div className="flex items-center gap-2 mt-1.5 text-[12px] text-[var(--cryp-mute)]">
-              <span className="font-mono-num">{truncateAddress(token.address)}</span>
-              <CopyBtn text={token.address} />
-              <a href={getGmgnUrl(token.chain, token.address)} target="_blank" rel="noreferrer"
-                className="hover:text-[var(--cryp-mint)]"><ExternalLink className="w-3.5 h-3.5" /></a>
-              {socials.twitter && <a href={socials.twitter} target="_blank" rel="noreferrer"><Twitter className="w-3.5 h-3.5" /></a>}
-              {socials.telegram && <a href={socials.telegram} target="_blank" rel="noreferrer"><Send className="w-3.5 h-3.5" /></a>}
-              {socials.website && <a href={socials.website} target="_blank" rel="noreferrer"><Globe className="w-3.5 h-3.5" /></a>}
-            </div>
+            {address && (
+              <div className="flex items-center gap-2 mt-1.5 text-[12px] text-[var(--cryp-mute)]">
+                <span className="font-mono-num">{truncateAddress(address)}</span>
+                <CopyBtn text={address} />
+                <a href={getGmgnUrl(chain, address)} target="_blank" rel="noreferrer"
+                  className="hover:text-[var(--cryp-mint)]"><ExternalLink className="w-3.5 h-3.5" /></a>
+                {socials.twitter && <a href={socials.twitter} target="_blank" rel="noreferrer"><Twitter className="w-3.5 h-3.5" /></a>}
+                {socials.telegram && <a href={socials.telegram} target="_blank" rel="noreferrer"><Send className="w-3.5 h-3.5" /></a>}
+                {socials.website && <a href={socials.website} target="_blank" rel="noreferrer"><Globe className="w-3.5 h-3.5" /></a>}
+              </div>
+            )}
             {pc?.calledAt && (
               <div className="text-[11px] text-[var(--cryp-mute)] mt-2">
-                Called {formatTimeAgo(pc.calledAt)} · entry {fmtMc(pc.calledMcUsd)} · now {formatMarketCap(token.marketCapUsd)}
+                Called {formatTimeAgo(pc.calledAt)} · entry {fmtMc(pc.calledMcUsd)} · now {formatMarketCap(display?.marketCapUsd ?? null)}
+                <span className="ml-2 opacity-80">· conviction as of verify</span>
               </div>
             )}
           </div>
@@ -320,13 +390,20 @@ export default function TokenDetailPage() {
 
       {pc && (
         <>
-          {/* Score + conviction */}
           <section className="grid grid-cols-2 md:grid-cols-4 gap-3 fade-up fade-up-delay-1">
             {[
               { l: "Pro score", v: pc.proScore != null ? Math.round(pc.proScore) : "—", c: "var(--cryp-mint)" },
               { l: "Survival", v: pc.survivalScore != null ? Math.round(pc.survivalScore) : "—", c: undefined },
-              { l: "Smart holding", v: `${smartC?.holding ?? vw?.holding?.smart ?? "—"}/${pc.calledSmartCount}`, c: "var(--cryp-teal)" },
-              { l: "KOL holding", v: `${kolC?.holding ?? vw?.holding?.kol ?? "—"}/${pc.calledKolCount}`, c: undefined },
+              {
+                l: "Smart holding",
+                v: `${smartHolding}/${smartTotal || "—"}`,
+                c: "var(--cryp-teal)",
+              },
+              {
+                l: "KOL holding",
+                v: `${kolHolding}/${kolTotal || "—"}`,
+                c: undefined,
+              },
             ].map(s => (
               <div key={s.l} className="desk-card px-4 py-3">
                 <div className="text-[9px] tracking-[0.16em] uppercase text-[var(--cryp-mute)]">{s.l}</div>
@@ -364,7 +441,6 @@ export default function TokenDetailPage() {
             </div>
           </section>
 
-          {/* Security snap from token_stat */}
           {vw?.tokenStat && (
             <section className="desk-card p-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-[12px]">
               <div>
@@ -435,14 +511,15 @@ export default function TokenDetailPage() {
             </section>
           )}
 
-          {/* Wallet boards */}
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="desk-card overflow-hidden">
               <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--cryp-line)" }}>
                 <div>
                   <div className="font-display font-bold text-sm">Smart money</div>
                   <div className="text-[10px] text-[var(--cryp-mute)] mt-0.5">
-                    {smartC ? `${smartC.holding} holding · ${smartC.sold} sold · ${fmtPct(smartC.holdRate)}` : `${smartW.length} wallets`}
+                    {smartC
+                      ? `${smartC.holding}/${smartC.total} holding · ${smartC.sold} sold · ${fmtPct(smartC.holdRate)} · as of verify`
+                      : `${smartW.length} wallets`}
                   </div>
                 </div>
               </div>
@@ -459,7 +536,9 @@ export default function TokenDetailPage() {
                 <div>
                   <div className="font-display font-bold text-sm">KOL</div>
                   <div className="text-[10px] text-[var(--cryp-mute)] mt-0.5">
-                    {kolC ? `${kolC.holding} holding · ${kolC.sold} sold · ${fmtPct(kolC.holdRate)}` : `${kolW.length} wallets`}
+                    {kolC
+                      ? `${kolC.holding}/${kolC.total} holding · ${kolC.sold} sold · ${fmtPct(kolC.holdRate)} · as of verify`
+                      : `${kolW.length} wallets`}
                   </div>
                 </div>
               </div>

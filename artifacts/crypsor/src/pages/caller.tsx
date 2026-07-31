@@ -26,9 +26,12 @@ interface Conviction {
   kolHoldRate: number | null;
   smartHolding: number;
   kolHolding: number;
+  smartTotal?: number;
+  kolTotal?: number;
   paperHands: number;
   diamondHands: number;
   supplyPctHeld: number;
+  verifiedAt?: string | null;
 }
 
 interface ProToken {
@@ -181,7 +184,7 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
           </div>
         </div>
 
-        {/* Conviction strip */}
+        {/* Conviction strip — holding / tagged total at verify (not live) */}
         <div
           className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3"
           style={{ borderTop: "1px solid var(--cryp-line)" }}
@@ -192,7 +195,7 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
             </div>
             <div className="font-mono-num text-sm font-semibold mt-0.5">
               {c
-                ? <>{holdSmart}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledSmart || "—"}</span></>
+                ? <>{holdSmart}<span className="text-[var(--cryp-mute)] font-normal">/{c.smartTotal || t.calledSmart || "—"}</span></>
                 : (t.calledSmart || "—")}
               {c?.smartHoldRate != null && (
                 <span className="text-[10px] text-[var(--cryp-mute)] ml-1">{pct(c.smartHoldRate)}</span>
@@ -205,7 +208,7 @@ function TokenCard({ t, onOpen }: { t: ProToken; onOpen: () => void }) {
             </div>
             <div className="font-mono-num text-sm font-semibold mt-0.5">
               {c
-                ? <>{holdKol}<span className="text-[var(--cryp-mute)] font-normal">/{t.calledKol || "—"}</span></>
+                ? <>{holdKol}<span className="text-[var(--cryp-mute)] font-normal">/{c.kolTotal || t.calledKol || "—"}</span></>
                 : (t.calledKol || "—")}
             </div>
           </div>
@@ -456,7 +459,7 @@ export default function Caller() {
           </div>
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--cryp-mute)]">
             <TrendingUp className="w-3 h-3" />
-            Live GMGN verify
+            Conviction frozen at call
           </div>
         </div>
 
