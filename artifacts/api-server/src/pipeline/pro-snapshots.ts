@@ -18,6 +18,7 @@ import { invalidateProCaches } from "../lib/pro-cache";
 import {
   buildRunnerTransition,
   computeRunnerScore,
+  MIN_ENTRY_OBSERVATION_SNAPS,
   shouldWriteMomentumSnap,
   type RunnerPhase,
 } from "../lib/runner-score";
@@ -65,6 +66,10 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         pc.last_snap_mc_usd,
         pc.runner_phase              AS prev_runner_phase,
         pc.runner_score              AS prev_runner_score,
+        COALESCE(pc.observation_snap_count, 0) AS observation_snap_count,
+        (
+          SELECT COUNT(*)::int FROM pro_snapshots ps WHERE ps.pro_call_id = pc.id
+        )                            AS snap_count,
         t.market_cap_usd             AS current_mc,
         t.symbol,
         t.ath_market_cap_usd         AS ath_mc_usd,
@@ -103,6 +108,8 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       last_snap_mc_usd: string | null;
       prev_runner_phase: string | null;
       prev_runner_score: number | null;
+      observation_snap_count: number | null;
+      snap_count: number | null;
       symbol: string | null;
       current_mc: string | null; ath_mc_usd: string | null; kol_count: number | null;
       smart_count: number | null; intel_score: number | null;
@@ -119,7 +126,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       sec_rat_trader_amt_rate: number | null;
     };
 
-    let snapCount = 0;
+    let writtenSnaps = 0;
     let skippedFlat = 0;
     let phaseTransitions = 0;
     let qualityChanged = false;
@@ -144,6 +151,10 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         : null;
       const prevPhase = (r.prev_runner_phase as RunnerPhase | null) ?? "radar";
       const prevScore = r.prev_runner_score != null ? Number(r.prev_runner_score) : null;
+      const obsSnapCount = Math.max(
+        Number(r.snap_count ?? 0) || 0,
+        Number(r.observation_snap_count ?? 0) || 0,
+      );
       const velocity = calledMc > 0 && currentMc > 0 ? currentMc / calledMc : 1;
 
       // Score first (cheap) so phase changes can force a snap write with full factors
@@ -167,9 +178,15 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         volumeIntensityScore: r.volume_intensity_score,
         prevPhase,
         prevScore,
+        snapCount: obsSnapCount,
       });
 
       const scoreDelta = prevScore != null ? runnerPreview.score - prevScore : null;
+      const observing =
+        runnerPreview.rawPhase === "entry"
+        || runnerPreview.rawPhase === "heating"
+        || velocity >= 1.1
+        || (runnerPreview.score >= 55 && obsSnapCount < MIN_ENTRY_OBSERVATION_SNAPS);
       if (!shouldWriteMomentumSnap({
         lastSnapAgeSec,
         mcDeltaPct,
@@ -178,6 +195,8 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         mode,
         force: runnerPreview.phaseChanged,
         scoreDelta,
+        snapCount: obsSnapCount,
+        observing,
       })) {
         skippedFlat++;
         continue;
@@ -299,6 +318,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         smartHoldRate: conviction?.smart.holdRate ?? null,
         prevPhase,
         prevScore,
+        snapCount: obsSnapCount,
       });
 
       await db.execute(sql`
@@ -356,6 +376,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
           score_version    = 'v2',
           runner_score     = ${runner.score},
           runner_phase     = ${runner.phase},
+          observation_snap_count = ${obsSnapCount + 1},
           quality_label    = CASE
             WHEN ${r.sec_is_honeypot === true} THEN 'below'
             WHEN surfaced_at IS NOT NULL THEN
@@ -407,16 +428,16 @@ async function snapshotOnce(mode: Mode): Promise<void> {
       if (String(r.prev_quality ?? "") !== "good" && String(r.prev_quality ?? "") !== "very_good") {
         qualityChanged = true;
       }
-      snapCount++;
+      writtenSnaps++;
     }
 
     // Always refresh feed after hot snaps (scores/ATH move); also on quality flips.
-    if (snapCount > 0 && (mode === "hot" || qualityChanged)) {
+    if (writtenSnaps > 0 && (mode === "hot" || qualityChanged)) {
       await invalidateProCaches();
     }
 
     log.info(
-      { snapCount, skippedFlat, phaseTransitions, mode },
+      { snapCount: writtenSnaps, skippedFlat, phaseTransitions, mode },
       "Pro snapshots written (momentum)",
     );
   } catch (err) {

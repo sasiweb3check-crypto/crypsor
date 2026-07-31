@@ -108,6 +108,10 @@ async function loadRunnerFeed(limit: number): Promise<{ tokens: RunnerCard[]; to
       pc.hit_2x, pc.hit_5x, pc.hit_10x,
       pc.surfaced_at, pc.verified_wallets, pc.runner_score, pc.runner_phase,
       pc.runner_alert_sent_at, pc.call_alert_sent_at,
+      GREATEST(
+        COALESCE(pc.observation_snap_count, 0),
+        (SELECT COUNT(*)::int FROM pro_snapshots ps WHERE ps.pro_call_id = pc.id)
+      ) AS snap_count,
       t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
       t.market_cap_usd, t.raw_metadata,
       t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
@@ -180,6 +184,7 @@ async function loadRunnerFeed(limit: number): Promise<{ tokens: RunnerCard[]; to
       smartHoldRate: vw.smartHoldRate,
       prevPhase,
       prevScore,
+      snapCount: Number(call.snap_count ?? 0) || 0,
     });
 
     return {

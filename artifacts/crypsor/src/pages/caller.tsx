@@ -117,6 +117,20 @@ function TokenCard({ t, onOpen }: { t: RunnerToken; onOpen: () => void }) {
                   Pinged
                 </span>
               )}
+              <span
+                className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5"
+                style={{
+                  color: (t.runner.signals.observationReady ?? (t.runner.signals.snapCount ?? 0) >= 5)
+                    ? "var(--cryp-gain)"
+                    : "var(--cryp-warn)",
+                  background: (t.runner.signals.observationReady ?? (t.runner.signals.snapCount ?? 0) >= 5)
+                    ? "rgba(62,207,142,0.14)"
+                    : "rgba(212,160,23,0.16)",
+                }}
+                title="Observation snaps before ENTRY"
+              >
+                {t.runner.signals.snapCount ?? 0}/5 snaps
+              </span>
               {t.hit2x && <span className="text-[9px] font-bold text-[var(--cryp-gain)]">2×</span>}
               {t.hit5x && <span className="text-[9px] font-bold text-[var(--cryp-gain)]">5×</span>}
               {t.hit10x && <span className="text-[9px] font-bold text-[var(--cryp-mint)]">10×</span>}

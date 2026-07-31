@@ -19,6 +19,7 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS runner_phase text`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS runner_alert_sent_at timestamptz`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS last_snap_mc_usd text`,
+  `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS observation_snap_count integer DEFAULT 0`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS holder_count integer`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS mc_growth_score real`,
   `ALTER TABLE pro_snapshots ADD COLUMN IF NOT EXISTS volume_intensity_score real`,

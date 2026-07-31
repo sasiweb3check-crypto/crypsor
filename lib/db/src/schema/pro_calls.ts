@@ -58,6 +58,8 @@ export const pro_calls = pgTable(
     runnerAlertSentAt: timestamp("runner_alert_sent_at", { withTimezone: true }),
     // Last snap MC — for momentum delta without joining snapshots
     lastSnapMcUsd:    text("last_snap_mc_usd"),
+    // Momentum snaps collected toward ENTRY observation gate (≥5)
+    observationSnapCount: integer("observation_snap_count").default(0),
 
     // ── Running ATH tracker (updated by snapshot worker) ────────────────────
     athMultiple:      real("ath_multiple").default(1), // max(current_mc / called_mc) ever seen

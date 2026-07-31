@@ -19,6 +19,8 @@ export type RunnerInfo = {
     taggedOk: boolean;
     mintOk: boolean;
     freshnessOk: boolean;
+    snapCount?: number;
+    observationReady?: boolean;
   };
 };
 

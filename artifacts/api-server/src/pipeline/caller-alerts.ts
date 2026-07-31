@@ -18,6 +18,8 @@ import { healthMonitor } from "./health-monitor";
 import {
   buildRunnerTransition,
   computeRunnerScore,
+  MIN_ENTRY_OBSERVATION_SNAPS,
+  observationReady,
   type RunnerPhase,
   type RunnerScoreResult,
 } from "../lib/runner-score";
@@ -154,6 +156,7 @@ interface ProAlertToken {
   callAlertSentAt: string | Date | null;
   milestoneAlertsSent: string | null;
   lastSnapMcUsd: string | null;
+  snapCount: number | null;
   currentMc: string | null;
   liveKol: number;
   liveSmart: number;
@@ -186,6 +189,7 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
   const snapDeltaPct = lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null;
   const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
   const prevScore = t.runnerScore != null ? Number(t.runnerScore) : null;
+  const snapCount = Math.max(0, Number(t.snapCount ?? 0) || 0);
 
   return computeRunnerScore({
     calledIntelScore: t.calledIntel,
@@ -208,6 +212,7 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
     smartHoldRate: vw.smartHoldRate,
     prevPhase,
     prevScore,
+    snapCount,
   });
 }
 
@@ -292,6 +297,7 @@ function buildEntryMessage(t: ProAlertToken, runner: RunnerScoreResult): string 
     `🚀 *RUNNER ENTRY* — *${name}* \\(${symbol}\\)`,
     ``,
     `Phase *${esc(runner.label)}* · Score *${runner.score}* · Vel *${esc(String(runner.signals.velocity))}×*`,
+    `Tape *${runner.signals.snapCount}* snaps · Observation cleared`,
     `Entry MC: *${esc(fmtMc(t.calledMcUsd))}* · Now: *${esc(fmtMc(t.currentMc))}* · Gain *${Math.round(runner.signals.gainPct)}%*`,
     `Size *${esc(runner.sizeLabel)}* · Tagged smart *${t.calledSmart}* / KOL *${t.calledKol}*`,
     t.secMint === true ? `✅ Mint renounced` : null,
@@ -370,6 +376,10 @@ async function checkAndAlert(): Promise<void> {
       pc.call_alert_sent_at    AS "callAlertSentAt",
       pc.milestone_alerts_sent AS "milestoneAlertsSent",
       pc.last_snap_mc_usd      AS "lastSnapMcUsd",
+      GREATEST(
+        COALESCE(pc.observation_snap_count, 0),
+        (SELECT COUNT(*)::int FROM pro_snapshots ps WHERE ps.pro_call_id = pc.id)
+      )                        AS "snapCount",
       t.market_cap_usd         AS "currentMc",
       COALESCE(t.holder_kol_count, 0)   AS "liveKol",
       COALESCE(t.holder_smart_count, 0) AS "liveSmart",
@@ -420,12 +430,15 @@ async function checkAndAlert(): Promise<void> {
       if (runner.phaseChanged) {
         try {
           await carryPhaseTransitionSnap(t, runner, prevPhase);
+          const nextCount = Math.max(0, Number(t.snapCount ?? 0) || 0) + 1;
           await db.execute(sql`
             UPDATE pro_calls
             SET last_snapshot_at = NOW(),
-                last_snap_mc_usd = ${String(parseFloat(t.currentMc ?? "0") || 0)}
+                last_snap_mc_usd = ${String(parseFloat(t.currentMc ?? "0") || 0)},
+                observation_snap_count = GREATEST(COALESCE(observation_snap_count, 0), ${nextCount})
             WHERE id = ${t.proCallId}
           `);
+          t.snapCount = nextCount;
         } catch (err) {
           log.warn({ err, proCallId: t.proCallId }, "Runner transition snap failed");
         }
@@ -438,7 +451,22 @@ async function checkAndAlert(): Promise<void> {
         WHERE id = ${t.proCallId}
       `);
 
-      if (!runner.alertEligible) {
+      // Strict wire: never Telegram ENTRY without observation tape
+      const snapsOk = observationReady(t.snapCount) && runner.signals.observationReady;
+      if (!runner.alertEligible || !snapsOk || runner.phase !== "entry") {
+        if (runner.phase === "entry" || runner.rawPhase === "entry") {
+          opsLog(
+            "runner",
+            "info",
+            `Hold ENTRY · ${t.symbol ?? "?"} · snaps ${runner.signals.snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS}`,
+            {
+              proCallId: t.proCallId,
+              blockers: runner.blockers,
+              alertEligible: runner.alertEligible,
+              snapCount: runner.signals.snapCount,
+            },
+          );
+        }
         skipped++;
         continue;
       }
