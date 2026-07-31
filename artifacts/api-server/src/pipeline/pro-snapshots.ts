@@ -419,6 +419,7 @@ async function snapshotOnce(mode: Mode): Promise<void> {
             smart: transition.smart,
             kol: transition.kol,
             intel: transition.intel,
+            snapCount: transition.snapCount,
             reasons: transition.reasons,
             blockers: transition.blockers,
           },
