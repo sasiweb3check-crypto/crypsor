@@ -20,6 +20,9 @@ const queryClient = new QueryClient({
       staleTime: 12_000,
       gcTime: 5 * 60_000,
       refetchOnWindowFocus: false,
+      // Survive Render cold starts / brief CORS blips when switching tabs
+      retry: 3,
+      retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 8_000),
     },
   },
 });

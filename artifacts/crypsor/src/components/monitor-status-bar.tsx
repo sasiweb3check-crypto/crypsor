@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Wifi, WifiOff, Scan, AlertTriangle } from "lucide-react";
 import { formatTimeAgo } from "@/lib/utils";
-import { getApiBase } from "@/lib/api-base";
+import { apiFetch } from "@/lib/api-fetch";
 import { Link } from "wouter";
 
 interface MonitorStatus {
@@ -22,8 +22,8 @@ interface OpsSummaryLite {
   blockers?: Array<{ code: string; level: string; msg: string }>;
 }
 
-async function triggerScan(baseUrl: string) {
-  await fetch(`${baseUrl}api/monitor/scan`, { method: "POST" });
+async function triggerScan() {
+  await apiFetch("api/monitor/scan", { method: "POST", timeoutMs: 20_000 });
 }
 
 const ENGINE_LABELS: Record<string, string> = {
@@ -42,24 +42,22 @@ const ENGINE_LABELS: Record<string, string> = {
 };
 
 export function MonitorStatusBar() {
-  const base = getApiBase();
-  const { data, refetch, isError } = useQuery<MonitorStatus>({
+  const { data, refetch, isError, isPending } = useQuery<MonitorStatus>({
     queryKey: ["monitor-status"],
-    queryFn:  () => fetch(`${base}api/monitor/status`).then(r => {
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      return r.json();
-    }),
+    queryFn: () => apiFetch<MonitorStatus>("api/monitor/status"),
     refetchInterval: 15_000,
     staleTime: 10_000,
-    retry: 1,
+    retry: 3,
+    placeholderData: keepPreviousData,
   });
 
   const { data: ops } = useQuery<OpsSummaryLite>({
     queryKey: ["opsSummaryLite"],
-    queryFn: () => fetch(`${base}api/ops/summary`).then(r => r.ok ? r.json() : {}),
+    queryFn: () => apiFetch<OpsSummaryLite>("api/ops/summary"),
     refetchInterval: 20_000,
     staleTime: 15_000,
-    retry: 0,
+    retry: 2,
+    placeholderData: keepPreviousData,
   });
 
   const heliusOk = data?.heliusConfigured && !data?.heliusLastError;
@@ -70,10 +68,15 @@ export function MonitorStatusBar() {
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] tracking-widest uppercase font-mono">
-      {isError && (
+      {isError && !data && (
         <div className="flex items-center gap-1.5 text-[#ef4444]">
           <AlertTriangle className="w-3 h-3" />
           API fetch failed
+        </div>
+      )}
+      {isPending && !data && (
+        <div className="flex items-center gap-1.5 text-[#8b949e]">
+          Connecting…
         </div>
       )}
 
@@ -83,18 +86,26 @@ export function MonitorStatusBar() {
             : data?.running ? "bg-[#22c55e] pulse-dot" : "bg-[#30363d]"
         }`} />
         <span className={delayed ? "text-[#f59e0b]" : data?.running ? "text-[#22c55e]" : "text-[#8b949e]"}>
-          {delayed ? "Delayed" : data?.running ? "Scanning" : "Stopped"}
+          {delayed ? "Delayed" : data?.running ? "Scanning" : isPending ? "…" : "Stopped"}
         </span>
       </div>
 
       <span className="text-[#30363d]">·</span>
 
       <div className="flex items-center gap-1.5">
-        {heliusOk
-          ? <Wifi className="w-3 h-3 text-[#22c55e]" />
-          : <WifiOff className="w-3 h-3 text-[#f59e0b]" />}
-        <span className={heliusOk ? "text-[#22c55e]" : "text-[#f59e0b]"}>
-          Helius: {data?.heliusConfigured ? (data.heliusLastError ? "Error" : "Connected") : "No Key"}
+        {isPending && !data
+          ? <Wifi className="w-3 h-3 text-[#8b949e]" />
+          : heliusOk
+            ? <Wifi className="w-3 h-3 text-[#22c55e]" />
+            : <WifiOff className="w-3 h-3 text-[#f59e0b]" />}
+        <span className={
+          isPending && !data ? "text-[#8b949e]"
+            : heliusOk ? "text-[#22c55e]" : "text-[#f59e0b]"
+        }>
+          Helius: {
+            isPending && !data ? "…"
+              : data?.heliusConfigured ? (data.heliusLastError ? "Error" : "Connected") : "No Key"
+          }
         </span>
       </div>
 
@@ -151,7 +162,7 @@ export function MonitorStatusBar() {
 
       <button
         className="ml-auto flex items-center gap-1.5 px-2.5 py-1 border border-[#30363d] text-[#8b949e] hover:text-[#f59e0b] hover:border-[#f59e0b]/40 transition-colors"
-        onClick={() => triggerScan(base).then(() => refetch())}
+        onClick={() => triggerScan().then(() => refetch())}
       >
         <Scan className="w-3 h-3" />
         Scan Now

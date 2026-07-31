@@ -1,7 +1,7 @@
 /**
  * Standardized Runner API client — production envelope { ok, data, meta }.
  */
-import { getApiBase } from "@/lib/api-base";
+import { apiFetch, ApiError } from "@/lib/api-fetch";
 
 export type RunnerPhase = "radar" | "heating" | "entry" | "fading" | "dead";
 
@@ -77,13 +77,11 @@ type Envelope<T> = {
 };
 
 async function runnerFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const body = (await res.json()) as Envelope<T> | T;
+  const body = await apiFetch<Envelope<T> | T>(path);
   if (body && typeof body === "object" && "ok" in body) {
     const env = body as Envelope<T>;
     if (!env.ok || env.data === undefined) {
-      throw new Error(env.error || "Runner API error");
+      throw new ApiError(env.error || "Runner API error", 0);
     }
     return env.data;
   }

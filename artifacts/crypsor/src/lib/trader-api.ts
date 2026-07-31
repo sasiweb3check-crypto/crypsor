@@ -1,7 +1,7 @@
 /**
  * Dex Autopilot client — server-side automated paper agent.
  */
-import { getApiBase } from "@/lib/api-base";
+import { apiFetch, ApiError } from "@/lib/api-fetch";
 
 type Envelope<T> = {
   ok: boolean;
@@ -10,16 +10,16 @@ type Envelope<T> = {
 };
 
 async function traderFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
+  const body = await apiFetch<Envelope<T>>(path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const body = (await res.json()) as Envelope<T>;
-  if (!body.ok || body.data === undefined) throw new Error(body.error || "Trader API error");
+  if (!body.ok || body.data === undefined) {
+    throw new ApiError(body.error || "Trader API error", 0);
+  }
   return body.data;
 }
 
