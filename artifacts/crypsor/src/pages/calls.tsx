@@ -74,43 +74,79 @@ function TokenThumb({
 }
 
 function WaitingRow({ c }: { c: CallCard }) {
+  const { toast } = useToast();
   const [, setLocation] = useLocation();
   const sym = safeSymbol(c.symbol, c.address) || "?";
   const snaps = c.snapCount ?? 0;
   const phase = c.runnerPhase ?? "radar";
 
   return (
-    <button
-      type="button"
-      className="call-row w-full text-left"
-      onClick={() => setLocation(`/calls/${c.id}`)}
-    >
-      <TokenThumb
-        logoUri={c.logoUri}
-        address={c.address}
-        symbol={c.symbol}
-        fallbackTint="rgba(245,158,11,0.16)"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-display font-bold text-[14px]">${sym}</span>
-          <span className="text-[10px] uppercase tracking-wider text-[var(--cryp-warn)]">
-            {c.runnerLabel ?? phase}
-          </span>
-          {c.ctoFlag && (
-            <span className="text-[10px] font-bold uppercase text-[var(--cryp-warn)]">CTO</span>
-          )}
+    <article className="call-row">
+      <button
+        type="button"
+        className="flex items-start gap-3 min-w-0 flex-1 text-left"
+        onClick={() => setLocation(`/calls/${c.id}`)}
+      >
+        <TokenThumb
+          logoUri={c.logoUri}
+          address={c.address}
+          symbol={c.symbol}
+          fallbackTint="rgba(245,158,11,0.16)"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display font-bold text-[14px]">${sym}</span>
+            <span className="text-[10px] uppercase tracking-wider text-[var(--cryp-warn)]">
+              Waiting
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-[var(--cryp-mute)]">
+              {c.runnerLabel ?? phase}
+            </span>
+            {c.ctoFlag && (
+              <span className="text-[10px] font-bold uppercase text-[var(--cryp-warn)]">CTO</span>
+            )}
+          </div>
+          <div className="text-[11px] text-[var(--cryp-mute)] mt-0.5 truncate">
+            {c.calledAt ? `${formatTimeAgo(c.calledAt)} ago` : "—"}
+            {" · "}
+            {c.holdReason ?? c.blockers?.[0] ?? "Pending ENTRY"}
+            {" · "}
+            {snaps}/5 snaps
+          </div>
+          <div className="font-mono-num text-[12px] mt-1 text-[var(--cryp-warn)]">
+            Now {(c.nowMultiple ?? 1).toFixed(2)}×
+            {" · "}
+            {formatCompactUsd(c.calledMcUsd)}
+          </div>
         </div>
-        <div className="text-[11px] text-[var(--cryp-mute)] mt-0.5 truncate">
-          {c.holdReason ?? c.blockers?.[0] ?? "Waiting on ENTRY"}
-          {" · "}
-          {snaps}/5 snaps
-        </div>
+      </button>
+
+      <div className="flex flex-col items-end gap-1.5 shrink-0">
+        <button
+          type="button"
+          aria-label="Copy address"
+          className="text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)] p-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            void navigator.clipboard.writeText(c.address);
+            toast({ title: "Copied", description: truncateAddress(c.address) });
+          }}
+        >
+          <Copy className="w-3.5 h-3.5" />
+        </button>
+        <a
+          href={getGmgnUrl(c.chain, c.address)}
+          target="_blank"
+          rel="noreferrer"
+          className="call-action !px-2 !py-1"
+          onClick={e => e.stopPropagation()}
+          title="Open on GMGN"
+        >
+          <ExternalLink className="w-3 h-3" />
+          GMGN
+        </a>
       </div>
-      <div className="text-right shrink-0 font-mono-num text-[13px]">
-        {(c.nowMultiple ?? 1).toFixed(2)}×
-      </div>
-    </button>
+    </article>
   );
 }
 
@@ -180,9 +216,10 @@ function CallRow({ c }: { c: CallCard }) {
           rel="noreferrer"
           className="call-action !px-2 !py-1"
           onClick={e => e.stopPropagation()}
+          title="Open on GMGN"
         >
           <ExternalLink className="w-3 h-3" />
-          Buy
+          GMGN
         </a>
       </div>
     </article>
@@ -299,8 +336,9 @@ export default function CallsPage() {
 
       <div className="flex items-center justify-between gap-2 min-h-[22px]">
         <p className="text-[11px] text-[var(--cryp-mute)] truncate font-mono-num">
-          {statsLine ?? (isFetching ? "sync…" : "—")}
-          {mode === "waiting" ? " · pending ENTRY" : ""}
+          {mode === "waiting"
+            ? `${pendingN || cards.length || 0} pending · latest called · not in WR`
+            : (statsLine ?? (isFetching ? "sync…" : "—"))}
         </p>
         <label className="relative inline-flex items-center shrink-0">
           <span className="sr-only">Stats period</span>
@@ -353,10 +391,10 @@ export default function CallsPage() {
         ))}
       </div>
 
-      {mode === "best" && cards.length > 0 && (
+      {(mode === "best" || mode === "hot" || mode === "latest") && cards.length > 0 && (
         <p className="text-[10px] text-[var(--cryp-mute)] text-center pt-1">
           <Flame className="w-3 h-3 inline-block mr-1 align-[-2px]" />
-          ENTRY-served + proper very_good
+          ENTRY-served only · Waiting stays in Waiting
         </p>
       )}
     </div>
