@@ -87,8 +87,8 @@ export type CallCard = {
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  // v7-lite: no wallet_profiles / win_rate AVG — WR is on-demand via ?winrate=1
-  const cacheKey = `calls:feed:v7-lite:${limit}`;
+  // v8: ENTRY-served only — waiting/pending never carried into Best/Hot/Latest
+  const cacheKey = `calls:feed:v8-entry:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -98,7 +98,8 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
   `);
   const universe = Number((universeRow.rows[0] as { n?: number })?.n ?? 0);
 
-  // Light feed: buy counts + Crypsor quality/weight only (no win_rate joins).
+  // Light feed: ENTRY-served only (Telegram or in-app ENTRY ping).
+  // Waiting queue is a separate endpoint — keep it out of win-rate / desk math.
   const rows = await db.execute(sql`
     SELECT
       pc.token_id,
@@ -154,14 +155,6 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       AND (
         pc.call_alert_sent_at IS NOT NULL
         OR pc.runner_alert_sent_at IS NOT NULL
-        OR pc.quality_label = 'very_good'
-        OR (
-          pc.quality_label = 'good'
-          AND COALESCE(pc.observation_snap_count, 0) >= 5
-          AND t.latest_holder_snapshot_id IS NOT NULL
-          AND (COALESCE(pc.called_smart_count, 0) + COALESCE(pc.called_kol_count, 0)) >= 1
-          AND COALESCE(buys.wallet_buys, 0) >= 1
-        )
       )
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT 200
@@ -323,7 +316,6 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       AND (
         pc.call_alert_sent_at IS NOT NULL
         OR pc.runner_alert_sent_at IS NOT NULL
-        OR pc.quality_label = 'very_good'
       )
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT ${Math.min(limit, 120)}
@@ -607,12 +599,13 @@ async function loadWaitingCalls(limit: number): Promise<{
   cards: WaitingCallCard[];
   pendingFirstCalls: number;
 }> {
-  const cacheKey = `calls:waiting:v2:${limit}`;
+  // v3: latest-called sort only — never mixed into Best/Hot ENTRY stats
+  const cacheKey = `calls:waiting:v3:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
-  // Waiting = very_good held for ENTRY, PLUS any good/very_good CTO not yet ENTRY-served
-  // (CTO is valued even when other gates aren't met yet).
+  // Waiting = not yet ENTRY-served (no Telegram / in-app ENTRY ping).
+  // Kept separate from Best/Hot so win-rate / ENTRY math never carries these.
   const rows = await db.execute(sql`
     SELECT
       pc.token_id, pc.called_at, pc.called_mc_usd,
@@ -647,9 +640,7 @@ async function loadWaitingCalls(limit: number): Promise<{
           AND pc.quality_label IN ('good', 'very_good')
         )
       )
-    ORDER BY
-      CASE WHEN t.sec_cto_flag IS TRUE THEN 0 ELSE 1 END,
-      pc.called_at DESC NULLS LAST
+    ORDER BY pc.called_at DESC NULLS LAST
     LIMIT ${Math.min(Math.max(limit, 1), 40)}
   `);
 
@@ -806,18 +797,8 @@ async function loadWaitingCalls(limit: number): Promise<{
     };
   });
 
-  // CTO valued first, then near-ENTRY, then heating / radar
-  const phaseRank = (p: RunnerPhase) =>
-    p === "entry" ? 0 : p === "heating" ? 1 : p === "radar" ? 2 : 3;
-  cards.sort((a, b) => {
-    const ac = a.ctoFlag === true ? 0 : 1;
-    const bc = b.ctoFlag === true ? 0 : 1;
-    if (ac !== bc) return ac - bc;
-    if (a.alertEligible !== b.alertEligible) return a.alertEligible ? -1 : 1;
-    const pd = phaseRank(a.runnerPhase) - phaseRank(b.runnerPhase);
-    if (pd !== 0) return pd;
-    return (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
-  });
+  // Strict latest-called order (SQL already DESC; re-assert for safety)
+  cards.sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
 
   const payload = { cards, pendingFirstCalls: cards.length };
   await proCacheSet(cacheKey, payload, 6);
@@ -838,7 +819,7 @@ router.get("/calls/feed", async (req, res) => {
         universe: pack.pendingFirstCalls,
         mode: "waiting",
         pendingFirstCalls: pack.pendingFirstCalls,
-        note: "Waiting = very_good not yet ENTRY-served — held for snaps / confidence gates",
+        note: "Waiting = latest-called pending ENTRY (not in Best/Hot win-rate)",
       }));
       return;
     }
@@ -852,25 +833,20 @@ router.get("/calls/feed", async (req, res) => {
     }
     const { cards, universe } = pack;
 
+    // Feed cards are ENTRY-served only — waiting never mixed in
     let out = cards;
     if (mode === "best") {
-      // Clarity: ENTRY-served first, then proper VG — never raw good flood
-      const served = cards.filter(c => c.entryServed);
-      const proper = cards.filter(c => !c.entryServed && c.properServe);
-      out = [...served, ...proper]
-        .filter(c => c.entryServed || c.callLabel === "elite" || c.callLabel === "strong" || c.properServe)
+      out = cards
+        .filter(c => c.entryServed)
         .slice(0, Math.min(limit, 8));
-      if (out.length < 3) {
-        out = cards.filter(c => c.entryServed || c.properServe || c.qualityLabel === "very_good")
-          .slice(0, Math.min(limit, 8));
-      }
     } else if (mode === "hot") {
       out = [...cards]
-        .filter(c => c.entryServed || c.properServe || c.qualityLabel === "very_good")
+        .filter(c => c.entryServed)
         .sort((a, b) => (b.nowMultiple - a.nowMultiple) || (b.callScore - a.callScore))
         .slice(0, limit);
     } else {
       out = [...cards]
+        .filter(c => c.entryServed)
         .sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""))
         .slice(0, limit);
     }
@@ -881,7 +857,7 @@ router.get("/calls/feed", async (req, res) => {
       total: out.length,
       universe,
       mode,
-      note: "Best = ENTRY-served + proper very_good (not raw good desk flood)",
+      note: "Best/Hot/Latest = ENTRY-served only. Waiting is a separate queue.",
     }));
   } catch (err) {
     console.error("calls feed error", err);
@@ -897,7 +873,7 @@ router.get("/calls/waiting", async (req, res) => {
     res.json(apiOk({
       cards: pack.cards,
       pendingFirstCalls: pack.pendingFirstCalls,
-      note: "Ops pending first calls — very_good held for ENTRY gates",
+      note: "Waiting = latest-called pending ENTRY — separate from ENTRY-served desk",
     }));
   } catch (err) {
     console.error("calls waiting error", err);
