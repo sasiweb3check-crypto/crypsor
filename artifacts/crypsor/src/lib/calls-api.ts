@@ -158,15 +158,19 @@ export type CrypsorWalletRow = {
   lastSeenAt: string | null;
 };
 
-export const CALLS_TOKEN_KEY = (id: number) => ["calls-token", id] as const;
+export const CALLS_TOKEN_KEY = (id: number, winrate = false) =>
+  ["calls-token", id, winrate ? "wr" : "lite"] as const;
 
-export function fetchCallDetail(tokenId: number) {
+/** Detail is lite by default; pass winrate=true to pull buyer/Crypsor WR. */
+export function fetchCallDetail(tokenId: number, opts?: { winrate?: boolean }) {
+  const qs = opts?.winrate ? "?winrate=1" : "";
   return callsFetch<{
     card: CallCard | null;
     buyers: CallBuyer[];
     snaps: CallSnap[];
     crypsorWallets?: CrypsorWalletRow[];
+    winrateLoaded?: boolean;
     walletBuysNote?: string;
     crypsorNote?: string;
-  }>(`api/calls/token/${tokenId}`);
+  }>(`api/calls/token/${tokenId}${qs}`);
 }

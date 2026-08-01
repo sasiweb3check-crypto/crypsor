@@ -1,10 +1,10 @@
 /**
  * Best Calls API — lightweight FOMO-style desk
  *
- * GET /api/calls/feed   — ranked call cards (wallet quality, MC-agnostic)
+ * GET /api/calls/feed   — ranked call cards (no winrate join — fast)
  * GET /api/calls/waiting — very_good queue held for ENTRY gates (Ops pending)
  * GET /api/calls/stats  — win rate · highest X · signals · avg X
- * GET /api/calls/token/:id — single card detail
+ * GET /api/calls/token/:id — single card (?winrate=1 pulls wallet WR on demand)
  */
 
 import { Router } from "express";
@@ -87,7 +87,8 @@ export type CallCard = {
 };
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v6:${limit}`;
+  // v7-lite: no wallet_profiles / win_rate AVG — WR is on-demand via ?winrate=1
+  const cacheKey = `calls:feed:v7-lite:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -97,8 +98,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
   `);
   const universe = Number((universeRow.rows[0] as { n?: number })?.n ?? 0);
 
-  // Keep this query light — heavy LATERAL (regex notional + win_rate joins)
-  // was timing out on cold DB and left the Best Calls cards empty.
+  // Light feed: buy counts + Crypsor quality/weight only (no win_rate joins).
   const rows = await db.execute(sql`
     SELECT
       pc.token_id,
@@ -131,24 +131,17 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.first_detected_at,
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       NULL::float8 AS buy_notional,
-      buys.avg_win_rate AS avg_win_rate,
-      cryp.crypsor_avg_wr,
       cryp.crypsor_quality_n,
       cryp.crypsor_weight
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     LEFT JOIN LATERAL (
-      SELECT
-        COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys,
-        AVG(wp.win_rate) FILTER (WHERE wp.win_rate IS NOT NULL) AS avg_win_rate
+      SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
       FROM token_buys tb
-      LEFT JOIN walletdatasource w ON w.id = tb.wallet_id
-      LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
       WHERE tb.token_id = pc.token_id
     ) buys ON TRUE
     LEFT JOIN LATERAL (
       SELECT
-        AVG(i.win_rate) FILTER (WHERE i.win_rate IS NOT NULL) AS crypsor_avg_wr,
         COUNT(*) FILTER (
           WHERE e.our_label_at IN ('diamond', 'accumulator', 'solid')
         )::int AS crypsor_quality_n,
@@ -189,17 +182,16 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       ? Math.round((currentMc / calledMc) * 100) / 100
       : 1;
     const walletBuys = Number(r.wallet_buys ?? 0);
-    const avgWr = r.avg_win_rate != null ? Number(r.avg_win_rate) : null;
     const ctoFlag = r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag);
     const creatorClose = r.sec_creator_close == null ? null : Boolean(r.sec_creator_close);
     const creatorCreatedCount = r.sec_creator_created_count != null
       ? Number(r.sec_creator_created_count)
       : null;
 
-    const crypsorAvgWr = r.crypsor_avg_wr != null ? Number(r.crypsor_avg_wr) : null;
     const crypsorQualityN = r.crypsor_quality_n != null ? Number(r.crypsor_quality_n) : 0;
     const crypsorWeight = r.crypsor_weight != null ? Number(r.crypsor_weight) : 0;
 
+    // Judging without winrate — WR is deferred to detail ?winrate=1
     const q = computeCallQuality({
       walletBuys,
       calledKol: Number(r.called_kol_count ?? 0),
@@ -208,7 +200,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       liveSmart: Number(r.live_smart ?? 0),
       holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
       holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
-      avgWalletWinRate: avgWr != null && Number.isFinite(avgWr) ? avgWr : null,
+      avgWalletWinRate: null,
       proScore: Number(r.pro_score ?? 0),
       qualityLabel: String(r.quality_label ?? ""),
       athMultiple,
@@ -216,7 +208,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       ctoFlag,
       creatorClose,
       creatorCreatedCount,
-      crypsorAvgWinRate: crypsorAvgWr != null && Number.isFinite(crypsorAvgWr) ? crypsorAvgWr : null,
+      crypsorAvgWinRate: null,
       crypsorQualityHolders: crypsorQualityN,
       crypsorWeightage: crypsorWeight,
     });
@@ -260,9 +252,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       liveKol: Number(r.live_kol ?? 0),
       liveSmart: Number(r.live_smart ?? 0),
       holderCount: r.holder_count != null ? Number(r.holder_count) : null,
-      avgWalletWinRate: avgWr != null && Number.isFinite(avgWr)
-        ? Math.round(avgWr * 1000) / 1000
-        : null,
+      avgWalletWinRate: null,
       holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
       proScore: Number(r.pro_score ?? 0),
       qualityLabel: String(r.quality_label ?? "—"),
@@ -433,6 +423,171 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
     return b.callScore - a.callScore;
   });
   return { cards: cards.slice(0, limit), universe };
+}
+
+/** Single-token card — avoids loadCallCards(200) on detail. */
+async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
+  const rows = await db.execute(sql`
+    SELECT
+      pc.token_id, pc.called_at, pc.called_mc_usd,
+      pc.called_kol_count, pc.called_smart_count,
+      pc.ath_multiple, pc.pro_score, pc.quality_label,
+      pc.hit_2x, pc.hit_5x, pc.hit_10x, pc.surfaced_at,
+      pc.call_alert_sent_at, pc.runner_alert_sent_at,
+      COALESCE(pc.observation_snap_count, 0)::int AS observation_snap_count,
+      t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+      t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
+      t.raw_metadata, t.holder_count, t.latest_holder_snapshot_id,
+      t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
+      t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
+      t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
+      t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
+      cryp.crypsor_quality_n,
+      cryp.crypsor_weight
+    FROM pro_calls pc
+    JOIN tracked_tokens t ON t.id = pc.token_id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
+      FROM token_buys tb
+      WHERE tb.token_id = pc.token_id
+    ) buys ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) FILTER (
+          WHERE e.our_label_at IN ('diamond', 'accumulator', 'solid')
+        )::int AS crypsor_quality_n,
+        COALESCE(SUM(i.weightage), 0)::float8 AS crypsor_weight
+      FROM crypsor_wallet_token_events e
+      JOIN crypsor_wallet_intel i ON i.wallet_address = e.wallet_address
+      WHERE e.token_id = pc.token_id AND e.role = 'observed'
+    ) cryp ON TRUE
+    WHERE pc.token_id = ${tokenId}
+    LIMIT 1
+  `);
+  const r = (rows.rows[0] ?? null) as Record<string, unknown> | null;
+  if (!r) return null;
+
+  const calledMc = r.called_mc_usd != null ? parseFloat(String(r.called_mc_usd)) : null;
+  const currentMc = r.market_cap_usd != null ? parseFloat(String(r.market_cap_usd)) || null : null;
+  const athMultiple = Number(r.ath_multiple ?? 1) || 1;
+  const athMcRaw = r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) : null;
+  const athMc = athMcRaw && athMcRaw > 0
+    ? athMcRaw
+    : (calledMc && athMultiple > 1 ? calledMc * athMultiple : currentMc);
+  const walletBuys = Number(r.wallet_buys ?? 0);
+  const ctoFlag = r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag);
+  const creatorClose = r.sec_creator_close == null ? null : Boolean(r.sec_creator_close);
+  const creatorCreatedCount = r.sec_creator_created_count != null
+    ? Number(r.sec_creator_created_count) : null;
+  const crypsorQualityN = r.crypsor_quality_n != null ? Number(r.crypsor_quality_n) : 0;
+  const crypsorWeight = r.crypsor_weight != null ? Number(r.crypsor_weight) : 0;
+  const q = computeCallQuality({
+    walletBuys,
+    calledKol: Number(r.called_kol_count ?? 0),
+    calledSmart: Number(r.called_smart_count ?? 0),
+    liveKol: Number(r.live_kol ?? 0),
+    liveSmart: Number(r.live_smart ?? 0),
+    holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+    holderVelocityScore: r.holder_velocity_score != null ? Number(r.holder_velocity_score) : null,
+    avgWalletWinRate: null,
+    proScore: Number(r.pro_score ?? 0),
+    qualityLabel: String(r.quality_label ?? ""),
+    athMultiple,
+    honeypot: r.sec_is_honeypot as boolean | null,
+    ctoFlag,
+    creatorClose,
+    creatorCreatedCount,
+    crypsorAvgWinRate: null,
+    crypsorQualityHolders: crypsorQualityN,
+    crypsorWeightage: crypsorWeight,
+  });
+  const ageSrc = r.token_created_at ?? r.first_detected_at;
+  const firstSeen = ageSrc ? new Date(String(ageSrc)).getTime() : null;
+  const entryServed = Boolean(r.call_alert_sent_at || r.runner_alert_sent_at);
+  const obsSnaps = Number(r.observation_snap_count ?? 0);
+  const tagged = Number(r.called_smart_count ?? 0) + Number(r.called_kol_count ?? 0);
+  const properServe = String(r.quality_label ?? "") === "very_good"
+    && obsSnaps >= 5
+    && r.latest_holder_snapshot_id != null
+    && tagged >= 1;
+  const nowMultiple = calledMc && currentMc && calledMc > 0
+    ? Math.round((currentMc / calledMc) * 100) / 100
+    : 1;
+
+  return {
+    id: Number(r.token_id),
+    address: String(r.address),
+    chain: String(r.chain ?? "solana"),
+    name: (r.name as string | null) ?? null,
+    symbol: (r.symbol as string | null) ?? null,
+    logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+    calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+    calledMcUsd: calledMc,
+    currentMcUsd: currentMc,
+    athMcUsd: athMc,
+    gainPct: calledMc && currentMc && calledMc > 0
+      ? ((currentMc - calledMc) / calledMc) * 100 : null,
+    nowMultiple,
+    athMultiple: Math.round(athMultiple * 100) / 100,
+    walletBuys,
+    buyVolumeHintUsd: null,
+    calledKol: Number(r.called_kol_count ?? 0),
+    calledSmart: Number(r.called_smart_count ?? 0),
+    liveKol: Number(r.live_kol ?? 0),
+    liveSmart: Number(r.live_smart ?? 0),
+    holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+    avgWalletWinRate: null,
+    holderQualityScore: r.holder_quality_score != null ? Number(r.holder_quality_score) : null,
+    proScore: Number(r.pro_score ?? 0),
+    qualityLabel: String(r.quality_label ?? "—"),
+    callScore: q.score + (entryServed ? 8 : 0) + (properServe ? 4 : 0),
+    callLabel: q.label,
+    reasons: entryServed ? ["ENTRY served", ...q.reasons].slice(0, 4) : q.reasons,
+    hit2x: Boolean(r.hit_2x) || athMultiple >= 2,
+    hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
+    hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
+    volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+    tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
+      ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000)) : null,
+    ctoFlag,
+    creatorClose,
+    creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
+    creatorCreatedCount,
+    socials: extractSocials(r.raw_metadata),
+    entryServed,
+    properServe,
+  };
+}
+
+/** On-demand buyer + Crypsor win-rate aggregates for one token. */
+async function loadTokenWinrate(tokenId: number): Promise<{
+  avgWalletWinRate: number | null;
+  crypsorAvgWinRate: number | null;
+}> {
+  const rows = await db.execute(sql`
+    SELECT
+      (
+        SELECT AVG(wp.win_rate) FILTER (WHERE wp.win_rate IS NOT NULL)
+        FROM token_buys tb
+        JOIN walletdatasource w ON w.id = tb.wallet_id
+        LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
+        WHERE tb.token_id = ${tokenId}
+      ) AS avg_win_rate,
+      (
+        SELECT AVG(i.win_rate) FILTER (WHERE i.win_rate IS NOT NULL)
+        FROM crypsor_wallet_token_events e
+        JOIN crypsor_wallet_intel i ON i.wallet_address = e.wallet_address
+        WHERE e.token_id = ${tokenId} AND e.role = 'observed'
+      ) AS crypsor_avg_wr
+  `);
+  const r = (rows.rows[0] ?? {}) as Record<string, unknown>;
+  const avg = r.avg_win_rate != null ? Number(r.avg_win_rate) : null;
+  const cwr = r.crypsor_avg_wr != null ? Number(r.crypsor_avg_wr) : null;
+  return {
+    avgWalletWinRate: avg != null && Number.isFinite(avg) ? Math.round(avg * 1000) / 1000 : null,
+    crypsorAvgWinRate: cwr != null && Number.isFinite(cwr) ? Math.round(cwr * 1000) / 1000 : null,
+  };
 }
 
 export type WaitingCallCard = CallCard & {
@@ -901,47 +1056,51 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       return;
     }
 
+    // Opt-in only — keeps default detail path free of wallet_profiles WR joins
+    const wantWinrate = ["1", "true", "yes"].includes(
+      String(req.query.winrate ?? "").toLowerCase(),
+    );
+
     let card: CallCard | null = null;
     try {
-      const pack = await loadCallCards(200);
-      card = pack.cards.find(c => c.id === tokenId) ?? null;
-    } catch {
-      const pack = await loadCallCardsLite(120);
-      card = pack.cards.find(c => c.id === tokenId) ?? null;
+      card = await loadSingleCallCard(tokenId);
+    } catch (err) {
+      console.warn("calls token single-card failed", err);
+      card = null;
     }
 
-    // Direct fetch if not in ranked window
-    if (!card) {
-      const pack = await loadCallCardsLite(200);
-      card = pack.cards.find(c => c.id === tokenId) ?? null;
-    }
-
-    // Buyers = YOUR sensor wallets in walletdatasource that bought this token
-    // (Helius scan → token_buys). Not all on-chain holders.
+    // Buyers = YOUR sensor wallets (Helius → token_buys). WR join only if requested.
     let buyers: CallBuyer[] = [];
     try {
-      const buyRows = await db.execute(sql`
-        SELECT
-          w.id AS wallet_id,
-          w.address,
-          w.label,
-          tb.bought_at,
-          tb.amount,
-          tb.price_usd,
-          wp.win_rate
-        FROM token_buys tb
-        JOIN walletdatasource w ON w.id = tb.wallet_id
-        LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
-        WHERE tb.token_id = ${tokenId}
-        ORDER BY tb.bought_at DESC NULLS LAST
-        LIMIT 40
-      `);
+      const buyRows = wantWinrate
+        ? await db.execute(sql`
+            SELECT
+              w.id AS wallet_id, w.address, w.label,
+              tb.bought_at, tb.amount, tb.price_usd, wp.win_rate
+            FROM token_buys tb
+            JOIN walletdatasource w ON w.id = tb.wallet_id
+            LEFT JOIN wallet_profiles wp ON wp.wallet_address = w.address
+            WHERE tb.token_id = ${tokenId}
+            ORDER BY tb.bought_at DESC NULLS LAST
+            LIMIT 40
+          `)
+        : await db.execute(sql`
+            SELECT
+              w.id AS wallet_id, w.address, w.label,
+              tb.bought_at, tb.amount, tb.price_usd,
+              NULL::float8 AS win_rate
+            FROM token_buys tb
+            JOIN walletdatasource w ON w.id = tb.wallet_id
+            WHERE tb.token_id = ${tokenId}
+            ORDER BY tb.bought_at DESC NULLS LAST
+            LIMIT 40
+          `);
       buyers = (buyRows.rows as Array<Record<string, unknown>>).map(r => ({
         walletId: Number(r.wallet_id),
         address: String(r.address),
         label: String(r.label ?? "wallet"),
         boughtAt: toIsoUtc(r.bought_at),
-        winRate: r.win_rate != null ? Number(r.win_rate) : null,
+        winRate: wantWinrate && r.win_rate != null ? Number(r.win_rate) : null,
         amount: r.amount != null ? String(r.amount) : null,
         priceUsd: r.price_usd != null ? String(r.price_usd) : null,
       }));
@@ -976,12 +1135,19 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       return;
     }
 
-    // Patch walletBuys from live buyer list when card exists
     if (card && buyers.length > 0) {
       card = { ...card, walletBuys: new Set(buyers.map(b => b.walletId)).size };
     }
 
-    // Crypsor wallet intel for holders on THIS token (background-labeled)
+    if (card && wantWinrate) {
+      try {
+        const wr = await loadTokenWinrate(tokenId);
+        card = { ...card, avgWalletWinRate: wr.avgWalletWinRate };
+      } catch (err) {
+        console.warn("calls token winrate query failed", err);
+      }
+    }
+
     let crypsorWallets: CrypsorWalletRow[] = [];
     try {
       const intelRows = await db.execute(sql`
@@ -1024,7 +1190,7 @@ router.get("/calls/token/:tokenId", async (req, res) => {
         ourLabel: String(r.our_label ?? r.our_label_at ?? "noise"),
         behaviourScore: Number(r.behaviour_score ?? r.behaviour_score_at ?? 0),
         weightage: Number(r.weightage ?? 0),
-        winRate: r.win_rate != null ? Number(r.win_rate) : null,
+        winRate: wantWinrate && r.win_rate != null ? Number(r.win_rate) : null,
         wins: Number(r.wins ?? 0),
         losses: Number(r.losses ?? 0),
         tokensSeen: Number(r.tokens_seen ?? 0),
@@ -1041,7 +1207,6 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       crypsorWallets = [];
     }
 
-    // Kick background labeling if we have holders but no intel yet
     if (crypsorWallets.length === 0) {
       try {
         const { enqueueWalletIntel } = await import("../pipeline/wallet-intel");
@@ -1055,10 +1220,11 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       buyers,
       snaps,
       crypsorWallets,
+      winrateLoaded: wantWinrate,
       walletBuysNote:
         "Wallet buys = distinct wallets from YOUR tracked list (walletdatasource) that bought this token via Helius scan → token_buys. Not GMGN holders.",
       crypsorNote:
-        "Crypsor wallet intel = our background labelling of token holders from holder snapshots (behaviour score, weightage, Crypsor win-rate). Separate from GMGN KOL / smart tags.",
+        "Crypsor wallet intel = our background labelling of token holders from holder snapshots (behaviour score, weightage). Win-rate fields load only with ?winrate=1.",
     }));
   } catch (err) {
     console.error("calls token error", err);
