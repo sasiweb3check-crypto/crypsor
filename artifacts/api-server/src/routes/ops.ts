@@ -261,6 +261,127 @@ router.get("/ops/summary", async (_req, res) => {
   }
 });
 
+/**
+ * Live GMGN wallet activity probe (OpenAPI).
+ * GET /api/ops/gmgn-wallet-activity?address=&type=buy&limit=20&chain=sol
+ * Defaults address to tracked "deepents" sensor when omitted.
+ */
+router.get("/ops/gmgn-wallet-activity", async (req, res) => {
+  try {
+    const DEFAULT_WALLET = "FYTVwP5hgCUiB14eYYTPtZpBCBL4tqbYFbRkjmRwbNto"; // deepents
+    const address = String(req.query.address ?? DEFAULT_WALLET).trim();
+    const chain = String(req.query.chain ?? "sol").trim().toLowerCase();
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20) || 20));
+    const cursor = req.query.cursor != null ? String(req.query.cursor) : undefined;
+    const token = req.query.token != null ? String(req.query.token) : undefined;
+    const typeRaw = String(req.query.type ?? "buy").trim();
+    const types = typeRaw
+      ? typeRaw.split(",").map(t => t.trim()).filter(Boolean) as Array<
+          "buy" | "sell" | "transferIn" | "transferOut" | "add" | "remove"
+        >
+      : undefined;
+
+    const { fetchOpenApiWalletActivity, hasGmgnOpenApiKey, openApiLimiterStatus } =
+      await import("../lib/gmgn-openapi");
+    const { gmgnFetch, nextProxy } = await import("../lib/gmgn-client");
+
+    if (!hasGmgnOpenApiKey()) {
+      res.status(503).json({
+        ok: false,
+        error: "GMGN_API_KEY not set",
+        note: "Set GMGN_API_KEY for openapi.gmgn.ai /v1/user/wallet_activity",
+      });
+      return;
+    }
+
+    const t0 = Date.now();
+    const openApi = await fetchOpenApiWalletActivity({
+      chain,
+      walletAddress: address,
+      limit,
+      cursor,
+      types: types?.length ? types : undefined,
+      token,
+    });
+
+    // Scrape fallback (proxy) — same shape many scrapers use
+    const proxy = nextProxy();
+    const scrapeUrl =
+      `https://gmgn.ai/defi/quotation/v1/wallet/${chain}/${address}/activities?limit=${limit}`;
+    const scrape = await gmgnFetch(scrapeUrl, proxy);
+
+    const body = (openApi.data ?? null) as Record<string, unknown> | null;
+    const data = (body && typeof body === "object" && "data" in body)
+      ? (body.data as Record<string, unknown>)
+      : body;
+    const activities = Array.isArray((data as { activities?: unknown })?.activities)
+      ? (data as { activities: unknown[] }).activities
+      : Array.isArray(data)
+        ? data
+        : Array.isArray((data as { list?: unknown })?.list)
+          ? (data as { list: unknown[] }).list
+          : [];
+
+    const buys = activities.filter(a => {
+      const t = String((a as { type?: string })?.type ?? "").toLowerCase();
+      return t === "buy";
+    });
+
+    opsLog(
+      "api",
+      openApi.ok ? "info" : "warn",
+      `GMGN wallet_activity openapi=${openApi.ok} scrape=${scrape.ok} n=${activities.length}`,
+      { wallet: address.slice(0, 8), types: typeRaw },
+      Date.now() - t0,
+    );
+
+    res.json({
+      ok: openApi.ok || scrape.ok,
+      address,
+      chain,
+      types: types ?? null,
+      latencyMs: Date.now() - t0,
+      openApi: {
+        ok: openApi.ok,
+        status: openApi.status,
+        activityCount: activities.length,
+        buyCount: buys.length,
+        next: (data as { next?: unknown })?.next ?? null,
+        activities: activities.slice(0, limit),
+        rawError: openApi.ok
+          ? null
+          : (body as { error?: string; message?: string } | null)?.error
+            ?? (body as { message?: string } | null)?.message
+            ?? null,
+      },
+      scrape: {
+        ok: scrape.ok,
+        status: scrape.status,
+        blocked: !scrape.ok && (scrape.status === 403
+          || (scrape.data as { error?: string })?.error === "cloudflare_blocked"),
+        sampleKeys: scrape.ok
+          ? Object.keys(
+            ((scrape.data as { data?: object })?.data ?? scrape.data ?? {}) as object,
+          ).slice(0, 12)
+          : null,
+        // Include scrape activities when OpenAPI failed but scrape worked
+        activities: (!openApi.ok && scrape.ok)
+          ? ((scrape.data as { data?: { activities?: unknown[] } })?.data?.activities
+            ?? (scrape.data as { activities?: unknown[] })?.activities
+            ?? null)
+          : null,
+      },
+      limiter: openApiLimiterStatus(),
+      note: openApi.ok
+        ? "OpenAPI wallet_activity OK — use activities[].type buy/sell + cost_usd for on-add backfill"
+        : "OpenAPI wallet_activity failed — check key / IPv4 / params; scrape may still work via proxy",
+    });
+  } catch (err) {
+    console.error("ops gmgn-wallet-activity error", err);
+    res.status(500).json({ ok: false, error: String(err).slice(0, 200) });
+  }
+});
+
 // Live GMGN probe — OpenAPI (key) + scrape (CF) status from this host
 router.get("/ops/gmgn-check", async (req, res) => {
   try {

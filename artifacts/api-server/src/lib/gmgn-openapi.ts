@@ -34,6 +34,9 @@ const ROUTE_WEIGHT: Record<string, number> = {
   "/v1/market/rank": 1,
   "/v1/market/token_kline": 2,
   "/v1/trenches": 3,
+  "/v1/user/wallet_activity": 3,
+  "/v1/user/wallet_stats": 3,
+  "/v1/user/wallet_holdings": 5,
 };
 
 const inflight = new Map<string, Promise<GmgnResult>>();
@@ -513,4 +516,32 @@ export async function openApiHealthCheck(mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xj
         }
       : undefined,
   };
+}
+
+export type WalletActivityType = "buy" | "sell" | "transferIn" | "transferOut" | "add" | "remove";
+
+/**
+ * Official OpenAPI wallet activity — typed buys/sells with USD cost.
+ * GET /v1/user/wallet_activity (weight 3).
+ */
+export async function fetchOpenApiWalletActivity(opts: {
+  chain?: string;
+  walletAddress: string;
+  limit?: number;
+  cursor?: string;
+  /** Repeatable activity filter; omit for all types. */
+  types?: WalletActivityType[];
+  token?: string;
+}): Promise<GmgnResult> {
+  const chain = (opts.chain ?? "sol").toLowerCase();
+  const query: Record<string, string | number | undefined> = {
+    chain,
+    wallet_address: opts.walletAddress.trim(),
+    limit: opts.limit ?? 20,
+  };
+  if (opts.cursor) query.cursor = opts.cursor;
+  if (opts.token) query.token = opts.token;
+  // GMGN accepts repeated `type` — encode as comma list; server also accepts single.
+  if (opts.types?.length) query.type = opts.types.join(",");
+  return gmgnOpenApiGet("/v1/user/wallet_activity", query);
 }
