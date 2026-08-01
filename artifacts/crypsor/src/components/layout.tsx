@@ -13,20 +13,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
   const onWallet = location.startsWith("/wallet");
 
-  // Wake API early (Render free cold start) so Calls / Wallet don't black-wait
+  // Wake API early + prefetch all call tabs for instant switches
   useEffect(() => {
     void qc.prefetchQuery({
       queryKey: OPS_PING_KEY,
       queryFn: fetchOpsPing,
       staleTime: 15_000,
     });
-    // Prefetch feed in parallel so Best Calls paints sooner after wake
-    void qc.prefetchQuery({
-      queryKey: ["calls-feed", "best"],
-      queryFn: () =>
-        import("@/lib/calls-api").then(m => m.fetchCallsFeed("best", 8)),
-      staleTime: 6_000,
-    });
+    const modes = [
+      ["best", 8],
+      ["waiting", 24],
+      ["hot", 40],
+      ["latest", 40],
+    ] as const;
+    for (const [mode, limit] of modes) {
+      void qc.prefetchQuery({
+        queryKey: ["calls-feed", mode],
+        queryFn: () =>
+          import("@/lib/calls-api").then(m => m.fetchCallsFeed(mode, limit)),
+        staleTime: 8_000,
+      });
+    }
   }, [qc]);
 
   return (
@@ -45,7 +52,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
-              {onWallet ? "Wallet intel" : onDetail ? "Call detail" : "Best Calls"}
+              {onWallet ? "Wallet" : onDetail ? "Detail" : "Calls"}
             </div>
           </div>
         </Link>
