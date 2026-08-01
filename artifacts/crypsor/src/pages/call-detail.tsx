@@ -64,7 +64,7 @@ function CrypsorWalletRowView({ w }: { w: CrypsorWalletRow }) {
             WR {(w.winRate * 100).toFixed(0)}% ({w.wins}W/{w.losses}L)
           </span>
         ) : (
-          <span>WR — ({w.wins}W/{w.losses}L)</span>
+          <span>{w.wins}W/{w.losses}L</span>
         )}
         <span>{w.tokensSeen} tokens</span>
       </div>
@@ -280,10 +280,11 @@ export default function CallDetailPage() {
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const id = Number(params.id);
+  const [wantWinrate, setWantWinrate] = useState(false);
 
-  const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: CALLS_TOKEN_KEY(id),
-    queryFn: () => fetchCallDetail(id),
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: CALLS_TOKEN_KEY(id, wantWinrate),
+    queryFn: () => fetchCallDetail(id, { winrate: wantWinrate }),
     enabled: Number.isFinite(id),
     refetchInterval: 15_000,
     placeholderData: keepPreviousData,
@@ -294,6 +295,7 @@ export default function CallDetailPage() {
   const buyers = data?.buyers ?? [];
   const snaps = data?.snaps ?? [];
   const crypsorWallets = data?.crypsorWallets ?? [];
+  const winrateLoaded = Boolean(data?.winrateLoaded);
   const uniqueBuyers = useMemo(() => {
     const seen = new Set<number>();
     return buyers.filter(b => {
@@ -331,6 +333,22 @@ export default function CallDetailPage() {
       )}
 
       {card && <DetailHero c={card} />}
+
+      {!winrateLoaded && card && (
+        <button
+          type="button"
+          className="call-action w-full"
+          disabled={isFetching && wantWinrate}
+          onClick={() => setWantWinrate(true)}
+        >
+          {isFetching && wantWinrate ? "Loading win rates…" : "Load win rates"}
+        </button>
+      )}
+      {winrateLoaded && card?.avgWalletWinRate != null && (
+        <div className="text-[12px] font-mono-num text-[var(--cryp-mint)] text-center">
+          Buyer WR avg {(card.avgWalletWinRate * 100).toFixed(0)}%
+        </div>
+      )}
 
       {/* Tracked wallet buyers */}
       <section className="call-card">

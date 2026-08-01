@@ -1,8 +1,9 @@
 /**
- * Call quality — FOMO-style ranking, MC-agnostic.
+ * Judging (call quality) — FOMO-style ranking, MC-agnostic.
  *
- * Goal: from ~hundreds of tracked tokens, surface a handful of “best calls”
- * using wallet multiplicity + tagged holders + our own wallet win-rate memory.
+ * Paired with Confidence (pro-confidence): Judging ranks opportunity; Confidence
+ * decides alert loudness. Win-rate inputs are optional — feed omits them for
+ * speed; detail can pass them when ?winrate=1.
  */
 
 export type CallQualityLabel = "elite" | "strong" | "watch" | "noise";

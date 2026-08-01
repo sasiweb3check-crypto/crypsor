@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import healthRouter   from "./health";
 import settingsRouter from "./settings";
 import walletsRouter  from "./wallets";
@@ -17,8 +17,36 @@ import callsRouter    from "./calls";
 import opsRouter      from "./ops";
 import walletIntelRouter from "./wallet-intel";
 import { sseHandler } from "../pipeline/sse-gateway";
+import { apiFail } from "../lib/api-envelope";
 
 const router: IRouter = Router();
+
+/**
+ * Legacy / heavy surfaces (holders bulk, caller, runner desk, trader autopilot,
+ * intel-log browser). Off by default to cut capacity — set ENABLE_HEAVY_ROUTES=1
+ * to re-enable. Pro stays mounted (token detail / ops research).
+ */
+const heavyRoutesEnabled = process.env.ENABLE_HEAVY_ROUTES === "1";
+
+function heavyDisabled(_req: Request, res: Response) {
+  res.status(410).json(apiFail(
+    "Route disabled for capacity — set ENABLE_HEAVY_ROUTES=1 to enable",
+    "heavy_routes_off",
+  ));
+}
+
+function blockHeavyPaths(req: Request, res: Response, next: NextFunction) {
+  const p = req.path;
+  if (
+    p === "/intel-log" || p.startsWith("/intel-log/") ||
+    p === "/caller" || p.startsWith("/caller/") ||
+    p === "/runner" || p.startsWith("/runner/") ||
+    p === "/trader" || p.startsWith("/trader/")
+  ) {
+    return heavyDisabled(req, res);
+  }
+  next();
+}
 
 router.use(healthRouter);
 router.use("/settings",  settingsRouter);
@@ -28,15 +56,22 @@ router.use("/dashboard", dashboardRouter);
 router.use("/monitor",   monitorRouter);
 router.use("/pipeline",  pipelineRouter);
 router.use("/assets",    assetsRouter);
-router.use("/holders",   holdersRouter);
-router.use(intelLogRouter);
-router.use(callerRouter);
 router.use(callsRouter);
 router.use(walletIntelRouter);
-router.use(runnerRouter);
-router.use(traderRouter);
 router.use(proRouter);
 router.use(opsRouter);
-router.get("/events",    sseHandler);
+
+if (heavyRoutesEnabled) {
+  router.use("/holders", holdersRouter);
+  router.use(intelLogRouter);
+  router.use(callerRouter);
+  router.use(runnerRouter);
+  router.use(traderRouter);
+} else {
+  router.use("/holders", heavyDisabled);
+  router.use(blockHeavyPaths);
+}
+
+router.get("/events", sseHandler);
 
 export default router;
