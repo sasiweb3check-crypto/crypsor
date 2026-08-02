@@ -389,19 +389,22 @@ export default function OpsPage() {
             />
             <Pill
               tone={
-                !summary.telegram.configured ? "warn"
-                  : summary.telegram.lastError ? "bad"
-                    : "ok"
+                summary.telegram.pushEnabled === false ? "idle"
+                  : !summary.telegram.configured ? "warn"
+                    : summary.telegram.lastError ? "bad"
+                      : "ok"
               }
-              label="Telegram"
+              label={summary.telegram.pushEnabled === false ? "TG stopped" : "Telegram"}
               sub={
-                !summary.telegram.configured
-                  ? "Not saved"
-                  : summary.telegram.lastError
-                    ? summary.telegram.lastError.slice(0, 36)
-                    : summary.telegram.pendingFirstCalls
-                      ? `${summary.telegram.pendingFirstCalls} pending`
-                      : "Ready"
+                summary.telegram.pushEnabled === false
+                  ? (summary.telegram.envMuted ? "Env muted" : "Off in Settings")
+                  : !summary.telegram.configured
+                    ? "Not saved"
+                    : summary.telegram.lastError
+                      ? summary.telegram.lastError.slice(0, 36)
+                      : summary.telegram.pendingFirstCalls
+                        ? `${summary.telegram.pendingFirstCalls} pending`
+                        : "Ready"
               }
             />
             <Pill

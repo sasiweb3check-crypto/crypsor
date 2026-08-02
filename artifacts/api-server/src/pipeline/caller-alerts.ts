@@ -24,18 +24,13 @@ import {
   type RunnerScoreResult,
 } from "../lib/runner-score";
 import { convictionFieldsFromVerified } from "../lib/pro-confidence";
+import { isTelegramPushEnabled, telegramPushEnvMuted } from "../lib/telegram-push";
 
 const log = logger.child({ module: "caller-alerts" });
 
 const CHECK_INTERVAL_MS = 20_000;
 const STARTUP_DELAY_MS = 20_000;
 const ALERT_MILESTONES = [2, 5, 10, 20] as const;
-
-/**
- * Best Calls ENTRY Telegram — on by default.
- * Set TELEGRAM_PUSH_ENABLED=false to mute push (in-app desk still scores).
- */
-const TELEGRAM_PUSH_ENABLED = process.env.TELEGRAM_PUSH_ENABLED !== "false";
 
 async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } | null> {
   try {
@@ -344,8 +339,9 @@ function buildMilestoneMessage(t: ProAlertToken, tier: number): string {
 
 async function checkAndAlert(): Promise<void> {
   const t0 = Date.now();
-  const creds = TELEGRAM_PUSH_ENABLED ? await getTelegramCreds() : null;
-  if (TELEGRAM_PUSH_ENABLED && !creds) {
+  const pushOn = await isTelegramPushEnabled();
+  const creds = pushOn ? await getTelegramCreds() : null;
+  if (pushOn && !creds) {
     const last = (checkAndAlert as { _lastNoTg?: number })._lastNoTg ?? 0;
     if (Date.now() - last > 600_000) {
       (checkAndAlert as { _lastNoTg?: number })._lastNoTg = Date.now();
@@ -571,19 +567,22 @@ export function startCallerAlerts(): void {
       .finally(() => setTimeout(loop, CHECK_INTERVAL_MS));
   };
   setTimeout(loop, STARTUP_DELAY_MS);
-  log.info(
-    {
-      intervalMs: CHECK_INTERVAL_MS,
-      milestones: ALERT_MILESTONES,
-      telegramPush: TELEGRAM_PUSH_ENABLED,
-    },
-    "Best Calls alert loop ready (Telegram ENTRY on unless TELEGRAM_PUSH_ENABLED=false)",
-  );
-  opsLog(
-    "runner",
-    "info",
-    TELEGRAM_PUSH_ENABLED
-      ? "Best Calls loop · Telegram ENTRY ON"
-      : "Best Calls loop · in-app only (Telegram muted)",
-  );
+  void isTelegramPushEnabled().then(pushOn => {
+    log.info(
+      {
+        intervalMs: CHECK_INTERVAL_MS,
+        milestones: ALERT_MILESTONES,
+        telegramPush: pushOn,
+        envMuted: telegramPushEnvMuted(),
+      },
+      "Best Calls alert loop ready (mute via Settings or TELEGRAM_PUSH_ENABLED=false)",
+    );
+    opsLog(
+      "runner",
+      "info",
+      pushOn
+        ? "Best Calls loop · Telegram ENTRY ON"
+        : "Best Calls loop · in-app only (Telegram muted)",
+    );
+  });
 }

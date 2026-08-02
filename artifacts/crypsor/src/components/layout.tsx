@@ -4,6 +4,7 @@ import { Settings, Activity, Search } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
+import { PAGE_SIZE, fetchCallsFeed } from "@/lib/calls-api";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -13,24 +14,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
   const onWallet = location.startsWith("/wallet");
 
-  // Wake API early + prefetch all call tabs for instant switches
+  // Wake API early + prefetch first page of each mode
   useEffect(() => {
     void qc.prefetchQuery({
       queryKey: OPS_PING_KEY,
       queryFn: fetchOpsPing,
       staleTime: 15_000,
     });
-    const modes = [
-      ["best", 8],
-      ["waiting", 24],
-      ["hot", 40],
-      ["latest", 40],
-    ] as const;
-    for (const [mode, limit] of modes) {
+    const modes = ["waiting", "best", "hot", "latest"] as const;
+    for (const mode of modes) {
       void qc.prefetchQuery({
-        queryKey: ["calls-feed", mode],
-        queryFn: () =>
-          import("@/lib/calls-api").then(m => m.fetchCallsFeed(mode, limit)),
+        queryKey: ["calls-feed", mode, 1, {}],
+        queryFn: () => fetchCallsFeed(mode, 1, PAGE_SIZE, {}),
         staleTime: 8_000,
       });
     }
@@ -52,7 +47,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
-              {onWallet ? "Wallet" : onDetail ? "Detail" : "Calls"}
+              {onWallet ? "Wallet" : onDetail ? "Detail" : location.startsWith("/ops") ? "Logs" : "Desk"}
             </div>
           </div>
         </Link>
@@ -111,7 +106,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div
           className={cn(
             "flex-1 flex flex-col min-w-0 w-full mx-auto",
-            onUtility ? "max-w-3xl" : "max-w-lg",
+            onUtility ? "max-w-3xl" : "max-w-2xl",
           )}
         >
           {children}
