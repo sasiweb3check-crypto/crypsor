@@ -4,7 +4,7 @@ import { Settings, Activity, Search } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
-import { PAGE_SIZE } from "@/lib/calls-api";
+import { PAGE_SIZE, fetchCallsFeed } from "@/lib/calls-api";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -25,8 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     for (const mode of modes) {
       void qc.prefetchQuery({
         queryKey: ["calls-feed", mode, 1, {}],
-        queryFn: () =>
-          import("@/lib/calls-api").then(m => m.fetchCallsFeed(mode, 1, PAGE_SIZE, {})),
+        queryFn: () => fetchCallsFeed(mode, 1, PAGE_SIZE, {}),
         staleTime: 8_000,
       });
     }
