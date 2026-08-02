@@ -18,7 +18,8 @@ export type OpsKind =
   | "api"
   | "runner"
   | "dex"
-  | "cto";
+  | "cto"
+  | "price";
 
 export type OpsLevel = "info" | "warn" | "error";
 

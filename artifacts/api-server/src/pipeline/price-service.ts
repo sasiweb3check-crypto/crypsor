@@ -1,8 +1,9 @@
 import { db } from "@workspace/db";
 import { tracked_tokens, token_price_snapshots, pro_calls } from "@workspace/db";
-import { eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { invalidateCallsCaches } from "../lib/pro-cache";
+import { opsLog } from "../lib/ops-log";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
 
@@ -11,12 +12,21 @@ const HOT_STATUSES = ["new", "active", "watch", "revived"] as const;
 /** Cold tokens still need occasional pricing for revival / dump detection. */
 const COLD_STATUSES = ["archive", "dumped"] as const;
 const COLD_REFRESH_EVERY_N = 15; // ~every 15 hot cycles (~5 min at 20s)
+/** Cap cold slice so archive thousands never hang a cycle. */
+const COLD_BATCH = 80;
 /** Desk-only refresher — free DexScreener/PumpFun for Waiting/Best rows. */
-const DESK_REFRESH_MS = 10_000;
-const FULL_REFRESH_MS = 20_000;
+const DESK_REFRESH_MS = 8_000;
+const FULL_REFRESH_MS = 25_000;
+/** Never pull the entire historical pro_calls table into a price cycle. */
+const DESK_TOKEN_LIMIT = 100;
+const FULL_CYCLE_BUDGET_MS = 45_000;
+const DESK_CYCLE_BUDGET_MS = 12_000;
+const PERSIST_CONCURRENCY = 20;
+const PUMPFUN_CONCURRENCY = 8;
 let priceRefreshCycle = 0;
 let deskRefreshRunning = false;
 let fullRefreshRunning = false;
+let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
 
 type TrackedPriceRow = {
   id: number;
@@ -262,6 +272,28 @@ async function fetchCoinGeckoChain(
 
 // ── Persist helpers ───────────────────────────────────────────────────────────
 
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (!items.length) return [];
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const idx = cursor++;
+        out[idx] = await fn(items[idx]!);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return out;
+}
+
+/** Recent + waiting desk tokens only — never the full historical pro_calls set. */
 async function loadDeskTokens(): Promise<TrackedPriceRow[]> {
   return db
     .select({
@@ -272,7 +304,15 @@ async function loadDeskTokens(): Promise<TrackedPriceRow[]> {
       athMarketCapUsd: tracked_tokens.athMarketCapUsd,
     })
     .from(pro_calls)
-    .innerJoin(tracked_tokens, eq(pro_calls.tokenId, tracked_tokens.id));
+    .innerJoin(tracked_tokens, eq(pro_calls.tokenId, tracked_tokens.id))
+    .where(
+      or(
+        isNull(pro_calls.callAlertSentAt),
+        sql`${pro_calls.calledAt} > NOW() - INTERVAL '72 hours'`,
+      ),
+    )
+    .orderBy(desc(pro_calls.calledAt))
+    .limit(DESK_TOKEN_LIMIT);
 }
 
 async function persistFreshPrice(
@@ -326,7 +366,6 @@ async function persistFreshPrice(
     }).catch(() => {});
   }
 
-  // Keep in-memory ATH so later ticks in the same cycle see the bump
   token.athPriceUsd = newAth;
   token.athMarketCapUsd = newAthMc;
 
@@ -341,10 +380,16 @@ async function persistFreshPrice(
 async function fetchAndApplyGroup(
   chain: string,
   group: TrackedPriceRow[],
-  opts: { emitPriceUpdated: boolean; writeSnapshot: boolean; useCoinGecko: boolean },
+  opts: {
+    emitPriceUpdated: boolean;
+    writeSnapshot: boolean;
+    useCoinGecko: boolean;
+    deadlineMs: number;
+  },
 ): Promise<DeskTick[]> {
   const ticks: DeskTick[] = [];
   if (!group.length) return ticks;
+  if (Date.now() > opts.deadlineMs) return ticks;
 
   const addrs = group.map(t => (chain === "solana" ? t.address : t.address.toLowerCase()));
   const dexMap = await fetchBatch(chain, addrs);
@@ -353,34 +398,57 @@ async function fetchAndApplyGroup(
     ? group.filter(t => !dexMap.has(t.address))
     : [];
 
-  const pfResults = await Promise.allSettled(
-    missingFromDex.map(t => fetchPumpFun(t.address).then(r => ({ address: t.address, r }))),
-  );
+  // Cap PumpFun fan-out — unbounded Promise.all was hanging the whole price loop
   const pfMap = new Map<string, FreshPrice>();
-  for (const res of pfResults) {
-    if (res.status === "fulfilled" && res.value.r) {
-      pfMap.set(res.value.address, res.value.r);
+  if (missingFromDex.length && Date.now() <= opts.deadlineMs) {
+    const pfResults = await mapPool(
+      missingFromDex.slice(0, 40),
+      PUMPFUN_CONCURRENCY,
+      async (t) => {
+        const r = await fetchPumpFun(t.address);
+        return { address: t.address, r };
+      },
+    );
+    for (const res of pfResults) {
+      if (res.r) pfMap.set(res.address, res.r);
     }
   }
 
   let cgMap = new Map<string, Partial<FreshPrice>>();
-  if (opts.useCoinGecko && chain !== "solana") {
+  if (opts.useCoinGecko && chain !== "solana" && Date.now() <= opts.deadlineMs) {
     const missing = group
       .filter(t => !dexMap.has(t.address.toLowerCase()))
-      .map(t => t.address.toLowerCase());
+      .map(t => t.address.toLowerCase())
+      .slice(0, 50);
     if (missing.length > 0) {
       cgMap = await fetchCoinGeckoChain(chain, missing);
     }
   }
 
+  const pending: Array<{ token: TrackedPriceRow; fresh: FreshPrice | Partial<FreshPrice> }> = [];
   for (const token of group) {
     const key = chain === "solana" ? token.address : token.address.toLowerCase();
     const fresh = dexMap.get(key) ?? pfMap.get(key) ?? cgMap.get(key);
     if (!fresh?.price) continue;
-    const tick = await persistFreshPrice(token, fresh, opts);
+    pending.push({ token, fresh });
+  }
+
+  const persisted = await mapPool(pending, PERSIST_CONCURRENCY, async ({ token, fresh }) => {
+    if (Date.now() > opts.deadlineMs) return null;
+    return persistFreshPrice(token, fresh, opts);
+  });
+  for (const tick of persisted) {
     if (tick) ticks.push(tick);
   }
   return ticks;
+}
+
+function scheduleCacheInvalidate(): void {
+  if (invalidateTimer) return;
+  invalidateTimer = setTimeout(() => {
+    invalidateTimer = null;
+    void invalidateCallsCaches();
+  }, 250);
 }
 
 function emitDeskPrices(ticks: DeskTick[]): void {
@@ -389,7 +457,87 @@ function emitDeskPrices(ticks: DeskTick[]): void {
     ticks,
     at: new Date().toISOString(),
   });
-  void invalidateCallsCaches();
+  scheduleCacheInvalidate();
+}
+
+/**
+ * Overlay live DexScreener/PumpFun MC onto the visible Calls page.
+ * Bypasses stale DB/cache so Waiting/Latest always show near-live caps.
+ */
+export async function overlayLiveMarketCaps<T extends {
+  id: number;
+  address: string;
+  chain: string;
+  calledMcUsd: number | null;
+  currentMcUsd: number | null;
+  athMcUsd: number | null;
+  gainPct: number | null;
+  nowMultiple: number;
+  athMultiple: number;
+}>(cards: T[]): Promise<T[]> {
+  if (!cards.length) return cards;
+
+  const byChain = new Map<string, T[]>();
+  for (const c of cards) {
+    const chain = c.chain || "solana";
+    if (!byChain.has(chain)) byChain.set(chain, []);
+    byChain.get(chain)!.push(c);
+  }
+
+  const liveById = new Map<number, FreshPrice>();
+  for (const [chain, group] of byChain) {
+    const addrs = group.map(c => (chain === "solana" ? c.address : c.address.toLowerCase()));
+    const dexMap = await fetchBatch(chain, addrs);
+    const missing = chain === "solana"
+      ? group.filter(c => !dexMap.has(c.address)).slice(0, 12)
+      : [];
+    const pf = await mapPool(missing, 4, async (c) => {
+      const r = await fetchPumpFun(c.address);
+      return { id: c.id, address: c.address, r };
+    });
+    for (const c of group) {
+      const key = chain === "solana" ? c.address : c.address.toLowerCase();
+      const fresh = dexMap.get(key) ?? pf.find(p => p.address === c.address)?.r ?? null;
+      if (fresh?.price) liveById.set(c.id, fresh);
+    }
+  }
+
+  if (!liveById.size) return cards;
+
+  // Persist in background — response uses live numbers immediately
+  void (async () => {
+    try {
+      for (const [tokenId, fresh] of liveById) {
+        const card = cards.find(c => c.id === tokenId);
+        if (!card || !fresh.price) continue;
+        await db.update(tracked_tokens).set({
+          currentPriceUsd: fresh.price,
+          priceUpdatedAt: new Date(),
+          ...(fresh.marketCapUsd ? { marketCapUsd: fresh.marketCapUsd } : {}),
+          ...(fresh.liquidityUsd ? { liquidityUsd: fresh.liquidityUsd } : {}),
+          ...(fresh.volume24hUsd ? { volume24hUsd: fresh.volume24hUsd } : {}),
+        }).where(eq(tracked_tokens.id, tokenId));
+      }
+      scheduleCacheInvalidate();
+    } catch { /* never break feed */ }
+  })();
+
+  return cards.map((c) => {
+    const fresh = liveById.get(c.id);
+    if (!fresh?.marketCapUsd && !fresh?.price) return c;
+    const currentMcUsd = fresh.marketCapUsd != null
+      ? parseFloat(fresh.marketCapUsd)
+      : c.currentMcUsd;
+    if (currentMcUsd == null || !Number.isFinite(currentMcUsd)) return c;
+    const called = c.calledMcUsd;
+    let gainPct = c.gainPct;
+    let nowMultiple = c.nowMultiple;
+    if (called != null && called > 0) {
+      nowMultiple = Math.round((currentMcUsd / called) * 100) / 100;
+      gainPct = ((currentMcUsd - called) / called) * 100;
+    }
+    return { ...c, currentMcUsd, gainPct, nowMultiple };
+  });
 }
 
 // ── Main refresh cycle ────────────────────────────────────────────────────────
@@ -398,16 +546,27 @@ export async function refreshAllPrices(): Promise<void> {
   if (fullRefreshRunning) return;
   fullRefreshRunning = true;
   const t0 = Date.now();
+  const deadlineMs = t0 + FULL_CYCLE_BUDGET_MS;
   try {
-    // Prefer hot tokens every cycle; include cold tokens only periodically so
-    // thousands of archived rows don't thrash DexScreener + the DB every 20s.
-    // Always union Calls-desk tokens (pro_calls) so Waiting/Best MC stay live
-    // even when status has flipped to archive.
+    // Hot statuses only — desk loop owns Waiting/Best MC. Cold is a small
+    // oldest-price batch so archive thousands cannot hang the cycle.
     priceRefreshCycle += 1;
     const wantCold = priceRefreshCycle % COLD_REFRESH_EVERY_N === 0;
 
-    const [statusTokens, deskTokens] = await Promise.all([
-      db
+    const hotTokens = await db
+      .select({
+        id: tracked_tokens.id,
+        address: tracked_tokens.address,
+        chain: tracked_tokens.chain,
+        athPriceUsd: tracked_tokens.athPriceUsd,
+        athMarketCapUsd: tracked_tokens.athMarketCapUsd,
+      })
+      .from(tracked_tokens)
+      .where(inArray(tracked_tokens.status, [...HOT_STATUSES]));
+
+    let tokens: TrackedPriceRow[] = hotTokens;
+    if (wantCold) {
+      const cold = await db
         .select({
           id: tracked_tokens.id,
           address: tracked_tokens.address,
@@ -416,19 +575,19 @@ export async function refreshAllPrices(): Promise<void> {
           athMarketCapUsd: tracked_tokens.athMarketCapUsd,
         })
         .from(tracked_tokens)
-        .where(
-          wantCold
-            ? inArray(tracked_tokens.status, [...HOT_STATUSES, ...COLD_STATUSES])
-            : inArray(tracked_tokens.status, [...HOT_STATUSES]),
-        ),
-      loadDeskTokens(),
-    ]);
+        .where(inArray(tracked_tokens.status, [...COLD_STATUSES]))
+        .orderBy(sql`${tracked_tokens.priceUpdatedAt} ASC NULLS FIRST`)
+        .limit(COLD_BATCH);
+      const byId = new Map<number, TrackedPriceRow>();
+      for (const t of hotTokens) byId.set(t.id, t);
+      for (const t of cold) byId.set(t.id, t);
+      tokens = [...byId.values()];
+    }
 
-    const byId = new Map<number, TrackedPriceRow>();
-    for (const t of statusTokens) byId.set(t.id, t);
-    for (const t of deskTokens) byId.set(t.id, t);
-    const tokens = [...byId.values()];
-    if (!tokens.length) return;
+    if (!tokens.length) {
+      healthMonitor.ok("price-service", Date.now() - t0);
+      return;
+    }
 
     const byChain = new Map<string, TrackedPriceRow[]>();
     for (const t of tokens) {
@@ -436,46 +595,47 @@ export async function refreshAllPrices(): Promise<void> {
       byChain.get(t.chain)!.push(t);
     }
 
-    const deskIds = new Set(deskTokens.map(t => t.id));
-    const deskTicks: DeskTick[] = [];
     let updated = 0;
-
     for (const [chain, group] of byChain) {
+      if (Date.now() > deadlineMs) break;
       const ticks = await fetchAndApplyGroup(chain, group, {
         emitPriceUpdated: true,
         writeSnapshot: true,
         useCoinGecko: true,
+        deadlineMs,
       });
       updated += ticks.length;
-      for (const tick of ticks) {
-        if (deskIds.has(tick.tokenId)) deskTicks.push(tick);
-      }
     }
 
-    emitDeskPrices(deskTicks);
     healthMonitor.ok("price-service", Date.now() - t0);
     if (updated > 0) {
-      logger.info({ updated, desk: deskTicks.length, ms: Date.now() - t0 }, "Price refresh complete");
+      logger.info({ updated, ms: Date.now() - t0 }, "Price refresh complete");
+      opsLog("price", "info", `Price refresh · ${updated} tokens`, { ms: Date.now() - t0 });
     }
   } catch (err) {
     healthMonitor.error("price-service", err);
     logger.warn({ err }, "Price refresh cycle failed");
+    opsLog("price", "error", `Price refresh failed: ${String(err).slice(0, 140)}`);
   } finally {
     fullRefreshRunning = false;
   }
 }
 
 /**
- * Faster free-price loop for Calls desk only (pro_calls × DexScreener/PumpFun).
- * Keeps Waiting/Best MC near-live without refreshing the whole inventory.
+ * Independent desk loop — never blocked by the full inventory refresh.
+ * Free DexScreener + PumpFun for recent/waiting pro_calls only.
  */
 export async function refreshDeskPrices(): Promise<void> {
-  if (deskRefreshRunning || fullRefreshRunning) return;
+  if (deskRefreshRunning) return;
   deskRefreshRunning = true;
   const t0 = Date.now();
+  const deadlineMs = t0 + DESK_CYCLE_BUDGET_MS;
   try {
     const tokens = await loadDeskTokens();
-    if (!tokens.length) return;
+    if (!tokens.length) {
+      healthMonitor.ok("price-service", Date.now() - t0);
+      return;
+    }
 
     const byChain = new Map<string, TrackedPriceRow[]>();
     for (const t of tokens) {
@@ -485,21 +645,27 @@ export async function refreshDeskPrices(): Promise<void> {
 
     const deskTicks: DeskTick[] = [];
     for (const [chain, group] of byChain) {
+      if (Date.now() > deadlineMs) break;
       const ticks = await fetchAndApplyGroup(chain, group, {
-        // Full cycle owns projection/snapshots — desk loop only patches MC for UI
         emitPriceUpdated: false,
         writeSnapshot: false,
         useCoinGecko: false,
+        deadlineMs,
       });
       deskTicks.push(...ticks);
     }
 
     emitDeskPrices(deskTicks);
+    healthMonitor.ok("price-service", Date.now() - t0);
     if (deskTicks.length > 0) {
       logger.info({ updated: deskTicks.length, ms: Date.now() - t0 }, "Desk price refresh");
+      opsLog("price", "info", `Desk price · ${deskTicks.length} tokens`, {
+        ms: Date.now() - t0,
+      });
     }
   } catch (err) {
     logger.warn({ err }, "Desk price refresh failed");
+    opsLog("price", "warn", `Desk price failed: ${String(err).slice(0, 140)}`);
   } finally {
     deskRefreshRunning = false;
   }
@@ -507,8 +673,8 @@ export async function refreshDeskPrices(): Promise<void> {
 
 /**
  * Start the price service.
- * - Full inventory: DexScreener + PumpFun + CoinGecko every 20s
- * - Calls desk: free DexScreener/PumpFun every 10s + SSE prices:desk
+ * - Desk (Waiting/Latest): DexScreener/PumpFun every 8s, independent of full cycle
+ * - Full hot inventory: every 25s with a hard time budget (no hang)
  */
 export function startPriceService() {
   const loopFull = () => {
@@ -521,9 +687,9 @@ export function startPriceService() {
       .catch(err => logger.warn({ err }, "Desk price refresh failed"))
       .finally(() => setTimeout(loopDesk, DESK_REFRESH_MS));
   };
-  setTimeout(loopFull, 8_000);
-  setTimeout(loopDesk, 4_000);
+  setTimeout(loopDesk, 2_000);
+  setTimeout(loopFull, 10_000);
   logger.info(
-    "Price service ready (desk 10s DexScreener/PumpFun; full 20s + CoinGecko)",
+    "Price service ready (desk 8s DexScreener/PumpFun; full 25s budgeted hot set)",
   );
 }
