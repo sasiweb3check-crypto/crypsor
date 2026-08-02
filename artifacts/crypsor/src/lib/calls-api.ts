@@ -51,8 +51,9 @@ export type CallCard = {
   hit5x: boolean;
   hit10x: boolean;
   volume24hUsd: number | null;
+  /** Volume intensity score 0–100 (not a percent). */
   volumeIntensityScore: number | null;
-  /** 1h MC % change vs snapshot — independent of entry */
+  /** 1h MC % vs ~1h snapshot (or since-call if token is young). */
   gain1hPct: number | null;
   momentum1h: number;
   momentum6h: number;

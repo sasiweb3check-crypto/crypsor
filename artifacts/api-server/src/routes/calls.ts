@@ -72,10 +72,12 @@ export type CallCard = {
   hit5x: boolean;
   hit10x: boolean;
   volume24hUsd: number | null;
-  /** Proxy for short-window volume intensity (0–100). */
+  /** Proxy for short-window volume intensity (0–100), NOT a percent. */
   volumeIntensityScore: number | null;
-  /** 1h MC change vs snapshot ~1h ago — independent of call entry. */
+  /** 1h MC % (snapshot ~1h ago, or since-call for young tokens). */
   gain1hPct: number | null;
+  /** Baseline MC used for gain1hPct recompute after live overlay. */
+  mc1hUsd?: number | null;
   /** Buy-count momentum windows */
   momentum1h: number;
   momentum6h: number;
@@ -101,28 +103,74 @@ const MOMENTUM_SELECT = sql`
   t.volume_intensity_score,
   snap1h.mc_1h`;
 
+/** Closest snapshot to ~1h ago (not a brittle 50m–2h window that misses young tokens). */
 const SNAP1H_LATERAL = sql`
   LEFT JOIN LATERAL (
     SELECT market_cap_usd AS mc_1h
     FROM token_price_snapshots tps
     WHERE tps.token_id = t.id
-      AND tps.snapshot_at <= NOW() - INTERVAL '50 minutes'
-      AND tps.snapshot_at >= NOW() - INTERVAL '2 hours'
       AND tps.market_cap_usd IS NOT NULL
-    ORDER BY tps.snapshot_at DESC
+      AND tps.snapshot_at <= NOW() - INTERVAL '25 minutes'
+      AND tps.snapshot_at >= NOW() - INTERVAL '3 hours'
+    ORDER BY ABS(EXTRACT(EPOCH FROM (tps.snapshot_at - (NOW() - INTERVAL '1 hour')))) ASC
     LIMIT 1
   ) snap1h ON TRUE`;
 
-function parseGain1h(currentMc: number | null, mc1hRaw: unknown): number | null {
-  if (currentMc == null || currentMc <= 0 || mc1hRaw == null) return null;
-  const mc1h = parseFloat(String(mc1hRaw));
-  if (!Number.isFinite(mc1h) || mc1h <= 0) return null;
-  return Math.round(((currentMc - mc1h) / mc1h) * 1000) / 10;
+function pctChange(fromMc: number, toMc: number): number {
+  return Math.round(((toMc - fromMc) / fromMc) * 1000) / 10;
+}
+
+/**
+ * 1H MC % for filters/UI.
+ * 1) Snapshot nearest ~1h ago when available
+ * 2) For young calls (<90m) with no snap yet → since-call % (best recent proxy)
+ */
+function resolveGain1hPct(opts: {
+  currentMc: number | null;
+  mc1hRaw: unknown;
+  calledMc: number | null;
+  calledAt: string | null;
+}): number | null {
+  const { currentMc, mc1hRaw, calledMc, calledAt } = opts;
+  if (currentMc == null || currentMc <= 0) return null;
+
+  if (mc1hRaw != null) {
+    const mc1h = parseFloat(String(mc1hRaw));
+    if (Number.isFinite(mc1h) && mc1h > 0) return pctChange(mc1h, currentMc);
+  }
+
+  // Young desk rows often have no ≥25m snapshot yet — use entry MC as baseline
+  if (calledMc != null && calledMc > 0 && calledAt) {
+    const ageMin = (Date.now() - new Date(calledAt).getTime()) / 60_000;
+    if (Number.isFinite(ageMin) && ageMin >= 0 && ageMin < 90) {
+      return pctChange(calledMc, currentMc);
+    }
+  }
+  return null;
+}
+
+function parseMc1h(mc1hRaw: unknown): number | null {
+  if (mc1hRaw == null) return null;
+  const n = parseFloat(String(mc1hRaw));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** After live MC overlay, refresh 1H % so filters/UI stay consistent. */
+function refreshGain1hOnCards<T extends CallCard & { mc1hUsd?: number | null }>(cards: T[]): T[] {
+  return cards.map((c) => {
+    const gain1hPct = resolveGain1hPct({
+      currentMc: c.currentMcUsd,
+      mc1hRaw: c.mc1hUsd ?? null,
+      calledMc: c.calledMcUsd,
+      calledAt: c.calledAt,
+    });
+    return gain1hPct === c.gain1hPct ? c : { ...c, gain1hPct };
+  });
 }
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
   // v9: ENTRY-served + momentum/1h gain fields for table filters
-  const cacheKey = `calls:feed:v9-entry:${limit}`;
+  const cacheKey = `calls:feed:v10-entry:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -296,7 +344,13 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
       volumeIntensityScore: r.volume_intensity_score != null
         ? Number(r.volume_intensity_score) : null,
-      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      mc1hUsd: parseMc1h(r.mc_1h),
+      gain1hPct: resolveGain1hPct({
+        currentMc,
+        mc1hRaw: r.mc_1h,
+        calledMc,
+        calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+      }),
       momentum1h: Number(r.momentum_1h ?? 0) || 0,
       momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin,
@@ -443,7 +497,13 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
       volumeIntensityScore: r.volume_intensity_score != null
         ? Number(r.volume_intensity_score) : null,
-      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      mc1hUsd: parseMc1h(r.mc_1h),
+      gain1hPct: resolveGain1hPct({
+        currentMc,
+        mc1hRaw: r.mc_1h,
+        calledMc,
+        calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+      }),
       momentum1h: Number(r.momentum_1h ?? 0) || 0,
       momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
@@ -593,7 +653,13 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
     volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
     volumeIntensityScore: r.volume_intensity_score != null
       ? Number(r.volume_intensity_score) : null,
-    gain1hPct: parseGain1h(currentMc, r.mc_1h),
+    mc1hUsd: parseMc1h(r.mc_1h),
+    gain1hPct: resolveGain1hPct({
+      currentMc,
+      mc1hRaw: r.mc_1h,
+      calledMc,
+      calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+    }),
     momentum1h: Number(r.momentum_1h ?? 0) || 0,
     momentum6h: Number(r.momentum_6h ?? 0) || 0,
     tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
@@ -656,7 +722,7 @@ async function loadWaitingCalls(limit: number): Promise<{
   pendingFirstCalls: number;
 }> {
   // v4: latest-called + momentum/1h for table filters
-  const cacheKey = `calls:waiting:v4:${limit}`;
+  const cacheKey = `calls:waiting:v5:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
@@ -824,7 +890,13 @@ async function loadWaitingCalls(limit: number): Promise<{
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
       volumeIntensityScore: r.volume_intensity_score != null
         ? Number(r.volume_intensity_score) : null,
-      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      mc1hUsd: parseMc1h(r.mc_1h),
+      gain1hPct: resolveGain1hPct({
+        currentMc,
+        mc1hRaw: r.mc_1h,
+        calledMc,
+        calledAt: toIsoUtc(r.called_at ?? r.surfaced_at),
+      }),
       momentum1h: Number(r.momentum_1h ?? 0) || 0,
       momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin,
@@ -872,8 +944,8 @@ type FeedFilters = {
   label?: string;       // callLabel: elite|strong|watch|noise
   quality?: string;     // qualityLabel: very_good|good|below
   minScore?: number;    // callScore
-  minVol1h?: number;    // volumeIntensityScore proxy for 1h volume
-  minGain1h?: number;   // gain1hPct (independent of entry)
+  minVol1h?: number;    // volumeIntensityScore 0–100 (NOT a percent)
+  minGain1h?: number;   // gain1hPct % (snapshot ~1h / since-call if young)
   minMom1h?: number;
   minMom6h?: number;
 };
@@ -937,7 +1009,7 @@ router.get("/calls/feed", async (req, res) => {
       // Waiting always latest-called (already sorted)
       const pagePack = paginateCards(filtered, page, limit);
       // Live Dex/PumpFun overlay — bypasses stale DB/cache MC on the visible page
-      pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+      pagePack.cards = refreshGain1hOnCards(await overlayLiveMarketCaps(pagePack.cards));
       res.setHeader("Cache-Control", "private, no-cache");
       res.json(apiOk({
         ...pagePack,
@@ -980,7 +1052,7 @@ router.get("/calls/feed", async (req, res) => {
 
     out = applyFeedFilters(out, filters);
     const pagePack = paginateCards(out, page, limit);
-    pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+    pagePack.cards = refreshGain1hOnCards(await overlayLiveMarketCaps(pagePack.cards));
 
     res.setHeader("Cache-Control", "private, no-cache");
     res.json(apiOk({
@@ -1003,7 +1075,7 @@ router.get("/calls/waiting", async (req, res) => {
     const pack = await loadWaitingCalls(200);
     const filtered = applyFeedFilters(pack.cards, filters);
     const pagePack = paginateCards(filtered, page, limit);
-    pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+    pagePack.cards = refreshGain1hOnCards(await overlayLiveMarketCaps(pagePack.cards));
     res.setHeader("Cache-Control", "private, no-cache");
     res.json(apiOk({
       ...pagePack,
