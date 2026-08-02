@@ -11,8 +11,6 @@ import WalletIntelPage from '@/pages/wallet-intel';
 import Settings from '@/pages/settings';
 import OpsPage from '@/pages/ops';
 import NotFound from '@/pages/not-found';
-import { useLiveTokens } from '@/hooks/use-live-tokens';
-
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -24,11 +22,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-function LiveBridge() {
-  useLiveTokens();
-  return null;
-}
 
 function RedirectHome() {
   const [, setLocation] = useLocation();
@@ -68,7 +61,6 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <LiveBridge />
           <Router />
         </WouterRouter>
         <Toaster />

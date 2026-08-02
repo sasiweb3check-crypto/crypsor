@@ -303,21 +303,35 @@ export async function refreshAllIntelligence(opts: RefreshIntelOpts = {}): Promi
       snapsByToken.get(s.tokenId)!.push(s);
     }
 
-    const holderSnaps = await db.select({
-      tokenId:     token_holder_snapshots.tokenId,
-      holderCount: token_holder_snapshots.holderCount,
-      snapshotAt:  token_holder_snapshots.snapshotAt,
-    }).from(token_holder_snapshots)
-      .where(inArray(token_holder_snapshots.tokenId, tokenIds))
-      .orderBy(sql`snapshot_at DESC`)
-      .limit(tokenIds.length * 2);
+    // Per-token last 2 snaps — a global LIMIT starved most tokens of velocity history
+    const holderSnapRows = await db.execute(sql`
+      SELECT token_id, holder_count, snapshot_at
+      FROM (
+        SELECT
+          token_id,
+          holder_count,
+          snapshot_at,
+          ROW_NUMBER() OVER (PARTITION BY token_id ORDER BY snapshot_at DESC) AS rn
+        FROM token_holder_snapshots
+        WHERE token_id IN (${sql.join(tokenIds.map(id => sql`${id}`), sql`, `)})
+      ) ranked
+      WHERE rn <= 2
+    `);
 
-    const holderSnapsByToken = new Map<number, typeof holderSnaps>();
-    for (const s of holderSnaps) {
-      if (!holderSnapsByToken.has(s.tokenId)) holderSnapsByToken.set(s.tokenId, []);
-      if ((holderSnapsByToken.get(s.tokenId)?.length ?? 0) < 2) {
-        holderSnapsByToken.get(s.tokenId)!.push(s);
-      }
+    const holderSnapsByToken = new Map<number, Array<{
+      tokenId: number;
+      holderCount: number | null;
+      snapshotAt: Date;
+    }>>();
+    for (const raw of holderSnapRows.rows as Array<Record<string, unknown>>) {
+      const tokenId = Number(raw.token_id);
+      const row = {
+        tokenId,
+        holderCount: raw.holder_count != null ? Number(raw.holder_count) : null,
+        snapshotAt: new Date(String(raw.snapshot_at)),
+      };
+      if (!holderSnapsByToken.has(tokenId)) holderSnapsByToken.set(tokenId, []);
+      holderSnapsByToken.get(tokenId)!.push(row);
     }
 
     // ALL wallets in walletdatasource are treated as KOL/smart — they were

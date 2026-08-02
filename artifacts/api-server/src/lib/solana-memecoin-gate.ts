@@ -173,25 +173,33 @@ export function evaluateDexPairs(
     return { ok: false, reason: "base_is_blocked_mint", symbol };
   }
 
-  const mc = best.marketCap ?? best.fdv ?? null;
-  if (mc != null && mc > MAX_DISCOVERY_MC_USD) {
+  // Circulating MC only for discovery bans — FDV (price × 1B supply) falsely
+  // rejects real memes that Dex lists without marketCap.
+  const circulatingMc = best.marketCap ?? null;
+  if (circulatingMc != null && circulatingMc > MAX_DISCOVERY_MC_USD) {
     return {
       ok: false,
-      reason: `mc_too_high:${Math.round(mc)}`,
+      reason: `mc_too_high:${Math.round(circulatingMc)}`,
       symbol,
-      marketCapUsd: mc,
+      marketCapUsd: circulatingMc,
       quoteOk: true,
     };
   }
-  if (isAbsurdMarketCap(mc)) {
-    return { ok: false, reason: "absurd_mc", symbol, marketCapUsd: mc, quoteOk: true };
+  if (isAbsurdMarketCap(circulatingMc)) {
+    return {
+      ok: false,
+      reason: "absurd_mc",
+      symbol,
+      marketCapUsd: circulatingMc,
+      quoteOk: true,
+    };
   }
 
   return {
     ok: true,
     reason: "sol_usdc_pair",
     symbol,
-    marketCapUsd: mc,
+    marketCapUsd: circulatingMc ?? best.fdv ?? null,
     quoteOk: true,
   };
 }

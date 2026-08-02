@@ -15,8 +15,7 @@ export class ApiError extends Error {
 
 type ApiFetchInit = RequestInit & { timeoutMs?: number };
 
-/** path like `api/ops/ping` (no leading slash required). */
-export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
+async function apiFetchOnce<T>(path: string, init?: ApiFetchInit): Promise<T> {
   const { timeoutMs = 28_000, signal: outerSignal, ...rest } = init ?? {};
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -42,5 +41,22 @@ export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T>
   } finally {
     clearTimeout(timer);
     outerSignal?.removeEventListener("abort", onOuterAbort);
+  }
+}
+
+function isRetryable(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 0) return true; // network / timeout / cold start
+  return err.status === 502 || err.status === 503 || err.status === 504;
+}
+
+/** path like `api/ops/ping` (no leading slash required). Retries once on wake/network blips. */
+export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
+  try {
+    return await apiFetchOnce<T>(path, init);
+  } catch (err) {
+    if (!isRetryable(err) || init?.signal?.aborted) throw err;
+    await new Promise((r) => setTimeout(r, 1_200));
+    return apiFetchOnce<T>(path, init);
   }
 }

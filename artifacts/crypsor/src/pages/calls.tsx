@@ -118,7 +118,7 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
               {waiting ? (
                 <span className="tok-chip tok-chip-wait">Wait</span>
               ) : c.callLabel ? (
-                <span className="tok-chip hidden xs:inline">{c.callLabel}</span>
+                <span className="tok-chip hidden sm:inline">{c.callLabel}</span>
               ) : null}
             </div>
             <div className="text-[10px] text-[var(--cryp-mute)] truncate">
@@ -211,23 +211,41 @@ function NumFilter({
   );
 }
 
+function readModeFromUrl(): CallMode {
+  if (typeof window === "undefined") return "waiting";
+  const q = new URLSearchParams(window.location.search).get("mode");
+  return q === "waiting" || q === "hot" || q === "latest" || q === "best" ? q : "waiting";
+}
+
 export default function CallsPage() {
   const qc = useQueryClient();
-  const [mode, setMode] = useState<CallMode>(() => {
-    if (typeof window === "undefined") return "waiting";
-    const q = new URLSearchParams(window.location.search).get("mode");
-    return q === "waiting" || q === "hot" || q === "latest" || q === "best" ? q : "waiting";
-  });
+  const [mode, setMode] = useState<CallMode>(readModeFromUrl);
   const [page, setPage] = useState(1);
   const [period, setPeriod] = useState<StatsPeriod>("7d");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<FeedFilters>(emptyFilters);
 
-  // Reset page when mode/filters change
-  useEffect(() => { setPage(1); }, [mode, filters]);
+  // Keep mode in sync when nav / back / Crypsor home link changes the URL
+  useEffect(() => {
+    const sync = () => {
+      const next = readModeFromUrl();
+      setMode((prev) => {
+        if (prev === next) return prev;
+        setPage(1);
+        return next;
+      });
+    };
+    window.addEventListener("popstate", sync);
+    // Same-document replaceState from tabs doesn't fire popstate — poll lightly
+    const id = window.setInterval(sync, 800);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.clearInterval(id);
+    };
+  }, []);
 
   const {
-    data, isLoading, isFetching, isError, error, refetch,
+    data, isLoading, isFetching, isError, error, refetch, isPlaceholderData,
   } = useQuery({
     queryKey: CALLS_FEED_KEY(mode, page, filters),
     queryFn: () => fetchCallsFeed(mode, page, PAGE_SIZE, filters),
@@ -237,6 +255,12 @@ export default function CallsPage() {
     placeholderData: keepPreviousData,
     retry: 3,
   });
+
+  // Never paint another tab's rows while the new mode is loading
+  const showPlaceholder = isPlaceholderData || (data != null && data.mode !== mode);
+  const cards = showPlaceholder ? [] : (data?.cards ?? []);
+  const total = showPlaceholder ? 0 : (data?.total ?? 0);
+  const pages = showPlaceholder ? 1 : (data?.pages ?? 1);
 
   const { data: stats } = useQuery({
     queryKey: CALLS_STATS_KEY(period),
@@ -253,9 +277,6 @@ export default function CallsPage() {
     staleTime: 15_000,
   });
 
-  const cards = data?.cards ?? [];
-  const total = data?.total ?? 0;
-  const pages = data?.pages ?? 1;
   const pendingN = data?.pendingFirstCalls
     ?? opsSummary?.telegram?.pendingFirstCalls
     ?? 0;
@@ -274,7 +295,10 @@ export default function CallsPage() {
 
   const switchMode = (next: CallMode) => {
     if (next === mode) return;
-    startTransition(() => setMode(next));
+    startTransition(() => {
+      setMode(next);
+      setPage(1);
+    });
     const url = new URL(window.location.href);
     if (next === "waiting") url.searchParams.delete("mode");
     else url.searchParams.set("mode", next);
@@ -291,6 +315,7 @@ export default function CallsPage() {
 
   const patchFilter = <K extends keyof FeedFilters>(key: K, value: FeedFilters[K]) => {
     startTransition(() => {
+      setPage(1);
       setFilters(prev => {
         const next = { ...prev, [key]: value };
         if (value === undefined || value === "all" || value === "") delete next[key];
@@ -451,13 +476,13 @@ export default function CallsPage() {
             <tr>
               <th className="tok-th tok-th-token">Token</th>
               <th className="tok-th tok-th-num">MC</th>
-              <th className="tok-th tok-th-num">Gain</th>
+              <th className="tok-th tok-th-num">Entry</th>
               <th className="tok-th tok-th-num">ATH</th>
               <th className="tok-th tok-th-link">GMGN</th>
             </tr>
           </thead>
           <tbody>
-            {isError && cards.length === 0 && (
+            {isError && (
               <tr>
                 <td colSpan={5} className="tok-empty">
                   <div className="text-[13px] text-[var(--cryp-loss)]">Couldn’t load</div>
@@ -470,7 +495,7 @@ export default function CallsPage() {
                 </td>
               </tr>
             )}
-            {isLoading && cards.length === 0 && !isError && (
+            {!isError && (isLoading || showPlaceholder) && cards.length === 0 && (
               [0, 1, 2, 3, 4].map(i => (
                 <tr key={i} className="tok-row">
                   <td colSpan={5} className="tok-td">
@@ -479,14 +504,14 @@ export default function CallsPage() {
                 </tr>
               ))
             )}
-            {!isLoading && !isError && cards.length === 0 && (
+            {!isError && !isLoading && !showPlaceholder && cards.length === 0 && (
               <tr>
                 <td colSpan={5} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
                   {mode === "waiting" ? "Queue clear" : "No matches"}
                 </td>
               </tr>
             )}
-            {cards.map(c => (
+            {!isError && cards.map(c => (
               <TableRow key={c.id} c={c} waiting={mode === "waiting"} />
             ))}
           </tbody>

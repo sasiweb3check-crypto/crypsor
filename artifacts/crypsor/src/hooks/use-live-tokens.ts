@@ -4,9 +4,10 @@
  * Opens SSE to /api/events and patches React Query caches in real-time.
  * - calls:changed → Waiting/Best insert/surface/ENTRY
  * - prices:desk → patch MC/gain on Calls desk without waiting for poll
+ * - reconnect → invalidate desk (missed events during the gap)
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getApiBase } from "@/lib/api-base";
 import type { CallCard, FeedPage } from "@/lib/calls-api";
@@ -73,11 +74,27 @@ function patchCallCard(
     athMultiple = Math.round((athMcUsd / called) * 100) / 100;
   }
 
+  // Keep 1H in sync with live MC when we have a baseline (mc1h or young since-call)
+  let gain1hPct = card.gain1hPct;
+  const baseline1h = (card as CallCard & { mc1hUsd?: number | null }).mc1hUsd;
+  if (baseline1h != null && baseline1h > 0) {
+    gain1hPct = Math.round(((currentMcUsd - baseline1h) / baseline1h) * 1000) / 10;
+  } else if (
+    gain1hPct != null
+    && called != null
+    && called > 0
+    && card.calledAt
+    && (Date.now() - new Date(card.calledAt).getTime()) / 60_000 < 90
+  ) {
+    gain1hPct = Math.round(((currentMcUsd - called) / called) * 1000) / 10;
+  }
+
   return {
     ...card,
     currentMcUsd,
     athMcUsd: athMcUsd != null && Number.isFinite(athMcUsd) ? athMcUsd : card.athMcUsd,
     gainPct,
+    gain1hPct,
     nowMultiple: Number.isFinite(nowMultiple) ? nowMultiple : card.nowMultiple,
     athMultiple: Number.isFinite(athMultiple) ? athMultiple : card.athMultiple,
   };
@@ -85,8 +102,9 @@ function patchCallCard(
 
 export function useLiveTokens(): { connected: boolean } {
   const qc = useQueryClient();
-  const connectedRef = useRef(false);
+  const [connected, setConnected] = useState(false);
   const callsBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sawDisconnect = useRef(false);
 
   useEffect(() => {
     const url = `${getApiBase()}api/events`;
@@ -123,7 +141,11 @@ export function useLiveTokens(): { connected: boolean } {
     };
 
     es.addEventListener("connected", () => {
-      connectedRef.current = true;
+      setConnected(true);
+      // After a disconnect, replay desk state — EventSource has no backlog
+      if (sawDisconnect.current) {
+        bumpCallsDesk(0);
+      }
     });
 
     es.addEventListener("calls:changed", () => {
@@ -215,15 +237,16 @@ export function useLiveTokens(): { connected: boolean } {
     });
 
     es.onerror = () => {
-      connectedRef.current = false;
+      sawDisconnect.current = true;
+      setConnected(false);
     };
 
     return () => {
       if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
       es.close();
-      connectedRef.current = false;
+      setConnected(false);
     };
   }, [qc]);
 
-  return { connected: connectedRef.current };
+  return { connected };
 }
