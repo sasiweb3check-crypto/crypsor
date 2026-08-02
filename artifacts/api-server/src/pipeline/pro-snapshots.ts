@@ -363,33 +363,40 @@ async function snapshotOnce(mode: Mode): Promise<void> {
         ? sql`, surfaced_at = COALESCE(surfaced_at, NOW()), surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${String(r.current_mc ?? "0")})`
         : sql``;
 
-      await db.execute(sql`
-        UPDATE pro_calls
-        SET
-          ath_multiple     = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
-          last_snapshot_at = NOW(),
-          last_snap_mc_usd = ${String(currentMc || 0)},
-          pro_score        = ${proScore},
-          survival_score   = ${survivalScore},
-          last_survival_at = NOW(),
-          entry_tier       = ${entryTier},
-          score_version    = 'v2',
-          runner_score     = ${runner.score},
-          runner_phase     = ${runner.phase},
-          observation_snap_count = ${obsSnapCount + 1},
-          quality_label    = CASE
-            WHEN ${r.sec_is_honeypot === true} THEN 'below'
-            WHEN surfaced_at IS NOT NULL THEN
-              CASE
-                WHEN quality_label IN ('good', 'very_good') THEN quality_label
-                ELSE 'good'
-              END
-            ELSE ${nextQuality}
-          END
-          ${surfacedClause}
-          ${sql.join(milestoneParts, sql``)}
-        WHERE id = ${r.pro_call_id}
-      `);
+      const phaseOk = new Set(["radar", "heating", "entry", "fading", "dead"]);
+      const phase = phaseOk.has(runner.phase) ? runner.phase : "radar";
+      try {
+        await db.execute(sql`
+          UPDATE pro_calls
+          SET
+            ath_multiple     = GREATEST(COALESCE(ath_multiple, 1), ${newAth}),
+            last_snapshot_at = NOW(),
+            last_snap_mc_usd = ${String(currentMc || 0)},
+            pro_score        = ${proScore},
+            survival_score   = ${survivalScore},
+            last_survival_at = NOW(),
+            entry_tier       = ${entryTier},
+            score_version    = 'v2',
+            runner_score     = ${runner.score},
+            runner_phase     = ${phase},
+            observation_snap_count = ${obsSnapCount + 1},
+            quality_label    = CASE
+              WHEN ${r.sec_is_honeypot === true} THEN 'below'
+              WHEN surfaced_at IS NOT NULL THEN
+                CASE
+                  WHEN quality_label IN ('good', 'very_good') THEN quality_label
+                  ELSE 'good'
+                END
+              ELSE ${nextQuality}
+            END
+            ${surfacedClause}
+            ${sql.join(milestoneParts, sql``)}
+          WHERE id = ${r.pro_call_id}
+        `);
+      } catch (updErr) {
+        log.warn({ err: updErr, proCallId: r.pro_call_id, phase }, "pro_calls snap update failed");
+        continue;
+      }
 
       const transition = buildRunnerTransition(prevPhase, runner, {
         mcUsd: currentMc || null,
