@@ -85,10 +85,13 @@ const CACHE_PREFIXES = [
 
 async function delRedisByPrefix(r: Redis, prefix: string): Promise<void> {
   let cursor = "0";
+  let steps = 0;
   do {
     const [next, keys] = await r.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 80);
     cursor = next;
     if (keys.length) await r.del(...keys);
+    // Hard stop — never let a wedged Redis SCAN hang callers forever
+    if (++steps > 40) break;
   } while (cursor !== "0");
 }
 
@@ -100,35 +103,14 @@ export async function invalidateProCaches(): Promise<void> {
     }
     const r = await getRedis();
     if (r) {
-      // Known legacy pro keys + prefix scan for calls/pro variants
-      const keys = [
-        "pro:stats:v2",
-        "pro:stats:v3",
-        "pro:feed:v2:150",
-        "pro:feed:v2:200",
-        "pro:feed:v2:300",
-        "pro:feed:v2:400",
-        "pro:feed:v4:150",
-        "pro:feed:v4:200",
-        "pro:feed:v4:300",
-        "pro:feed:v4:400",
-        "pro:feed:v5:150",
-        "pro:feed:v5:200",
-        "pro:feed:v5:300",
-        "pro:feed:v5:400",
-        "pro:feed:v6:150",
-        "pro:feed:v6:200",
-        "pro:feed:v6:300",
-        "pro:feed:v6:400",
-        "pro:feed:v7:150",
-        "pro:feed:v7:200",
-        "pro:feed:v7:300",
-        "pro:feed:v7:400",
-      ];
-      if (keys.length) await r.del(...keys);
-      for (const prefix of CACHE_PREFIXES) {
-        await delRedisByPrefix(r, prefix);
-      }
+      await Promise.race([
+        (async () => {
+          for (const prefix of CACHE_PREFIXES) {
+            await delRedisByPrefix(r, prefix);
+          }
+        })(),
+        new Promise<void>((resolve) => setTimeout(resolve, 1_500)),
+      ]);
     }
   } catch {
     /* never break callers */
