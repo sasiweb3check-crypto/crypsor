@@ -323,7 +323,8 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
 
   const sliced = cards.slice(0, limit);
   const payload = { cards: sliced, universe };
-  await proCacheSet(cacheKey, payload, 8);
+  // Short TTL — price service invalidates on desk ticks; keep warm briefly
+  await proCacheSet(cacheKey, payload, 4);
   return payload;
 }
 
@@ -861,7 +862,8 @@ async function loadWaitingCalls(limit: number): Promise<{
   cards.sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
 
   const payload = { cards, pendingFirstCalls: cards.length };
-  await proCacheSet(cacheKey, payload, 6);
+  // Short TTL — desk price refresher invalidates on each tick
+  await proCacheSet(cacheKey, payload, 3);
   return payload;
 }
 

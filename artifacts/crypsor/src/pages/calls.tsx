@@ -231,9 +231,9 @@ export default function CallsPage() {
   } = useQuery({
     queryKey: CALLS_FEED_KEY(mode, page, filters),
     queryFn: () => fetchCallsFeed(mode, page, PAGE_SIZE, filters),
-    // SSE invalidates on calls:changed — poll is a light backup only
-    refetchInterval: mode === "waiting" ? 12_000 : 20_000,
-    staleTime: 4_000,
+    // prices:desk SSE patches MC live; poll is backup if SSE drops
+    refetchInterval: mode === "waiting" ? 15_000 : 25_000,
+    staleTime: 3_000,
     placeholderData: keepPreviousData,
     retry: 3,
   });

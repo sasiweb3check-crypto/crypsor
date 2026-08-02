@@ -75,15 +75,32 @@ export async function proCacheSet(key: string, value: unknown, ttlSec: number): 
   }
 }
 
-/** Drop Pro feed/stats caches so a new call is visible on the next request. */
+const CACHE_PREFIXES = [
+  "pro:feed:",
+  "pro:stats:",
+  "calls:feed:",
+  "calls:waiting:",
+  "calls:stats:",
+] as const;
+
+async function delRedisByPrefix(r: Redis, prefix: string): Promise<void> {
+  let cursor = "0";
+  do {
+    const [next, keys] = await r.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 80);
+    cursor = next;
+    if (keys.length) await r.del(...keys);
+  } while (cursor !== "0");
+}
+
+/** Drop Pro + Calls feed caches so desk MC/Waiting stay fresh after price ticks. */
 export async function invalidateProCaches(): Promise<void> {
   try {
     for (const key of [...memory.keys()]) {
-      if (key.startsWith("pro:feed:") || key.startsWith("pro:stats:")) memory.delete(key);
+      if (CACHE_PREFIXES.some((p) => key.startsWith(p))) memory.delete(key);
     }
     const r = await getRedis();
     if (r) {
-      // Known keys — keep simple (no KEYS scan on Redis)
+      // Known legacy pro keys + prefix scan for calls/pro variants
       const keys = [
         "pro:stats:v2",
         "pro:stats:v3",
@@ -109,11 +126,17 @@ export async function invalidateProCaches(): Promise<void> {
         "pro:feed:v7:400",
       ];
       if (keys.length) await r.del(...keys);
+      for (const prefix of CACHE_PREFIXES) {
+        await delRedisByPrefix(r, prefix);
+      }
     }
   } catch {
     /* never break callers */
   }
 }
+
+/** Alias — Calls desk MC/gain depend on tracked_tokens prices. */
+export const invalidateCallsCaches = invalidateProCaches;
 
 /** Normalize PG timestamp-without-tz / Date into ISO UTC string. */
 export function toIsoUtc(value: unknown): string | null {

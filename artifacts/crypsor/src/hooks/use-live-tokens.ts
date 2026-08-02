@@ -2,13 +2,14 @@
  * useLiveTokens
  *
  * Opens SSE to /api/events and patches React Query caches in real-time.
- * Also invalidates Calls desk (Waiting/Best/Hot/Latest) on calls:changed
- * so new Waiting rows appear without waiting for the poll interval.
+ * - calls:changed → Waiting/Best insert/surface/ENTRY
+ * - prices:desk → patch MC/gain on Calls desk without waiting for poll
  */
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getApiBase } from "@/lib/api-base";
+import type { CallCard, FeedPage } from "@/lib/calls-api";
 
 interface TokenUpdatedPayload {
   tokenId: number;
@@ -30,6 +31,16 @@ interface TokenDeletedPayload {
   tokenAddress: string;
 }
 
+interface PricesDeskPayload {
+  ticks: Array<{
+    tokenId: number;
+    tokenAddress: string;
+    marketCapUsd: string | null;
+    athMarketCapUsd: string | null;
+  }>;
+  at: string;
+}
+
 interface PaginatedTokenPage {
   data: Record<string, unknown>[];
   total: number;
@@ -37,18 +48,51 @@ interface PaginatedTokenPage {
   pages: number;
 }
 
+function patchCallCard(
+  card: CallCard,
+  tick: PricesDeskPayload["ticks"][number],
+): CallCard {
+  const currentMcUsd = tick.marketCapUsd != null && tick.marketCapUsd !== ""
+    ? Number(tick.marketCapUsd)
+    : card.currentMcUsd;
+  if (currentMcUsd == null || !Number.isFinite(currentMcUsd)) return card;
+
+  const called = card.calledMcUsd;
+  let gainPct = card.gainPct;
+  let nowMultiple = card.nowMultiple;
+  if (called != null && called > 0) {
+    nowMultiple = currentMcUsd / called;
+    gainPct = (nowMultiple - 1) * 100;
+  }
+
+  const athMcUsd = tick.athMarketCapUsd != null && tick.athMarketCapUsd !== ""
+    ? Number(tick.athMarketCapUsd)
+    : card.athMcUsd;
+  let athMultiple = card.athMultiple;
+  if (athMcUsd != null && Number.isFinite(athMcUsd) && called != null && called > 0) {
+    athMultiple = athMcUsd / called;
+  }
+
+  return {
+    ...card,
+    currentMcUsd,
+    athMcUsd: athMcUsd != null && Number.isFinite(athMcUsd) ? athMcUsd : card.athMcUsd,
+    gainPct,
+    nowMultiple: Number.isFinite(nowMultiple) ? nowMultiple : card.nowMultiple,
+    athMultiple: Number.isFinite(athMultiple) ? athMultiple : card.athMultiple,
+  };
+}
+
 export function useLiveTokens(): { connected: boolean } {
   const qc = useQueryClient();
   const connectedRef = useRef(false);
   const callsBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const callsPriceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const url = `${getApiBase()}api/events`;
     const es = new EventSource(url);
 
     const bumpCallsDesk = (ms = 60) => {
-      // Coalesce qualify bursts into one refetch; keep delay tiny for Waiting sync
       if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
       callsBumpTimer.current = setTimeout(() => {
         void qc.invalidateQueries({ queryKey: ["calls-feed"] });
@@ -58,13 +102,24 @@ export function useLiveTokens(): { connected: boolean } {
       }, ms);
     };
 
-    const bumpCallsPrices = () => {
-      // Price ticks are frequent — soft refresh so Gain/MC stay live without thrash
-      if (callsPriceTimer.current) return;
-      callsPriceTimer.current = setTimeout(() => {
-        callsPriceTimer.current = null;
-        void qc.invalidateQueries({ queryKey: ["calls-feed"] });
-      }, 2_500);
+    const applyDeskPrices = (payload: PricesDeskPayload) => {
+      if (!payload.ticks?.length) return;
+      const byId = new Map(payload.ticks.map((t) => [t.tokenId, t]));
+
+      qc.setQueriesData<FeedPage>(
+        { queryKey: ["calls-feed"] },
+        (old) => {
+          if (!old?.cards?.length) return old;
+          let changed = false;
+          const cards = old.cards.map((c) => {
+            const tick = byId.get(c.id);
+            if (!tick) return c;
+            changed = true;
+            return patchCallCard(c, tick);
+          });
+          return changed ? { ...old, cards } : old;
+        },
+      );
     };
 
     es.addEventListener("connected", () => {
@@ -75,7 +130,14 @@ export function useLiveTokens(): { connected: boolean } {
       bumpCallsDesk(60);
     });
 
-    // Patch the token in every cached paginated page
+    es.addEventListener("prices:desk", (e: MessageEvent) => {
+      try {
+        applyDeskPrices(JSON.parse(e.data as string) as PricesDeskPayload);
+      } catch (err) {
+        console.warn("[SSE] prices:desk parse error", err);
+      }
+    });
+
     es.addEventListener("token:updated", (e: MessageEvent) => {
       try {
         const payload: TokenUpdatedPayload = JSON.parse(e.data as string);
@@ -109,8 +171,6 @@ export function useLiveTokens(): { connected: boolean } {
             status: payload.status,
           };
         });
-
-        bumpCallsPrices();
       } catch (err) {
         console.warn("[SSE] token:updated parse error", err);
       }
@@ -160,7 +220,6 @@ export function useLiveTokens(): { connected: boolean } {
 
     return () => {
       if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
-      if (callsPriceTimer.current) clearTimeout(callsPriceTimer.current);
       es.close();
       connectedRef.current = false;
     };

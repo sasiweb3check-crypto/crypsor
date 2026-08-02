@@ -78,6 +78,17 @@ export interface CallsChangedEvent {
   at?: string;
 }
 
+/** Batched live MC ticks for Calls desk (free DexScreener / PumpFun refresh). */
+export interface PricesDeskEvent {
+  ticks: Array<{
+    tokenId: number;
+    tokenAddress: string;
+    marketCapUsd: string | null;
+    athMarketCapUsd: string | null;
+  }>;
+  at: string;
+}
+
 /** Rich event for the live feed tape — emitted by monitor (buy/sell) and social-intel-service */
 export interface FeedItemEvent {
   id:   string;
@@ -133,6 +144,7 @@ type BusMap = {
   "holders:updated":       [HoldersUpdatedEvent];
   "intel:scored":          [IntelScoredEvent];
   "calls:changed":         [CallsChangedEvent];
+  "prices:desk":           [PricesDeskEvent];
   "feed:item":             [FeedItemEvent];
 };
 

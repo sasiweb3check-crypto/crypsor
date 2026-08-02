@@ -122,6 +122,14 @@ export function startSseGateway(): void {
     });
   });
 
+  // Live MC ticks for Calls desk (batched; free DexScreener/PumpFun refresher)
+  eventBus.on("prices:desk", (evt) => {
+    broadcast("prices:desk", {
+      ticks: evt.ticks,
+      at: evt.at,
+    });
+  });
+
   logger.info("SSE gateway started");
 }
 
