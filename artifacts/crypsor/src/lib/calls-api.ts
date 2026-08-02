@@ -1,5 +1,5 @@
 /**
- * Best Calls client — FOMO-style desk cards.
+ * Best Calls client — lightweight paginated table desk.
  */
 import { apiFetch, ApiError } from "@/lib/api-fetch";
 
@@ -51,6 +51,11 @@ export type CallCard = {
   hit5x: boolean;
   hit10x: boolean;
   volume24hUsd: number | null;
+  volumeIntensityScore: number | null;
+  /** 1h MC % change vs snapshot — independent of entry */
+  gain1hPct: number | null;
+  momentum1h: number;
+  momentum6h: number;
   tokenAgeMin: number | null;
   ctoFlag: boolean | null;
   creatorClose: boolean | null;
@@ -93,27 +98,88 @@ export type CallStats = {
 
 export type CallMode = "best" | "latest" | "hot" | "waiting";
 
-export const CALLS_FEED_KEY = (mode: CallMode) => ["calls-feed", mode] as const;
+export type FeedFilters = {
+  label?: string;
+  quality?: string;
+  minScore?: number;
+  minVol1h?: number;
+  minGain1h?: number;
+  minMom1h?: number;
+  minMom6h?: number;
+};
+
+export type FeedPage = {
+  cards: CallCard[];
+  total: number;
+  page: number;
+  pages: number;
+  limit: number;
+  universe: number;
+  mode: string;
+  note?: string;
+  pendingFirstCalls?: number;
+};
+
+export const PAGE_SIZE = 20;
+
+export const CALLS_FEED_KEY = (
+  mode: CallMode,
+  page: number,
+  filters: FeedFilters,
+) => ["calls-feed", mode, page, filters] as const;
+
 export const CALLS_STATS_KEY = (period: StatsPeriod = "7d") => ["calls-stats", period] as const;
 export const CALLS_WAITING_KEY = ["calls-waiting"] as const;
 
-export function fetchCallsFeed(mode: CallMode = "best", limit = 40) {
+function buildFeedQs(
+  mode: CallMode,
+  page: number,
+  limit: number,
+  filters: FeedFilters,
+): string {
+  const qs = new URLSearchParams();
+  qs.set("mode", mode);
+  qs.set("page", String(page));
+  qs.set("limit", String(limit));
+  if (filters.label && filters.label !== "all") qs.set("label", filters.label);
+  if (filters.quality && filters.quality !== "all") qs.set("quality", filters.quality);
+  if (filters.minScore != null) qs.set("minScore", String(filters.minScore));
+  if (filters.minVol1h != null) qs.set("minVol1h", String(filters.minVol1h));
+  if (filters.minGain1h != null) qs.set("minGain1h", String(filters.minGain1h));
+  if (filters.minMom1h != null) qs.set("minMom1h", String(filters.minMom1h));
+  if (filters.minMom6h != null) qs.set("minMom6h", String(filters.minMom6h));
+  return qs.toString();
+}
+
+export function fetchCallsFeed(
+  mode: CallMode = "best",
+  page = 1,
+  limit = PAGE_SIZE,
+  filters: FeedFilters = {},
+) {
+  return callsFetch<FeedPage>(`api/calls/feed?${buildFeedQs(mode, page, limit, filters)}`);
+}
+
+export function fetchCallsWaiting(limit = PAGE_SIZE, page = 1, filters: FeedFilters = {}) {
+  const qs = new URLSearchParams();
+  qs.set("page", String(page));
+  qs.set("limit", String(limit));
+  if (filters.label && filters.label !== "all") qs.set("label", filters.label);
+  if (filters.quality && filters.quality !== "all") qs.set("quality", filters.quality);
+  if (filters.minScore != null) qs.set("minScore", String(filters.minScore));
+  if (filters.minVol1h != null) qs.set("minVol1h", String(filters.minVol1h));
+  if (filters.minGain1h != null) qs.set("minGain1h", String(filters.minGain1h));
+  if (filters.minMom1h != null) qs.set("minMom1h", String(filters.minMom1h));
+  if (filters.minMom6h != null) qs.set("minMom6h", String(filters.minMom6h));
   return callsFetch<{
     cards: CallCard[];
     total: number;
-    universe: number;
-    mode: string;
-    note?: string;
-    pendingFirstCalls?: number;
-  }>(`api/calls/feed?mode=${mode}&limit=${limit}`);
-}
-
-export function fetchCallsWaiting(limit = 24) {
-  return callsFetch<{
-    cards: CallCard[];
+    page: number;
+    pages: number;
+    limit: number;
     pendingFirstCalls: number;
     note?: string;
-  }>(`api/calls/waiting?limit=${limit}`);
+  }>(`api/calls/waiting?${qs.toString()}`);
 }
 
 export function fetchCallsStats(period: StatsPeriod = "7d") {

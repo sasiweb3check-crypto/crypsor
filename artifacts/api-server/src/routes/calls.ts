@@ -71,6 +71,13 @@ export type CallCard = {
   hit5x: boolean;
   hit10x: boolean;
   volume24hUsd: number | null;
+  /** Proxy for short-window volume intensity (0–100). */
+  volumeIntensityScore: number | null;
+  /** 1h MC change vs snapshot ~1h ago — independent of call entry. */
+  gain1hPct: number | null;
+  /** Buy-count momentum windows */
+  momentum1h: number;
+  momentum6h: number;
   tokenAgeMin: number | null;
   ctoFlag: boolean | null;
   creatorClose: boolean | null;
@@ -86,9 +93,35 @@ export type CallCard = {
   properServe: boolean;
 };
 
+/** Shared select extras for momentum + 1h MC gain (snapshot lateral). */
+const MOMENTUM_SELECT = sql`
+  COALESCE(t.momentum_1h, 0)::int AS momentum_1h,
+  COALESCE(t.momentum_6h, 0)::int AS momentum_6h,
+  t.volume_intensity_score,
+  snap1h.mc_1h`;
+
+const SNAP1H_LATERAL = sql`
+  LEFT JOIN LATERAL (
+    SELECT market_cap_usd AS mc_1h
+    FROM token_price_snapshots tps
+    WHERE tps.token_id = t.id
+      AND tps.snapshot_at <= NOW() - INTERVAL '50 minutes'
+      AND tps.snapshot_at >= NOW() - INTERVAL '2 hours'
+      AND tps.market_cap_usd IS NOT NULL
+    ORDER BY tps.snapshot_at DESC
+    LIMIT 1
+  ) snap1h ON TRUE`;
+
+function parseGain1h(currentMc: number | null, mc1hRaw: unknown): number | null {
+  if (currentMc == null || currentMc <= 0 || mc1hRaw == null) return null;
+  const mc1h = parseFloat(String(mc1hRaw));
+  if (!Number.isFinite(mc1h) || mc1h <= 0) return null;
+  return Math.round(((currentMc - mc1h) / mc1h) * 1000) / 10;
+}
+
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
-  // v8: ENTRY-served only — waiting/pending never carried into Best/Hot/Latest
-  const cacheKey = `calls:feed:v8-entry:${limit}`;
+  // v9: ENTRY-served + momentum/1h gain fields for table filters
+  const cacheKey = `calls:feed:v9-entry:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -130,12 +163,14 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.sec_creator_created_count,
       t.token_created_at,
       t.first_detected_at,
+      ${MOMENTUM_SELECT},
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       NULL::float8 AS buy_notional,
       cryp.crypsor_quality_n,
       cryp.crypsor_weight
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
+    ${SNAP1H_LATERAL}
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
       FROM token_buys tb
@@ -157,7 +192,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
         OR pc.runner_alert_sent_at IS NOT NULL
       )
     ORDER BY pc.called_at DESC NULLS LAST
-    LIMIT 200
+    LIMIT 400
   `);
 
   const cards: CallCard[] = (rows.rows as Array<Record<string, unknown>>).map(r => {
@@ -258,6 +293,11 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+      volumeIntensityScore: r.volume_intensity_score != null
+        ? Number(r.volume_intensity_score) : null,
+      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      momentum1h: Number(r.momentum_1h ?? 0) || 0,
+      momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin,
       ctoFlag,
       creatorClose,
@@ -309,16 +349,18 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      ${MOMENTUM_SELECT},
       0::int AS wallet_buys, NULL::float8 AS buy_notional, NULL::float8 AS avg_win_rate
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
+    ${SNAP1H_LATERAL}
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND (
         pc.call_alert_sent_at IS NOT NULL
         OR pc.runner_alert_sent_at IS NOT NULL
       )
     ORDER BY pc.called_at DESC NULLS LAST
-    LIMIT ${Math.min(limit, 120)}
+    LIMIT ${Math.min(limit, 200)}
   `);
 
   // Reuse mapper by temporarily assigning rows shape — call through loadCallCards path
@@ -397,6 +439,11 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+      volumeIntensityScore: r.volume_intensity_score != null
+        ? Number(r.volume_intensity_score) : null,
+      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      momentum1h: Number(r.momentum_1h ?? 0) || 0,
+      momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
         ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000)) : null,
       ctoFlag,
@@ -434,11 +481,13 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
       t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      ${MOMENTUM_SELECT},
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       cryp.crypsor_quality_n,
       cryp.crypsor_weight
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
+    ${SNAP1H_LATERAL}
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
       FROM token_buys tb
@@ -540,6 +589,11 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
     hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
     hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
     volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+    volumeIntensityScore: r.volume_intensity_score != null
+      ? Number(r.volume_intensity_score) : null,
+    gain1hPct: parseGain1h(currentMc, r.mc_1h),
+    momentum1h: Number(r.momentum_1h ?? 0) || 0,
+    momentum6h: Number(r.momentum_6h ?? 0) || 0,
     tokenAgeMin: firstSeen != null && Number.isFinite(firstSeen)
       ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000)) : null,
     ctoFlag,
@@ -599,8 +653,8 @@ async function loadWaitingCalls(limit: number): Promise<{
   cards: WaitingCallCard[];
   pendingFirstCalls: number;
 }> {
-  // v3: latest-called sort only — never mixed into Best/Hot ENTRY stats
-  const cacheKey = `calls:waiting:v3:${limit}`;
+  // v4: latest-called + momentum/1h for table filters
+  const cacheKey = `calls:waiting:v4:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
@@ -624,12 +678,13 @@ async function loadWaitingCalls(limit: number): Promise<{
       t.raw_metadata, t.holder_count, t.latest_holder_snapshot_id,
       t.holder_kol_count AS live_kol, t.holder_smart_count AS live_smart,
       t.holder_quality_score, t.holder_velocity_score,
-      t.volume_intensity_score,
       t.sec_is_honeypot, t.sec_mint_renounced, t.sec_freeze_renounced,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
-      t.sec_creator_created_count, t.token_created_at, t.first_detected_at
+      t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      ${MOMENTUM_SELECT}
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
+    ${SNAP1H_LATERAL}
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND pc.call_alert_sent_at IS NULL
       AND pc.runner_alert_sent_at IS NULL
@@ -641,7 +696,7 @@ async function loadWaitingCalls(limit: number): Promise<{
         )
       )
     ORDER BY pc.called_at DESC NULLS LAST
-    LIMIT ${Math.min(Math.max(limit, 1), 40)}
+    LIMIT ${Math.min(Math.max(limit, 1), 200)}
   `);
 
   const cards: WaitingCallCard[] = (rows.rows as Array<Record<string, unknown>>).map(r => {
@@ -765,6 +820,11 @@ async function loadWaitingCalls(limit: number): Promise<{
       hit5x: Boolean(r.hit_5x) || athMultiple >= 5,
       hit10x: Boolean(r.hit_10x) || athMultiple >= 10,
       volume24hUsd: r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null,
+      volumeIntensityScore: r.volume_intensity_score != null
+        ? Number(r.volume_intensity_score) : null,
+      gain1hPct: parseGain1h(currentMc, r.mc_1h),
+      momentum1h: Number(r.momentum_1h ?? 0) || 0,
+      momentum6h: Number(r.momentum_6h ?? 0) || 0,
       tokenAgeMin,
       ctoFlag: r.sec_cto_flag == null ? null : Boolean(r.sec_cto_flag),
       creatorClose: r.sec_creator_close == null ? null : Boolean(r.sec_creator_close),
@@ -805,17 +865,77 @@ async function loadWaitingCalls(limit: number): Promise<{
   return payload;
 }
 
+type FeedFilters = {
+  label?: string;       // callLabel: elite|strong|watch|noise
+  quality?: string;     // qualityLabel: very_good|good|below
+  minScore?: number;    // callScore
+  minVol1h?: number;    // volumeIntensityScore proxy for 1h volume
+  minGain1h?: number;   // gain1hPct (independent of entry)
+  minMom1h?: number;
+  minMom6h?: number;
+};
+
+function parseFeedFilters(q: Record<string, unknown>): FeedFilters {
+  const num = (k: string) => {
+    const v = parseFloat(String(q[k] ?? ""));
+    return Number.isFinite(v) ? v : undefined;
+  };
+  const label = String(q.label ?? "").trim().toLowerCase();
+  const quality = String(q.quality ?? "").trim().toLowerCase();
+  return {
+    label: label && label !== "all" ? label : undefined,
+    quality: quality && quality !== "all" ? quality : undefined,
+    minScore: num("minScore"),
+    minVol1h: num("minVol1h"),
+    minGain1h: num("minGain1h"),
+    minMom1h: num("minMom1h"),
+    minMom6h: num("minMom6h"),
+  };
+}
+
+function applyFeedFilters<T extends CallCard>(cards: T[], f: FeedFilters): T[] {
+  return cards.filter(c => {
+    if (f.label && c.callLabel !== f.label) return false;
+    if (f.quality && c.qualityLabel !== f.quality) return false;
+    if (f.minScore != null && c.callScore < f.minScore) return false;
+    if (f.minVol1h != null && (c.volumeIntensityScore ?? 0) < f.minVol1h) return false;
+    if (f.minGain1h != null && (c.gain1hPct ?? -Infinity) < f.minGain1h) return false;
+    if (f.minMom1h != null && c.momentum1h < f.minMom1h) return false;
+    if (f.minMom6h != null && c.momentum6h < f.minMom6h) return false;
+    return true;
+  });
+}
+
+function paginateCards<T>(cards: T[], page: number, limit: number) {
+  const total = cards.length;
+  const pages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(Math.max(page, 1), pages);
+  const start = (safePage - 1) * limit;
+  return {
+    cards: cards.slice(start, start + limit),
+    total,
+    page: safePage,
+    pages,
+    limit,
+  };
+}
+
 router.get("/calls/feed", async (req, res) => {
   try {
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "40"), 10) || 40, 1), 80);
+    // Max 20 per page — API-side pagination when universe exceeds one page
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 20);
+    const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
     const mode = String(req.query.mode ?? "latest"); // latest | best | hot | waiting
+    const filters = parseFeedFilters(req.query as Record<string, unknown>);
 
     if (mode === "waiting") {
-      const pack = await loadWaitingCalls(limit);
+      const pack = await loadWaitingCalls(200);
+      const filtered = applyFeedFilters(pack.cards, filters);
+      // Waiting always latest-called (already sorted)
+      const pagePack = paginateCards(filtered, page, limit);
       res.setHeader("Cache-Control", "private, max-age=4");
       res.json(apiOk({
-        cards: pack.cards,
-        total: pack.cards.length,
+        ...pagePack,
         universe: pack.pendingFirstCalls,
         mode: "waiting",
         pendingFirstCalls: pack.pendingFirstCalls,
@@ -826,38 +946,42 @@ router.get("/calls/feed", async (req, res) => {
 
     let pack: { cards: CallCard[]; universe: number };
     try {
-      pack = await loadCallCards(Math.max(limit, 80));
+      pack = await loadCallCards(400);
     } catch (primaryErr) {
       console.error("calls feed primary failed — lite fallback", primaryErr);
-      pack = await loadCallCardsLite(Math.max(limit, 80));
+      pack = await loadCallCardsLite(200);
     }
     const { cards, universe } = pack;
 
     // Feed cards are ENTRY-served only — waiting never mixed in
-    let out = cards;
+    let out = cards.filter(c => c.entryServed);
     if (mode === "best") {
-      out = cards
-        .filter(c => c.entryServed)
-        .slice(0, Math.min(limit, 8));
+      // Score/label ranked (already ranked in loader)
+      out = [...out].sort((a, b) => {
+        const tier = (l: CallCard["callLabel"]) =>
+          l === "elite" ? 0 : l === "strong" ? 1 : l === "watch" ? 2 : 3;
+        const d = tier(a.callLabel) - tier(b.callLabel);
+        if (d !== 0) return d;
+        return b.callScore - a.callScore;
+      });
     } else if (mode === "hot") {
-      out = [...cards]
-        .filter(c => c.entryServed)
-        .sort((a, b) => (b.nowMultiple - a.nowMultiple) || (b.callScore - a.callScore))
-        .slice(0, limit);
+      out = [...out].sort(
+        (a, b) => (b.nowMultiple - a.nowMultiple) || (b.callScore - a.callScore),
+      );
     } else {
-      out = [...cards]
-        .filter(c => c.entryServed)
-        .sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""))
-        .slice(0, limit);
+      // latest — newest called first
+      out = [...out].sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
     }
+
+    out = applyFeedFilters(out, filters);
+    const pagePack = paginateCards(out, page, limit);
 
     res.setHeader("Cache-Control", "private, max-age=4");
     res.json(apiOk({
-      cards: out,
-      total: out.length,
+      ...pagePack,
       universe,
       mode,
-      note: "Best/Hot/Latest = ENTRY-served only. Waiting is a separate queue.",
+      note: "Best/Hot/Latest = ENTRY-served only. Waiting is a separate queue. Max 20/page.",
     }));
   } catch (err) {
     console.error("calls feed error", err);
@@ -867,11 +991,15 @@ router.get("/calls/feed", async (req, res) => {
 
 router.get("/calls/waiting", async (req, res) => {
   try {
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "24"), 10) || 24, 1), 40);
-    const pack = await loadWaitingCalls(limit);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 20);
+    const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
+    const filters = parseFeedFilters(req.query as Record<string, unknown>);
+    const pack = await loadWaitingCalls(200);
+    const filtered = applyFeedFilters(pack.cards, filters);
+    const pagePack = paginateCards(filtered, page, limit);
     res.setHeader("Cache-Control", "private, max-age=4");
     res.json(apiOk({
-      cards: pack.cards,
+      ...pagePack,
       pendingFirstCalls: pack.pendingFirstCalls,
       note: "Waiting = latest-called pending ENTRY — separate from ENTRY-served desk",
     }));

@@ -8,6 +8,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { settings } from "@workspace/db";
+import { isTelegramPushEnabled, telegramPushEnvMuted } from "../lib/telegram-push";
 import { sql } from "drizzle-orm";
 import { monitorStatus } from "../lib/monitor";
 import { healthMonitor } from "../pipeline/health-monitor";
@@ -89,6 +90,8 @@ router.get("/ops/summary", async (_req, res) => {
     const chat = (tgRows.find(r => r.key === "telegram_chat_id")?.value ?? "").trim();
     const heliusDb = (tgRows.find(r => r.key === "helius_api_key")?.value ?? "").trim();
     const telegramConfigured = Boolean(bot && chat);
+    const telegramPushEnabled = await isTelegramPushEnabled();
+    const telegramEnvMuted = telegramPushEnvMuted();
     const heliusConfigured =
       monitorStatus.heliusConfigured ||
       Boolean(heliusDb || process.env.HELIUS_API_KEY?.trim());
@@ -141,21 +144,29 @@ router.get("/ops/summary", async (_req, res) => {
         msg: `Last wallet scan ${scanAgeSec}s ago (expected ~120s) — may be stuck or cold-starting`,
       });
     }
-    if (!telegramConfigured) {
+    if (!telegramPushEnabled) {
+      blockers.push({
+        code: "telegram_muted",
+        level: "info",
+        msg: telegramEnvMuted
+          ? "Telegram push muted via TELEGRAM_PUSH_ENABLED=false"
+          : "Telegram push stopped in Settings — in-app desk still scores",
+      });
+    } else if (!telegramConfigured) {
       blockers.push({
         code: "telegram_unconfigured",
         level: "warn",
         msg: "Telegram bot token / chat id not saved — Pro alerts will not send",
       });
     }
-    if (telegramConfigured && counters.lastTelegramError) {
+    if (telegramPushEnabled && telegramConfigured && counters.lastTelegramError) {
       blockers.push({
         code: "telegram_send_fail",
         level: "error",
         msg: `Telegram send failing: ${counters.lastTelegramError}`,
       });
     }
-    if (telegramConfigured && pendingFirstCalls > 0) {
+    if (pendingFirstCalls > 0) {
       blockers.push({
         code: "pending_first_calls",
         level: "warn",
@@ -230,6 +241,8 @@ router.get("/ops/summary", async (_req, res) => {
       },
       telegram: {
         configured: telegramConfigured,
+        pushEnabled: telegramPushEnabled,
+        envMuted: telegramEnvMuted,
         lastOkAt: counters.lastTelegramOkAt,
         lastError: counters.lastTelegramError,
         okCount: counters.telegramOk,

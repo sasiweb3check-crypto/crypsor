@@ -54,6 +54,8 @@ export interface OpsSummary {
   };
   telegram: {
     configured: boolean;
+    pushEnabled?: boolean;
+    envMuted?: boolean;
     lastOkAt: string | null;
     lastError: string | null;
     pendingFirstCalls: number;

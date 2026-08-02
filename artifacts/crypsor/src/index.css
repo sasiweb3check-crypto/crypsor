@@ -331,3 +331,179 @@ body {
   border-bottom: 1px solid rgba(125, 180, 170, 0.06);
 }
 .dex-news-row:last-child { border-bottom: none; }
+
+/* Token table desk */
+.tok-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid var(--cryp-line);
+  background: rgba(12, 20, 28, 0.88);
+}
+.tok-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 320px;
+}
+.tok-th {
+  text-align: left;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cryp-mute);
+  padding: 0.55rem 0.55rem;
+  border-bottom: 1px solid var(--cryp-line);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: rgba(8, 14, 20, 0.96);
+}
+.tok-th-num { text-align: right; }
+.tok-th-token { width: 46%; }
+.tok-td {
+  padding: 0.55rem 0.55rem;
+  border-bottom: 1px solid rgba(125, 180, 170, 0.06);
+  vertical-align: middle;
+  font-size: 12px;
+}
+.tok-td-num { text-align: right; white-space: nowrap; }
+.tok-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.tok-row:hover { background: rgba(61, 154, 139, 0.07); }
+.tok-row:last-child .tok-td { border-bottom: none; }
+.tok-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--cryp-elevated);
+  border: 1px solid var(--cryp-line);
+}
+.tok-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--cryp-mint);
+  background: rgba(61, 154, 139, 0.18);
+}
+.tok-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cryp-mute);
+  border: 1px solid var(--cryp-line);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  flex-shrink: 0;
+}
+.tok-chip-wait {
+  color: var(--cryp-warn);
+  border-color: rgba(212, 160, 23, 0.35);
+}
+.tok-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+}
+.tok-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.75rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid var(--cryp-line);
+  background: rgba(12, 20, 28, 0.9);
+}
+.tok-filters-section { display: flex; flex-direction: column; gap: 0.35rem; }
+.tok-filters-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cryp-mute);
+}
+.tok-filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.tok-filter-select,
+.tok-filter-input {
+  appearance: none;
+  min-width: 0;
+  flex: 1 1 96px;
+  height: 32px;
+  padding: 0 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--cryp-line);
+  background: var(--cryp-ink);
+  color: var(--cryp-text);
+  font-size: 11px;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+.tok-filter-input { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.tok-filter-select:focus,
+.tok-filter-input:focus {
+  outline: none;
+  border-color: rgba(61, 154, 139, 0.55);
+}
+.tok-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 28px;
+  padding: 0 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--cryp-line);
+  color: var(--cryp-mute);
+  font-size: 10px;
+  font-weight: 700;
+}
+.tok-filter-toggle-on {
+  color: var(--cryp-mint);
+  border-color: rgba(61, 154, 139, 0.45);
+  background: rgba(61, 154, 139, 0.1);
+}
+.tok-filter-clear {
+  height: 32px;
+  padding: 0 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--cryp-line);
+  color: var(--cryp-mute);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.tok-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding-top: 0.25rem;
+}
+.tok-pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--cryp-line);
+  color: var(--cryp-mint);
+}
+.tok-pager-btn:disabled {
+  opacity: 0.35;
+  color: var(--cryp-mute);
+}
+
+@media (min-width: 640px) {
+  .tok-th, .tok-td { padding: 0.65rem 0.75rem; }
+  .tok-thumb { width: 36px; height: 36px; }
+}

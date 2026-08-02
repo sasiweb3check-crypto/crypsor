@@ -18,6 +18,7 @@ import { opsLog } from "../lib/ops-log";
 import { healthMonitor } from "./health-monitor";
 import { fetchTokenSecurity, nextProxy } from "../lib/gmgn-client";
 import { ensureProIndexes } from "../lib/pro-indexes";
+import { isTelegramPushEnabled } from "../lib/telegram-push";
 
 const log = logger.child({ module: "cto-scan" });
 
@@ -25,7 +26,6 @@ const CYCLE_MS = 5 * 60_000;
 const STARTUP_DELAY_MS = 45_000;
 /** Cap live GMGN fetches per cycle — OpenAPI rate budget. */
 const MAX_PER_CYCLE = 18;
-const TELEGRAM_PUSH_ENABLED = process.env.TELEGRAM_PUSH_ENABLED !== "false";
 
 async function getTelegramCreds(): Promise<{ botToken: string; chatId: string } | null> {
   try {
@@ -185,7 +185,7 @@ async function ctoCycle(): Promise<void> {
     return;
   }
 
-  const creds = TELEGRAM_PUSH_ENABLED ? await getTelegramCreds() : null;
+  const creds = (await isTelegramPushEnabled()) ? await getTelegramCreds() : null;
   let checked = 0;
   let newCtos = 0;
   let alerted = 0;
