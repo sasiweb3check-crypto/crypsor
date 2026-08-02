@@ -61,8 +61,8 @@ function patchCallCard(
   let gainPct = card.gainPct;
   let nowMultiple = card.nowMultiple;
   if (called != null && called > 0) {
-    nowMultiple = currentMcUsd / called;
-    gainPct = (nowMultiple - 1) * 100;
+    nowMultiple = Math.round((currentMcUsd / called) * 100) / 100;
+    gainPct = ((currentMcUsd - called) / called) * 100;
   }
 
   const athMcUsd = tick.athMarketCapUsd != null && tick.athMarketCapUsd !== ""
@@ -70,7 +70,7 @@ function patchCallCard(
     : card.athMcUsd;
   let athMultiple = card.athMultiple;
   if (athMcUsd != null && Number.isFinite(athMcUsd) && called != null && called > 0) {
-    athMultiple = athMcUsd / called;
+    athMultiple = Math.round((athMcUsd / called) * 100) / 100;
   }
 
   return {

@@ -14,6 +14,8 @@ const COLD_STATUSES = ["archive", "dumped"] as const;
 const COLD_REFRESH_EVERY_N = 15; // ~every 15 hot cycles (~5 min at 20s)
 /** Cap cold slice so archive thousands never hang a cycle. */
 const COLD_BATCH = 80;
+/** Cap hot set per cycle — stalest first so the budget rotates coverage. */
+const HOT_BATCH = 250;
 /** Desk-only refresher — free DexScreener/PumpFun for Waiting/Best rows. */
 const DESK_REFRESH_MS = 8_000;
 const FULL_REFRESH_MS = 25_000;
@@ -21,6 +23,8 @@ const FULL_REFRESH_MS = 25_000;
 const DESK_TOKEN_LIMIT = 100;
 const FULL_CYCLE_BUDGET_MS = 45_000;
 const DESK_CYCLE_BUDGET_MS = 12_000;
+/** Feed overlay must not stall Waiting/Latest if Dex is slow. */
+const OVERLAY_BUDGET_MS = 2_500;
 const PERSIST_CONCURRENCY = 20;
 const PUMPFUN_CONCURRENCY = 8;
 let priceRefreshCycle = 0;
@@ -89,56 +93,76 @@ interface FreshPrice {
 
 // ── DexScreener ───────────────────────────────────────────────────────────────
 
-async function fetchBatch(chain: string, addresses: string[]): Promise<Map<string, FreshPrice>> {
+type DexPair = {
+  chainId: string;
+  dexId?: string;
+  baseToken: { address: string };
+  priceUsd?: string;
+  fdv?: number;
+  marketCap?: number;
+  liquidity?: { usd?: number };
+  volume?: { h24?: number };
+  pairCreatedAt?: number;
+  info?: { imageUrl?: string };
+};
+
+/** Prefer deepest pool; Raydium only as a tie-break (never over a richer pool). */
+function preferDexPair(next: DexPair, prev: DexPair): boolean {
+  const liqNext = next.liquidity?.usd ?? 0;
+  const liqPrev = prev.liquidity?.usd ?? 0;
+  if (liqNext !== liqPrev) return liqNext > liqPrev;
+  if (next.dexId === "raydium" && prev.dexId !== "raydium") return true;
+  if (prev.dexId === "raydium" && next.dexId !== "raydium") return false;
+  // Prefer a pair that actually reports circulating MC
+  const mcNext = next.marketCap != null ? 1 : 0;
+  const mcPrev = prev.marketCap != null ? 1 : 0;
+  return mcNext > mcPrev;
+}
+
+async function fetchBatch(
+  chain: string,
+  addresses: string[],
+  opts?: { deadlineMs?: number; timeoutMs?: number },
+): Promise<Map<string, FreshPrice>> {
   const map = new Map<string, FreshPrice>();
   if (!addresses.length) return map;
   const dexChain = DEXCHAIN[chain] ?? chain;
+  const timeoutMs = opts?.timeoutMs ?? 12_000;
 
   for (let i = 0; i < addresses.length; i += 30) {
+    if (opts?.deadlineMs != null && Date.now() > opts.deadlineMs) break;
     const slice = addresses.slice(i, i + 30);
     try {
       const resp = await fetch(
         `https://api.dexscreener.com/latest/dex/tokens/${slice.join(",")}`,
-        { signal: AbortSignal.timeout(12_000) },
+        { signal: AbortSignal.timeout(timeoutMs) },
       );
       if (!resp.ok) continue;
-      const json = await resp.json() as {
-        pairs?: Array<{
-          chainId: string;
-          dexId?: string;
-          baseToken: { address: string };
-          priceUsd?: string;
-          fdv?: number; marketCap?: number;
-          liquidity?: { usd?: number };
-          volume?: { h24?: number };
-          pairCreatedAt?: number;
-          info?: { imageUrl?: string };
-        }>;
-      };
+      const json = await resp.json() as { pairs?: DexPair[] };
 
-      // Group pairs by token address; prefer Raydium pairs for Solana tokens
-      const byAddr = new Map<string, NonNullable<typeof json.pairs>[number]>();
+      const byAddr = new Map<string, DexPair>();
       for (const pair of json.pairs ?? []) {
         if (pair.chainId !== dexChain || !pair.priceUsd) continue;
-        const addr = chain === "solana" ? pair.baseToken.address : pair.baseToken.address.toLowerCase();
+        const addr = chain === "solana"
+          ? pair.baseToken.address
+          : pair.baseToken.address.toLowerCase();
         const existing = byAddr.get(addr);
-        if (!existing || pair.dexId === "raydium") {
+        if (!existing || preferDexPair(pair, existing)) {
           byAddr.set(addr, pair);
         }
       }
 
       for (const [addr, pair] of byAddr) {
-        // Never fall back to FDV for marketCap — FDV = price × total supply (1B for pump.fun),
-        // not circulating MC. Migrated pump.fun tokens have no real marketCap on DexScreener;
-        // the PumpFun/CoinGecko fallback provides the correct circulating MC instead.
+        // Never fall back to FDV for marketCap — FDV = price × total supply (1B for pump.fun).
+        // PumpFun/CoinGecko fallbacks fill circulating MC when Dex omits it.
         const mc = pair.marketCap ?? null;
         map.set(addr, {
-          price:        pair.priceUsd!,
-          logo:         pair.info?.imageUrl ?? null,
+          price: pair.priceUsd!,
+          logo: pair.info?.imageUrl ?? null,
           marketCapUsd: mc !== null ? String(mc) : null,
-          fdvUsd:       pair.fdv !== undefined ? String(pair.fdv) : null,
+          fdvUsd: pair.fdv !== undefined ? String(pair.fdv) : null,
           liquidityUsd: pair.liquidity?.usd !== undefined ? String(pair.liquidity.usd) : null,
-          volume24hUsd: pair.volume?.h24   !== undefined ? String(pair.volume.h24)   : null,
+          volume24hUsd: pair.volume?.h24 !== undefined ? String(pair.volume.h24) : null,
           tokenCreatedAt: pair.pairCreatedAt ? clampTimestamp(pair.pairCreatedAt) : null,
         });
       }
@@ -177,12 +201,15 @@ interface PumpFunCoin {
   created_timestamp?: number;
 }
 
-export async function fetchPumpFun(address: string): Promise<FreshPrice | null> {
+export async function fetchPumpFun(
+  address: string,
+  opts?: { timeoutMs?: number },
+): Promise<FreshPrice | null> {
   try {
     const resp = await fetch(
       `https://frontend-api-v3.pump.fun/coins/${address}`,
       {
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(opts?.timeoutMs ?? 10_000),
         headers: {
           "Accept": "application/json",
           "User-Agent": "Mozilla/5.0 (compatible; Crypsor/1.0)",
@@ -323,12 +350,16 @@ async function persistFreshPrice(
   if (!fresh.price) return null;
 
   const curNum = parseFloat(fresh.price);
+  if (!Number.isFinite(curNum) || curNum <= 0) return null;
   const athNum = token.athPriceUsd ? parseFloat(token.athPriceUsd) : 0;
   const athMcNum = token.athMarketCapUsd ? parseFloat(token.athMarketCapUsd) : 0;
   const curMcNum = fresh.marketCapUsd ? parseFloat(fresh.marketCapUsd) : 0;
+  const safeAthNum = Number.isFinite(athNum) ? athNum : 0;
+  const safeAthMcNum = Number.isFinite(athMcNum) ? athMcNum : 0;
+  const safeCurMcNum = Number.isFinite(curMcNum) ? curMcNum : 0;
 
-  const newAth = curNum > athNum ? fresh.price : (token.athPriceUsd ?? fresh.price);
-  const newAthMc = curMcNum > athMcNum
+  const newAth = curNum > safeAthNum ? fresh.price : (token.athPriceUsd ?? fresh.price);
+  const newAthMc = safeCurMcNum > safeAthMcNum
     ? (fresh.marketCapUsd ?? null)
     : (token.athMarketCapUsd ?? fresh.marketCapUsd ?? null);
 
@@ -392,17 +423,20 @@ async function fetchAndApplyGroup(
   if (Date.now() > opts.deadlineMs) return ticks;
 
   const addrs = group.map(t => (chain === "solana" ? t.address : t.address.toLowerCase()));
-  const dexMap = await fetchBatch(chain, addrs);
+  const dexMap = await fetchBatch(chain, addrs, { deadlineMs: opts.deadlineMs });
 
-  const missingFromDex = chain === "solana"
-    ? group.filter(t => !dexMap.has(t.address))
+  // PumpFun for Dex misses OR Dex hits with price but no circulating MC
+  const needPump = chain === "solana"
+    ? group.filter((t) => {
+      const hit = dexMap.get(t.address);
+      return !hit || !hit.marketCapUsd;
+    })
     : [];
 
-  // Cap PumpFun fan-out — unbounded Promise.all was hanging the whole price loop
   const pfMap = new Map<string, FreshPrice>();
-  if (missingFromDex.length && Date.now() <= opts.deadlineMs) {
+  if (needPump.length && Date.now() <= opts.deadlineMs) {
     const pfResults = await mapPool(
-      missingFromDex.slice(0, 40),
+      needPump.slice(0, 40),
       PUMPFUN_CONCURRENCY,
       async (t) => {
         const r = await fetchPumpFun(t.address);
@@ -428,7 +462,15 @@ async function fetchAndApplyGroup(
   const pending: Array<{ token: TrackedPriceRow; fresh: FreshPrice | Partial<FreshPrice> }> = [];
   for (const token of group) {
     const key = chain === "solana" ? token.address : token.address.toLowerCase();
-    const fresh = dexMap.get(key) ?? pfMap.get(key) ?? cgMap.get(key);
+    const dex = dexMap.get(key);
+    const pf = pfMap.get(key);
+    const cg = cgMap.get(key);
+    // Prefer source that has circulating MC; else first price hit
+    let fresh: FreshPrice | Partial<FreshPrice> | undefined;
+    if (dex?.marketCapUsd) fresh = dex;
+    else if (pf?.marketCapUsd) fresh = pf;
+    else if (cg?.marketCapUsd) fresh = cg;
+    else fresh = dex ?? pf ?? cg;
     if (!fresh?.price) continue;
     pending.push({ token, fresh });
   }
@@ -462,7 +504,7 @@ function emitDeskPrices(ticks: DeskTick[]): void {
 
 /**
  * Overlay live DexScreener/PumpFun MC onto the visible Calls page.
- * Bypasses stale DB/cache so Waiting/Latest always show near-live caps.
+ * Hard time budget — on timeout, returns DB values (never stalls the desk).
  */
 export async function overlayLiveMarketCaps<T extends {
   id: number;
@@ -476,68 +518,91 @@ export async function overlayLiveMarketCaps<T extends {
   athMultiple: number;
 }>(cards: T[]): Promise<T[]> {
   if (!cards.length) return cards;
+  const deadlineMs = Date.now() + OVERLAY_BUDGET_MS;
 
-  const byChain = new Map<string, T[]>();
-  for (const c of cards) {
-    const chain = c.chain || "solana";
-    if (!byChain.has(chain)) byChain.set(chain, []);
-    byChain.get(chain)!.push(c);
-  }
-
-  const liveById = new Map<number, FreshPrice>();
-  for (const [chain, group] of byChain) {
-    const addrs = group.map(c => (chain === "solana" ? c.address : c.address.toLowerCase()));
-    const dexMap = await fetchBatch(chain, addrs);
-    const missing = chain === "solana"
-      ? group.filter(c => !dexMap.has(c.address)).slice(0, 12)
-      : [];
-    const pf = await mapPool(missing, 4, async (c) => {
-      const r = await fetchPumpFun(c.address);
-      return { id: c.id, address: c.address, r };
-    });
-    for (const c of group) {
-      const key = chain === "solana" ? c.address : c.address.toLowerCase();
-      const fresh = dexMap.get(key) ?? pf.find(p => p.address === c.address)?.r ?? null;
-      if (fresh?.price) liveById.set(c.id, fresh);
+  try {
+    const byChain = new Map<string, T[]>();
+    for (const c of cards) {
+      const chain = c.chain || "solana";
+      if (!byChain.has(chain)) byChain.set(chain, []);
+      byChain.get(chain)!.push(c);
     }
-  }
 
-  if (!liveById.size) return cards;
+    const liveById = new Map<number, FreshPrice>();
+    for (const [chain, group] of byChain) {
+      if (Date.now() > deadlineMs) break;
+      const addrs = group.map(c => (chain === "solana" ? c.address : c.address.toLowerCase()));
+      const dexMap = await fetchBatch(chain, addrs, {
+        deadlineMs,
+        timeoutMs: 2_000,
+      });
 
-  // Persist in background — response uses live numbers immediately
-  void (async () => {
-    try {
-      for (const [tokenId, fresh] of liveById) {
-        const card = cards.find(c => c.id === tokenId);
-        if (!card || !fresh.price) continue;
-        await db.update(tracked_tokens).set({
-          currentPriceUsd: fresh.price,
-          priceUpdatedAt: new Date(),
-          ...(fresh.marketCapUsd ? { marketCapUsd: fresh.marketCapUsd } : {}),
-          ...(fresh.liquidityUsd ? { liquidityUsd: fresh.liquidityUsd } : {}),
-          ...(fresh.volume24hUsd ? { volume24hUsd: fresh.volume24hUsd } : {}),
-        }).where(eq(tracked_tokens.id, tokenId));
+      const needPump = chain === "solana"
+        ? group.filter((c) => {
+          const hit = dexMap.get(c.address);
+          return !hit || !hit.marketCapUsd;
+        }).slice(0, 12)
+        : [];
+      const pfRows = needPump.length && Date.now() <= deadlineMs
+        ? await mapPool(needPump, 4, async (c) => {
+          const r = await fetchPumpFun(c.address, { timeoutMs: 1_500 });
+          return { id: c.id, address: c.address, r };
+        })
+        : [];
+      const pfByAddr = new Map(
+        pfRows.filter(p => p.r).map(p => [p.address, p.r!] as const),
+      );
+
+      for (const c of group) {
+        const key = chain === "solana" ? c.address : c.address.toLowerCase();
+        const dex = dexMap.get(key);
+        const pf = pfByAddr.get(c.address);
+        const fresh = (dex?.marketCapUsd ? dex : null)
+          ?? (pf?.marketCapUsd ? pf : null)
+          ?? dex
+          ?? pf
+          ?? null;
+        if (fresh?.price) liveById.set(c.id, fresh);
       }
-      scheduleCacheInvalidate();
-    } catch { /* never break feed */ }
-  })();
-
-  return cards.map((c) => {
-    const fresh = liveById.get(c.id);
-    if (!fresh?.marketCapUsd && !fresh?.price) return c;
-    const currentMcUsd = fresh.marketCapUsd != null
-      ? parseFloat(fresh.marketCapUsd)
-      : c.currentMcUsd;
-    if (currentMcUsd == null || !Number.isFinite(currentMcUsd)) return c;
-    const called = c.calledMcUsd;
-    let gainPct = c.gainPct;
-    let nowMultiple = c.nowMultiple;
-    if (called != null && called > 0) {
-      nowMultiple = Math.round((currentMcUsd / called) * 100) / 100;
-      gainPct = ((currentMcUsd - called) / called) * 100;
     }
-    return { ...c, currentMcUsd, gainPct, nowMultiple };
-  });
+
+    if (!liveById.size) return cards;
+
+    // Persist in background — response uses live numbers immediately
+    void (async () => {
+      try {
+        await mapPool([...liveById.entries()], 8, async ([tokenId, fresh]) => {
+          if (!fresh.price) return;
+          await db.update(tracked_tokens).set({
+            currentPriceUsd: fresh.price,
+            priceUpdatedAt: new Date(),
+            ...(fresh.marketCapUsd ? { marketCapUsd: fresh.marketCapUsd } : {}),
+            ...(fresh.liquidityUsd ? { liquidityUsd: fresh.liquidityUsd } : {}),
+            ...(fresh.volume24hUsd ? { volume24hUsd: fresh.volume24hUsd } : {}),
+          }).where(eq(tracked_tokens.id, tokenId));
+        });
+        scheduleCacheInvalidate();
+      } catch { /* never break feed */ }
+    })();
+
+    return cards.map((c) => {
+      const fresh = liveById.get(c.id);
+      if (!fresh) return c;
+      const parsedMc = fresh.marketCapUsd != null ? parseFloat(fresh.marketCapUsd) : NaN;
+      const currentMcUsd = Number.isFinite(parsedMc) ? parsedMc : c.currentMcUsd;
+      if (currentMcUsd == null || !Number.isFinite(currentMcUsd)) return c;
+      const called = c.calledMcUsd;
+      let gainPct = c.gainPct;
+      let nowMultiple = c.nowMultiple;
+      if (called != null && called > 0) {
+        nowMultiple = Math.round((currentMcUsd / called) * 100) / 100;
+        gainPct = ((currentMcUsd - called) / called) * 100;
+      }
+      return { ...c, currentMcUsd, gainPct, nowMultiple };
+    });
+  } catch {
+    return cards;
+  }
 }
 
 // ── Main refresh cycle ────────────────────────────────────────────────────────
@@ -562,7 +627,9 @@ export async function refreshAllPrices(): Promise<void> {
         athMarketCapUsd: tracked_tokens.athMarketCapUsd,
       })
       .from(tracked_tokens)
-      .where(inArray(tracked_tokens.status, [...HOT_STATUSES]));
+      .where(inArray(tracked_tokens.status, [...HOT_STATUSES]))
+      .orderBy(sql`${tracked_tokens.priceUpdatedAt} ASC NULLS FIRST`)
+      .limit(HOT_BATCH);
 
     let tokens: TrackedPriceRow[] = hotTokens;
     if (wantCold) {
