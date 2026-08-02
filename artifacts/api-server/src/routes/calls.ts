@@ -15,6 +15,7 @@ import { proCacheGet, proCacheSet, toIsoUtc } from "../lib/pro-cache";
 import { extractSocials } from "../lib/socials";
 import { computeCallQuality, type CallQualityLabel } from "../lib/call-quality";
 import { convictionFieldsFromVerified } from "../lib/pro-confidence";
+import { overlayLiveMarketCaps } from "../pipeline/price-service";
 import {
   computeRunnerScore,
   MIN_ENTRY_OBSERVATION_SNAPS,
@@ -935,7 +936,9 @@ router.get("/calls/feed", async (req, res) => {
       const filtered = applyFeedFilters(pack.cards, filters);
       // Waiting always latest-called (already sorted)
       const pagePack = paginateCards(filtered, page, limit);
-      res.setHeader("Cache-Control", "private, max-age=4");
+      // Live Dex/PumpFun overlay — bypasses stale DB/cache MC on the visible page
+      pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+      res.setHeader("Cache-Control", "private, no-cache");
       res.json(apiOk({
         ...pagePack,
         universe: pack.pendingFirstCalls,
@@ -977,8 +980,9 @@ router.get("/calls/feed", async (req, res) => {
 
     out = applyFeedFilters(out, filters);
     const pagePack = paginateCards(out, page, limit);
+    pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
 
-    res.setHeader("Cache-Control", "private, max-age=4");
+    res.setHeader("Cache-Control", "private, no-cache");
     res.json(apiOk({
       ...pagePack,
       universe,
@@ -999,7 +1003,8 @@ router.get("/calls/waiting", async (req, res) => {
     const pack = await loadWaitingCalls(200);
     const filtered = applyFeedFilters(pack.cards, filters);
     const pagePack = paginateCards(filtered, page, limit);
-    res.setHeader("Cache-Control", "private, max-age=4");
+    pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+    res.setHeader("Cache-Control", "private, no-cache");
     res.json(apiOk({
       ...pagePack,
       pendingFirstCalls: pack.pendingFirstCalls,
