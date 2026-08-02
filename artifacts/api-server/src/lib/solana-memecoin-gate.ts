@@ -59,8 +59,11 @@ export const MAX_ABSURD_MC_USD = 50_000_000;
  * Alerts are MC-agnostic; this only keeps majors out of the radar pool.
  */
 export const MAX_PRO_ENTRY_MC_USD = 150_000;
-/** Pro min liquidity when known (at call). $8K starved the $5–15K MC band. */
-export const MIN_PRO_LIQ_USD = 4_500;
+/**
+ * Pro min liquidity when known (at call).
+ * $4.5K was rejecting the live $4.3–4.4K band that dominates early SOL memes.
+ */
+export const MIN_PRO_LIQ_USD = 3_500;
 
 export type MemecoinGateResult = {
   ok: boolean;

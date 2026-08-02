@@ -178,6 +178,41 @@ function parseSentTiers(raw: string | null | undefined): Set<number> {
   );
 }
 
+const SAFE_RUNNER_PHASES = new Set<RunnerPhase>([
+  "radar", "heating", "entry", "fading", "dead",
+]);
+
+function safeRunnerPhase(phase: string | null | undefined): RunnerPhase {
+  if (phase && SAFE_RUNNER_PHASES.has(phase as RunnerPhase)) return phase as RunnerPhase;
+  return "radar";
+}
+
+/** Persist sticky phase — never throw out of the alert loop. */
+async function persistRunnerPhase(
+  proCallId: number,
+  score: number,
+  phase: string,
+): Promise<boolean> {
+  const safe = safeRunnerPhase(phase);
+  try {
+    await db.execute(sql`
+      UPDATE pro_calls
+      SET runner_score = ${score},
+          runner_phase = ${safe}
+      WHERE id = ${proCallId}
+    `);
+    return true;
+  } catch (err) {
+    log.warn({ err, proCallId, phase: safe, score }, "Runner phase persist failed");
+    opsLog("runner", "warn", `Phase persist fail · #${proCallId} · ${safe}`, {
+      proCallId,
+      phase: safe,
+      err: String(err).slice(0, 120),
+    });
+    return false;
+  }
+}
+
 function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
   const calledMc = parseFloat(t.calledMcUsd ?? "0") || 0;
   const currentMc = parseFloat(t.currentMc ?? "0") || 0;
@@ -188,7 +223,7 @@ function evaluateRunner(t: ProAlertToken): RunnerScoreResult {
   const vw = convictionFieldsFromVerified(t.verifiedWallets);
   const lastSnapMc = parseFloat(t.lastSnapMcUsd ?? "") || calledMc || currentMc;
   const snapDeltaPct = lastSnapMc > 0 ? (currentMc - lastSnapMc) / lastSnapMc : null;
-  const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
+  const prevPhase = safeRunnerPhase(t.runnerPhase);
   const prevScore = t.runnerScore != null ? Number(t.runnerScore) : null;
   const snapCount = Math.max(0, Number(t.snapCount ?? 0) || 0);
 
@@ -420,133 +455,140 @@ async function checkAndAlert(): Promise<void> {
       break;
     }
 
-    // Telegram ENTRY once (runner_alert_sent_at). In-app-only marks must not
-    // block Telegram after push is re-enabled.
-    const alreadyTelegram = Boolean(t.runnerAlertSentAt);
-    const alreadyInAppOnly = Boolean(t.callAlertSentAt) && !t.runnerAlertSentAt;
+    try {
+      // Telegram ENTRY once (runner_alert_sent_at). In-app-only marks must not
+      // block Telegram after push is re-enabled.
+      const alreadyTelegram = Boolean(t.runnerAlertSentAt);
+      const alreadyInAppOnly = Boolean(t.callAlertSentAt) && !t.runnerAlertSentAt;
 
-    if (!alreadyTelegram) {
-      const prevPhase = (t.runnerPhase as RunnerPhase | null) ?? "radar";
-      const runner = evaluateRunner(t);
-      // Carry label change onto the snapshot tape before overwriting pro_calls
-      if (runner.phaseChanged) {
+      if (!alreadyTelegram) {
+        const prevPhase = safeRunnerPhase(t.runnerPhase);
+        const runner = evaluateRunner(t);
+        const phase = safeRunnerPhase(runner.phase);
+        // Carry label change onto the snapshot tape before overwriting pro_calls
+        if (runner.phaseChanged) {
+          try {
+            await carryPhaseTransitionSnap(t, runner, prevPhase);
+            const nextCount = Math.max(0, Number(t.snapCount ?? 0) || 0) + 1;
+            await db.execute(sql`
+              UPDATE pro_calls
+              SET last_snapshot_at = NOW(),
+                  last_snap_mc_usd = ${String(parseFloat(t.currentMc ?? "0") || 0)},
+                  observation_snap_count = GREATEST(COALESCE(observation_snap_count, 0), ${nextCount})
+              WHERE id = ${t.proCallId}
+            `);
+            t.snapCount = nextCount;
+          } catch (err) {
+            log.warn({ err, proCallId: t.proCallId }, "Runner transition snap failed");
+          }
+        }
+        // Persist sticky phase even when not alerting — never abort the cycle
+        await persistRunnerPhase(t.proCallId, runner.score, phase);
+
+        // Best Calls desk scoring always; Telegram when push enabled + creds.
+        const snapsOk = observationReady(t.snapCount) && runner.signals.observationReady;
+        if (!runner.alertEligible || !snapsOk || phase !== "entry") {
+          if (phase === "entry" || safeRunnerPhase(runner.rawPhase) === "entry") {
+            opsLog(
+              "runner",
+              "info",
+              `Hold ENTRY · ${t.symbol ?? "?"} · snaps ${runner.signals.snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS}`,
+              {
+                proCallId: t.proCallId,
+                blockers: runner.blockers,
+                alertEligible: runner.alertEligible,
+                snapCount: runner.signals.snapCount,
+              },
+            );
+          }
+          skipped++;
+          continue;
+        }
+
+        // Mute path: mark in-app only (never blocks later Telegram if push turns on)
+        if (!creds) {
+          if (!alreadyInAppOnly) {
+            try {
+              await db.execute(sql`
+                UPDATE pro_calls
+                SET call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
+                    runner_score = ${runner.score},
+                    runner_phase = ${phase}
+                WHERE id = ${t.proCallId}
+              `);
+              opsLog("runner", "info", `In-app ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+                velocity: runner.signals.velocity,
+                phase,
+                push: false,
+              });
+              entrySent++;
+            } catch (err) {
+              log.warn({ err, proCallId: t.proCallId }, "In-app ENTRY mark failed");
+            }
+          }
+          skipped++;
+          continue;
+        }
+
         try {
-          await carryPhaseTransitionSnap(t, runner, prevPhase);
-          const nextCount = Math.max(0, Number(t.snapCount ?? 0) || 0) + 1;
+          await sendTelegram(creds, buildEntryMessage(t, runner));
           await db.execute(sql`
             UPDATE pro_calls
-            SET last_snapshot_at = NOW(),
-                last_snap_mc_usd = ${String(parseFloat(t.currentMc ?? "0") || 0)},
-                observation_snap_count = GREATEST(COALESCE(observation_snap_count, 0), ${nextCount})
-            WHERE id = ${t.proCallId}
-          `);
-          t.snapCount = nextCount;
-        } catch (err) {
-          log.warn({ err, proCallId: t.proCallId }, "Runner transition snap failed");
-        }
-      }
-      // Persist sticky phase even when not alerting
-      await db.execute(sql`
-        UPDATE pro_calls
-        SET runner_score = ${runner.score},
-            runner_phase = ${runner.phase}
-        WHERE id = ${t.proCallId}
-      `);
-
-      // Best Calls desk scoring always; Telegram when push enabled + creds.
-      const snapsOk = observationReady(t.snapCount) && runner.signals.observationReady;
-      if (!runner.alertEligible || !snapsOk || runner.phase !== "entry") {
-        if (runner.phase === "entry" || runner.rawPhase === "entry") {
-          opsLog(
-            "runner",
-            "info",
-            `Hold ENTRY · ${t.symbol ?? "?"} · snaps ${runner.signals.snapCount}/${MIN_ENTRY_OBSERVATION_SNAPS}`,
-            {
-              proCallId: t.proCallId,
-              blockers: runner.blockers,
-              alertEligible: runner.alertEligible,
-              snapCount: runner.signals.snapCount,
-            },
-          );
-        }
-        skipped++;
-        continue;
-      }
-
-      // Mute path: mark in-app only (never blocks later Telegram if push turns on)
-      if (!creds) {
-        if (!alreadyInAppOnly) {
-          await db.execute(sql`
-            UPDATE pro_calls
-            SET call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
+            SET runner_alert_sent_at = NOW(),
+                call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
                 runner_score = ${runner.score},
-                runner_phase = ${runner.phase}
-            WHERE id = ${t.proCallId}
+                runner_phase = ${phase}
+            WHERE id = ${t.proCallId} AND runner_alert_sent_at IS NULL
           `);
-          opsLog("runner", "info", `In-app ENTRY · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
-            velocity: runner.signals.velocity,
-            phase: runner.phase,
-            push: false,
-          });
           entrySent++;
+          sends++;
+          log.info(
+            { proCallId: t.proCallId, symbol: t.symbol, runner: runner.score, phase },
+            "Best Call Telegram ENTRY sent",
+          );
+          opsLog("telegram", "info", `Best Call · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
+            velocity: runner.signals.velocity,
+            phase,
+          });
+          await new Promise(r => setTimeout(r, 350));
+        } catch (err) {
+          log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "Best Call Telegram ENTRY failed");
+          opsLog("telegram", "error", `ENTRY failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
         }
-        skipped++;
         continue;
       }
 
-      try {
-        await sendTelegram(creds, buildEntryMessage(t, runner));
-        await db.execute(sql`
-          UPDATE pro_calls
-          SET runner_alert_sent_at = NOW(),
-              call_alert_sent_at = COALESCE(call_alert_sent_at, NOW()),
-              runner_score = ${runner.score},
-              runner_phase = ${runner.phase}
-          WHERE id = ${t.proCallId} AND runner_alert_sent_at IS NULL
-        `);
-        entrySent++;
-        sends++;
-        log.info(
-          { proCallId: t.proCallId, symbol: t.symbol, runner: runner.score, phase: runner.phase },
-          "Best Call Telegram ENTRY sent",
-        );
-        opsLog("telegram", "info", `Best Call · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
-          velocity: runner.signals.velocity,
-          phase: runner.phase,
-        });
-        await new Promise(r => setTimeout(r, 350));
-      } catch (err) {
-        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol }, "Best Call Telegram ENTRY failed");
-        opsLog("telegram", "error", `ENTRY failed · ${t.symbol ?? "?"}: ${String(err).slice(0, 160)}`);
+      if (!creds) continue;
+
+      const athX = t.athMultiple ?? 1;
+      const already = parseSentTiers(t.milestoneAlertsSent);
+      const due = ALERT_MILESTONES.filter(tier => athX >= tier && !already.has(tier));
+
+      for (const tier of due) {
+        try {
+          await sendTelegram(creds, buildMilestoneMessage(t, tier));
+          already.add(tier);
+          const joined = [...already].sort((a, b) => a - b).join(",");
+          await db.execute(sql`
+            UPDATE pro_calls
+            SET milestone_alerts_sent = ${joined}
+            WHERE id = ${t.proCallId}
+          `);
+          milestoneSent++;
+          sends++;
+          opsLog("telegram", "info", `Milestone ${tier}× · ${t.symbol ?? "?"}`, { athX });
+          if (sends >= MAX_SENDS_PER_CYCLE) break;
+          await new Promise(r => setTimeout(r, 350));
+        } catch (err) {
+          log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");
+          break;
+        }
       }
-      continue;
-    }
-
-    if (!creds) continue;
-
-    const athX = t.athMultiple ?? 1;
-    const already = parseSentTiers(t.milestoneAlertsSent);
-    const due = ALERT_MILESTONES.filter(tier => athX >= tier && !already.has(tier));
-
-    for (const tier of due) {
-      try {
-        await sendTelegram(creds, buildMilestoneMessage(t, tier));
-        already.add(tier);
-        const joined = [...already].sort((a, b) => a - b).join(",");
-        await db.execute(sql`
-          UPDATE pro_calls
-          SET milestone_alerts_sent = ${joined}
-          WHERE id = ${t.proCallId}
-        `);
-        milestoneSent++;
-        sends++;
-        opsLog("telegram", "info", `Milestone ${tier}× · ${t.symbol ?? "?"}`, { athX });
-        if (sends >= MAX_SENDS_PER_CYCLE) break;
-        await new Promise(r => setTimeout(r, 350));
-      } catch (err) {
-        log.warn({ err, tokenId: t.tokenId, symbol: t.symbol, tier }, "Milestone alert failed");
-        break;
-      }
+    } catch (err) {
+      // One bad row must never kill ENTRY / milestone scoring for the rest.
+      log.warn({ err, proCallId: t.proCallId, symbol: t.symbol }, "Alert token cycle failed");
+      opsLog("runner", "warn", `Alert skip · ${t.symbol ?? "#"+t.proCallId}: ${String(err).slice(0, 120)}`);
+      skipped++;
     }
   }
 

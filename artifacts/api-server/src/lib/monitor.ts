@@ -305,30 +305,45 @@ async function recordBuy(opts: {
   priceUsd?: string | null; amount?: string | null;
   txHash?: string | null; boughtAt?: Date;
 }): Promise<boolean> {
-  if (opts.txHash) {
-    // Dedup by tx globally and by wallet+token+tx (same buy path)
-    const dup = await db.select({ id: token_buys.id }).from(token_buys)
-      .where(eq(token_buys.txHash, opts.txHash)).limit(1);
-    if (dup.length > 0) return false;
-  } else if (opts.boughtAt) {
-    // No signature — soft-dedup same wallet/token within 2s window
-    const windowStart = new Date(opts.boughtAt.getTime() - 2_000);
-    const windowEnd = new Date(opts.boughtAt.getTime() + 2_000);
-    const dup = await db.select({ id: token_buys.id }).from(token_buys)
-      .where(and(
-        eq(token_buys.walletId, opts.walletId),
-        eq(token_buys.tokenId, opts.tokenId),
-        gte(token_buys.boughtAt, windowStart),
-        lte(token_buys.boughtAt, windowEnd),
-      )).limit(1);
-    if (dup.length > 0) return false;
+  try {
+    if (opts.txHash) {
+      // Dedup by tx globally and by wallet+token+tx (same buy path)
+      const dup = await db.select({ id: token_buys.id }).from(token_buys)
+        .where(eq(token_buys.txHash, opts.txHash)).limit(1);
+      if (dup.length > 0) return false;
+    } else if (opts.boughtAt) {
+      // No signature — soft-dedup same wallet/token within 2s window
+      const windowStart = new Date(opts.boughtAt.getTime() - 2_000);
+      const windowEnd = new Date(opts.boughtAt.getTime() + 2_000);
+      const dup = await db.select({ id: token_buys.id }).from(token_buys)
+        .where(and(
+          eq(token_buys.walletId, opts.walletId),
+          eq(token_buys.tokenId, opts.tokenId),
+          gte(token_buys.boughtAt, windowStart),
+          lte(token_buys.boughtAt, windowEnd),
+        )).limit(1);
+      if (dup.length > 0) return false;
+    }
+    await db.insert(token_buys).values({
+      walletId: opts.walletId, tokenId: opts.tokenId,
+      priceUsd: opts.priceUsd ?? null, amount: opts.amount ?? null,
+      txHash: opts.txHash ?? null, boughtAt: opts.boughtAt ?? new Date(),
+    });
+    return true;
+  } catch (err) {
+    // Transient DB blips (connection drop mid-dedup) must not fail the whole wallet scan.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/duplicate|unique/i.test(msg)) return false;
+    logger.warn(
+      { err: msg.slice(0, 180), walletId: opts.walletId, tokenId: opts.tokenId },
+      "recordBuy failed — skip tx, continue scan",
+    );
+    opsLog("helius", "warn", `Buy record fail · wallet ${opts.walletId}`, {
+      tokenId: opts.tokenId,
+      err: msg.slice(0, 100),
+    });
+    return false;
   }
-  await db.insert(token_buys).values({
-    walletId: opts.walletId, tokenId: opts.tokenId,
-    priceUsd: opts.priceUsd ?? null, amount: opts.amount ?? null,
-    txHash: opts.txHash ?? null, boughtAt: opts.boughtAt ?? new Date(),
-  });
-  return true;
 }
 
 // ── Per-chain scanners ────────────────────────────────────────────────────────

@@ -43,11 +43,12 @@ const log = logger.child({ module: "pro-scanner" });
 const SCAN_INTERVAL_MS = 60_000;
 const STARTUP_DELAY_MS = 12_000;
 
-const MIN_INTEL = 80;
+/** Intake intel floor — surface still uses SURFACE_* bars after scoring. */
+const MIN_INTEL = 68;
 const MIN_MC = 5_000;
 const MAX_MC = MAX_PRO_ENTRY_MC_USD; // hard cap — late / major entries out
 /** Cap live GMGN verifies per full cycle to stay under rate limits. */
-const MAX_VERIFY_PER_CYCLE = 12;
+const MAX_VERIFY_PER_CYCLE = 18;
 /** Surface / alert bar — precision over volume. */
 const SURFACE_VERY_GOOD = 75;
 const SURFACE_GOOD_STRICT = 68;
@@ -75,18 +76,34 @@ function gateTrack(
   smart: number,
   smartHoldRate: number | null,
 ): "very_strong" | null {
-  // Soft tagged presence: smart OR KOL — bots dump; we only need a radar tag.
+  // Soft tagged presence: smart OR KOL — bots dump; Runner confirms later.
   if (smart < 1 && kol < 1) return null;
-  // Weak single-smart hold still allowed (Runner momentum confirms later).
   if (intel >= MIN_INTEL) return "very_strong";
-  if (intel >= 75 && (smart >= 1 || kol >= 1)) return "very_strong";
+  if (intel >= 60 && (smart >= 1 || kol >= 1)) return "very_strong";
   void smartHoldRate;
   return null;
 }
 
+/**
+ * Radar counts for intake: prefer currently-holding, soft-fall back to tag totals.
+ * Sold-out tags alone still need MIN_INTEL; Runner/ENTRY remains momentum-gated.
+ */
+function radarCounts(verify: GmgnProVerifyResult | null): { kol: number; smart: number } {
+  if (!verify?.ok) return { kol: 0, smart: 0 };
+  const holdKol = verify.holdingKol ?? 0;
+  const holdSmart = verify.holdingSmart ?? 0;
+  if (holdKol >= 1 || holdSmart >= 1) {
+    return { kol: holdKol, smart: holdSmart };
+  }
+  return {
+    kol: Math.max(0, verify.kolCount ?? 0),
+    smart: Math.max(0, verify.smartCount ?? 0),
+  };
+}
+
+/** @deprecated alias — holding-only path kept for upgrade helpers */
 function holdingCounts(verify: GmgnProVerifyResult | null): { kol: number; smart: number } {
   if (!verify?.ok) return { kol: 0, smart: 0 };
-  // Never fall back to tag totals — sold-out smart must not qualify.
   return { kol: verify.holdingKol, smart: verify.holdingSmart };
 }
 
@@ -279,7 +296,18 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
       continue;
     }
 
-    const held = holdingCounts(verify);
+    let held = radarCounts(verify);
+    // Soft sensor: our tracked wallets bought it — enough for radar intake when GMGN tags lag.
+    if (held.kol < 1 && held.smart < 1 && c.intelligence_score >= MIN_INTEL) {
+      try {
+        const buyN = await db.execute(sql`
+          SELECT COUNT(DISTINCT wallet_id)::int AS n
+          FROM token_buys WHERE token_id = ${c.token_id}
+        `);
+        const n = Number((buyN.rows[0] as { n?: number } | undefined)?.n ?? 0);
+        if (n >= 1) held = { kol: 0, smart: Math.max(1, n) };
+      } catch { /* keep empty */ }
+    }
     const kol = held.kol;
     const smart = held.smart;
     const smartHoldRate = verify.smartConviction?.holdRate ?? null;
@@ -289,6 +317,10 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
         tokenId: c.token_id,
         intel: c.intelligence_score,
         smartHoldRate,
+        holdingKol: verify.holdingKol,
+        holdingSmart: verify.holdingSmart,
+        tagKol: verify.kolCount,
+        tagSmart: verify.smartCount,
       });
       continue;
     }
