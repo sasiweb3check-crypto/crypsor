@@ -332,42 +332,78 @@ body {
 }
 .dex-news-row:last-child { border-bottom: none; }
 
-/* Token table desk */
+/* Token table desk — fixed layout so mobile never bleeds past viewport */
 .tok-table-wrap {
   width: 100%;
-  overflow-x: auto;
+  max-width: 100%;
+  overflow-x: hidden;
   border-radius: 12px;
   border: 1px solid var(--cryp-line);
   background: rgba(12, 20, 28, 0.88);
 }
 .tok-table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
-  min-width: 320px;
+  table-layout: fixed;
 }
 .tok-th {
   text-align: left;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cryp-mute);
-  padding: 0.55rem 0.55rem;
+  padding: 0.4rem 0.25rem;
   border-bottom: 1px solid var(--cryp-line);
   white-space: nowrap;
   position: sticky;
   top: 0;
   background: rgba(8, 14, 20, 0.96);
 }
-.tok-th-num { text-align: right; }
-.tok-th-token { width: 46%; }
+.tok-th-num { text-align: right; width: 15%; }
+.tok-th-token { width: 42%; }
+.tok-th-link { text-align: center; width: 13%; }
 .tok-td {
-  padding: 0.55rem 0.55rem;
+  padding: 0.4rem 0.25rem;
   border-bottom: 1px solid rgba(125, 180, 170, 0.06);
   vertical-align: middle;
-  font-size: 12px;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.tok-td-token { max-width: 0; }
 .tok-td-num { text-align: right; white-space: nowrap; }
+.tok-td-link { text-align: center; width: 13%; }
+.tok-gain-main { display: block; line-height: 1.15; }
+.tok-gain-sub {
+  display: block;
+  font-size: 9px;
+  opacity: 0.7;
+  line-height: 1.2;
+}
+.tok-gmgn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 0.35rem;
+  border-radius: 8px;
+  border: 1px solid var(--cryp-line);
+  color: var(--cryp-mint);
+}
+.tok-gmgn:hover {
+  background: rgba(61, 154, 139, 0.12);
+  border-color: rgba(61, 154, 139, 0.45);
+}
+.tok-gmgn-label {
+  display: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
 .tok-row {
   cursor: pointer;
   transition: background 0.12s ease;
@@ -375,8 +411,8 @@ body {
 .tok-row:hover { background: rgba(61, 154, 139, 0.07); }
 .tok-row:last-child .tok-td { border-bottom: none; }
 .tok-thumb {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: 999px;
   object-fit: cover;
   flex-shrink: 0;
@@ -503,7 +539,15 @@ body {
   color: var(--cryp-mute);
 }
 
+@media (min-width: 480px) {
+  .tok-gmgn-label { display: inline; }
+  .tok-th-link, .tok-td-link { width: 14%; }
+}
+
 @media (min-width: 640px) {
-  .tok-th, .tok-td { padding: 0.65rem 0.75rem; }
-  .tok-thumb { width: 36px; height: 36px; }
+  .tok-th, .tok-td { padding: 0.6rem 0.65rem; font-size: 12px; }
+  .tok-thumb { width: 34px; height: 34px; }
+  .tok-th-token { width: 42%; }
+  .tok-th-num { width: 15%; }
+  .tok-th-link, .tok-td-link { width: 13%; }
 }

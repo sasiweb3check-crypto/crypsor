@@ -25,6 +25,7 @@ import {
 } from "../lib/runner-score";
 import { convictionFieldsFromVerified } from "../lib/pro-confidence";
 import { isTelegramPushEnabled, telegramPushEnvMuted } from "../lib/telegram-push";
+import { eventBus } from "./event-bus";
 
 const log = logger.child({ module: "caller-alerts" });
 
@@ -522,6 +523,13 @@ async function checkAndAlert(): Promise<void> {
                 push: false,
               });
               entrySent++;
+              eventBus.emit("calls:changed", {
+                reason: "entry",
+                tokenId: t.tokenId,
+                symbol: t.symbol,
+                qualityLabel: t.qualityLabel,
+                at: new Date().toISOString(),
+              });
             } catch (err) {
               log.warn({ err, proCallId: t.proCallId }, "In-app ENTRY mark failed");
             }
@@ -549,6 +557,13 @@ async function checkAndAlert(): Promise<void> {
           opsLog("telegram", "info", `Best Call · ${t.symbol ?? t.address.slice(0, 6)} · ${runner.score}`, {
             velocity: runner.signals.velocity,
             phase,
+          });
+          eventBus.emit("calls:changed", {
+            reason: "entry",
+            tokenId: t.tokenId,
+            symbol: t.symbol,
+            qualityLabel: t.qualityLabel,
+            at: new Date().toISOString(),
           });
           await new Promise(r => setTimeout(r, 350));
         } catch (err) {

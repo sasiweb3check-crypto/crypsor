@@ -111,6 +111,17 @@ export function startSseGateway(): void {
     broadcast("feed:event", evt);
   });
 
+  // Waiting / Best desk — push immediately so clients invalidate feed caches
+  eventBus.on("calls:changed", (evt) => {
+    broadcast("calls:changed", {
+      reason: evt.reason,
+      tokenId: evt.tokenId,
+      symbol: evt.symbol ?? null,
+      qualityLabel: evt.qualityLabel ?? null,
+      at: evt.at ?? new Date().toISOString(),
+    });
+  });
+
   logger.info("SSE gateway started");
 }
 
