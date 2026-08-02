@@ -53,6 +53,19 @@ const MAX_VERIFY_PER_CYCLE = 18;
 const SURFACE_VERY_GOOD = 75;
 const SURFACE_GOOD_STRICT = 68;
 
+function emitCallsChanged(
+  reason: "insert" | "surface" | "score",
+  opts?: { tokenId?: number; symbol?: string | null; qualityLabel?: string | null },
+) {
+  eventBus.emit("calls:changed", {
+    reason,
+    tokenId: opts?.tokenId,
+    symbol: opts?.symbol ?? null,
+    qualityLabel: opts?.qualityLabel ?? null,
+    at: new Date().toISOString(),
+  });
+}
+
 type Candidate = {
   token_id: number;
   address: string;
@@ -369,6 +382,10 @@ async function qualifyCandidates(candidates: Candidate[]): Promise<{
         source: "gmgn_live",
         mc: liveMc,
       });
+      emitCallsChanged("insert", {
+        tokenId: c.token_id,
+        symbol: c.symbol,
+      });
     }
   }
 
@@ -644,6 +661,7 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
           : result.score;
 
         if (finalSurface) {
+          const wasNew = !alreadySurfaced;
           await db.execute(sql`
             UPDATE pro_calls
             SET
@@ -658,6 +676,14 @@ async function scoreAndSurfacePending(tokenId?: number): Promise<number> {
               surfaced_mc_usd = COALESCE(surfaced_mc_usd, ${surfacedMc})
             WHERE id = ${callId}
           `);
+          // Only ping clients on first surface — rescoring would flood SSE
+          if (wasNew) {
+            emitCallsChanged("surface", {
+              tokenId: Number(r.token_id),
+              symbol: r.symbol != null ? String(r.symbol) : null,
+              qualityLabel,
+            });
+          }
         } else {
           await db.execute(sql`
             UPDATE pro_calls
