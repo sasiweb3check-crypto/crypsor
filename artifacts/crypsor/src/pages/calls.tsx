@@ -399,25 +399,25 @@ export default function CallsPage() {
           </div>
 
           <div className="tok-filters-section">
-            <div className="tok-filters-label">1H · Volume · Gain</div>
+            <div className="tok-filters-label">1H gain % · Vol score · Mom</div>
             <div className="tok-filters-row">
-              <NumFilter
-                value={filters.minVol1h}
-                onChange={v => patchFilter("minVol1h", v)}
-                placeholder="Min vol score"
-                ariaLabel="Minimum 1H volume intensity"
-              />
               <NumFilter
                 value={filters.minGain1h}
                 onChange={v => patchFilter("minGain1h", v)}
                 placeholder="Min 1H %"
-                ariaLabel="Minimum 1H percent gain"
+                ariaLabel="Minimum 1H percent market-cap gain"
+              />
+              <NumFilter
+                value={filters.minVol1h}
+                onChange={v => patchFilter("minVol1h", v)}
+                placeholder="Min vol 0-100"
+                ariaLabel="Minimum volume intensity score from 0 to 100, not a percent"
               />
               <NumFilter
                 value={filters.minMom1h}
                 onChange={v => patchFilter("minMom1h", v)}
-                placeholder="Min mom 1H"
-                ariaLabel="Minimum 1H momentum buys"
+                placeholder="Min mom buys"
+                ariaLabel="Minimum 1H momentum buy count"
               />
             </div>
           </div>
