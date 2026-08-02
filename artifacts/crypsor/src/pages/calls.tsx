@@ -5,10 +5,10 @@
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { ChevronLeft, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, SlidersHorizontal } from "lucide-react";
 import {
   cn, formatCompactUsd, formatTimeAgo,
-  safeSymbol, safeImageUrl,
+  getGmgnUrl, safeSymbol, safeImageUrl,
 } from "@/lib/utils";
 import {
   CALLS_FEED_KEY, CALLS_STATS_KEY, PAGE_SIZE,
@@ -102,6 +102,7 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
     ? c.gainPct
     : (c.nowMultiple > 0 ? (c.nowMultiple - 1) * 100 : null);
   const athGainPct = c.athMultiple > 0 ? (c.athMultiple - 1) * 100 : null;
+  const gmgn = getGmgnUrl(c.chain, c.address);
 
   return (
     <tr
@@ -109,22 +110,21 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
       onClick={() => setLocation(`/calls/${c.id}`)}
     >
       <td className="tok-td tok-td-token">
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <TokenThumb logoUri={c.logoUri} address={c.address} symbol={c.symbol} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="font-display font-bold text-[13px] truncate">${sym}</span>
-              {waiting && (
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="font-display font-bold text-[12px] sm:text-[13px] truncate">${sym}</span>
+              {waiting ? (
                 <span className="tok-chip tok-chip-wait">Wait</span>
-              )}
-              {!waiting && c.callLabel && (
-                <span className="tok-chip">{c.callLabel}</span>
-              )}
+              ) : c.callLabel ? (
+                <span className="tok-chip hidden xs:inline">{c.callLabel}</span>
+              ) : null}
             </div>
             <div className="text-[10px] text-[var(--cryp-mute)] truncate">
-              {c.calledAt ? `${formatTimeAgo(c.calledAt)} ago` : "—"}
+              {c.calledAt ? `${formatTimeAgo(c.calledAt)}` : "—"}
               {c.gain1hPct != null && (
-                <span className={cn("ml-1.5", gainClass(c.gain1hPct))}>
+                <span className={cn("ml-1", gainClass(c.gain1hPct))}>
                   1H {fmtPct(c.gain1hPct, 0)}
                 </span>
               )}
@@ -136,12 +136,26 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
         {formatCompactUsd(c.currentMcUsd)}
       </td>
       <td className={cn("tok-td tok-td-num font-mono-num", gainClass(currentGainPct))}>
-        {fmtPct(currentGainPct, 0)}
-        <div className="text-[9px] opacity-70">{fmtX(c.nowMultiple)}</div>
+        <span className="tok-gain-main">{fmtPct(currentGainPct, 0)}</span>
+        <span className="tok-gain-sub">{fmtX(c.nowMultiple)}</span>
       </td>
       <td className={cn("tok-td tok-td-num font-mono-num", gainClass(athGainPct))}>
-        {fmtPct(athGainPct, 0)}
-        <div className="text-[9px] opacity-70">{fmtX(c.athMultiple)}</div>
+        <span className="tok-gain-main">{fmtPct(athGainPct, 0)}</span>
+        <span className="tok-gain-sub">{fmtX(c.athMultiple)}</span>
+      </td>
+      <td className="tok-td tok-td-link">
+        <a
+          href={gmgn}
+          target="_blank"
+          rel="noreferrer"
+          className="tok-gmgn"
+          title="Open on GMGN"
+          aria-label={`Open ${sym} on GMGN`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+          <span className="tok-gmgn-label">GMGN</span>
+        </a>
       </td>
     </tr>
   );
@@ -217,8 +231,9 @@ export default function CallsPage() {
   } = useQuery({
     queryKey: CALLS_FEED_KEY(mode, page, filters),
     queryFn: () => fetchCallsFeed(mode, page, PAGE_SIZE, filters),
-    refetchInterval: 15_000,
-    staleTime: 8_000,
+    // SSE invalidates on calls:changed — poll is a light backup only
+    refetchInterval: mode === "waiting" ? 12_000 : 20_000,
+    staleTime: 4_000,
     placeholderData: keepPreviousData,
     retry: 3,
   });
@@ -294,7 +309,7 @@ export default function CallsPage() {
   }, [stats]);
 
   return (
-    <div className="px-3 pt-3 pb-10 space-y-3 w-full">
+    <div className="px-2.5 sm:px-4 pt-3 pb-10 space-y-3 w-full max-w-full overflow-x-hidden">
       <div className="call-tabs" role="tablist" aria-label="Call modes">
         {MODES.map(m => {
           const active = mode === m.id;
@@ -438,12 +453,13 @@ export default function CallsPage() {
               <th className="tok-th tok-th-num">MC</th>
               <th className="tok-th tok-th-num">Gain</th>
               <th className="tok-th tok-th-num">ATH</th>
+              <th className="tok-th tok-th-link">GMGN</th>
             </tr>
           </thead>
           <tbody>
             {isError && cards.length === 0 && (
               <tr>
-                <td colSpan={4} className="tok-empty">
+                <td colSpan={5} className="tok-empty">
                   <div className="text-[13px] text-[var(--cryp-loss)]">Couldn’t load</div>
                   <div className="text-[11px] text-[var(--cryp-mute)] mt-1">
                     {error instanceof Error ? error.message : "API waking up"}
@@ -457,7 +473,7 @@ export default function CallsPage() {
             {isLoading && cards.length === 0 && !isError && (
               [0, 1, 2, 3, 4].map(i => (
                 <tr key={i} className="tok-row">
-                  <td colSpan={4} className="tok-td">
+                  <td colSpan={5} className="tok-td">
                     <div className="shimmer h-10 rounded-lg" />
                   </td>
                 </tr>
@@ -465,7 +481,7 @@ export default function CallsPage() {
             )}
             {!isLoading && !isError && cards.length === 0 && (
               <tr>
-                <td colSpan={4} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
+                <td colSpan={5} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
                   {mode === "waiting" ? "Queue clear" : "No matches"}
                 </td>
               </tr>

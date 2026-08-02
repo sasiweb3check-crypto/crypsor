@@ -102,10 +102,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="relative z-10 min-h-[calc(100vh-3.5rem)] flex flex-col">
+      <main className="relative z-10 min-h-[calc(100vh-3.5rem)] flex flex-col overflow-x-hidden">
         <div
           className={cn(
-            "flex-1 flex flex-col min-w-0 w-full mx-auto",
+            "flex-1 flex flex-col min-w-0 w-full mx-auto px-0",
             onUtility ? "max-w-3xl" : "max-w-2xl",
           )}
         >

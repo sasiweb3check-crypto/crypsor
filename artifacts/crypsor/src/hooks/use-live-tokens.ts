@@ -1,14 +1,9 @@
 /**
  * useLiveTokens
  *
- * Opens a Server-Sent Events connection to /api/events and patches the
- * React Query cache in real-time. Dashboard components re-render immediately
- * when token:updated, token:sold, or token:deleted events arrive.
- *
- * With server-side pagination the list lives under ["tokens", ...params].
- * On token:updated  → patch in-place across all cached pages.
- * On token:deleted  → remove from all cached pages and decrement total.
- * On token:sold     → invalidate the affected detail query only.
+ * Opens SSE to /api/events and patches React Query caches in real-time.
+ * Also invalidates Calls desk (Waiting/Best/Hot/Latest) on calls:changed
+ * so new Waiting rows appear without waiting for the poll interval.
  */
 
 import { useEffect, useRef } from "react";
@@ -16,42 +11,68 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getApiBase } from "@/lib/api-base";
 
 interface TokenUpdatedPayload {
-  tokenId:      number;
+  tokenId: number;
   tokenAddress: string;
-  gainPct:      number | null;
-  athGainPct:   number | null;
-  buyPressure:  number;
-  status:       string;
+  gainPct: number | null;
+  athGainPct: number | null;
+  buyPressure: number;
+  status: string;
 }
 
 interface TokenSoldPayload {
-  tokenId:      number;
+  tokenId: number;
   tokenAddress: string;
-  soldAt:       string;
+  soldAt: string;
 }
 
 interface TokenDeletedPayload {
-  tokenId:      number;
+  tokenId: number;
   tokenAddress: string;
 }
 
 interface PaginatedTokenPage {
-  data:  Record<string, unknown>[];
+  data: Record<string, unknown>[];
   total: number;
-  page:  number;
+  page: number;
   pages: number;
 }
 
 export function useLiveTokens(): { connected: boolean } {
   const qc = useQueryClient();
   const connectedRef = useRef(false);
+  const callsBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const callsPriceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const url  = `${getApiBase()}api/events`;
-    const es   = new EventSource(url);
+    const url = `${getApiBase()}api/events`;
+    const es = new EventSource(url);
+
+    const bumpCallsDesk = (ms = 60) => {
+      // Coalesce qualify bursts into one refetch; keep delay tiny for Waiting sync
+      if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
+      callsBumpTimer.current = setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ["calls-feed"] });
+        void qc.invalidateQueries({ queryKey: ["calls-waiting"] });
+        void qc.invalidateQueries({ queryKey: ["calls-stats"] });
+        void qc.invalidateQueries({ queryKey: ["opsSummary"] });
+      }, ms);
+    };
+
+    const bumpCallsPrices = () => {
+      // Price ticks are frequent — soft refresh so Gain/MC stay live without thrash
+      if (callsPriceTimer.current) return;
+      callsPriceTimer.current = setTimeout(() => {
+        callsPriceTimer.current = null;
+        void qc.invalidateQueries({ queryKey: ["calls-feed"] });
+      }, 2_500);
+    };
 
     es.addEventListener("connected", () => {
       connectedRef.current = true;
+    });
+
+    es.addEventListener("calls:changed", () => {
+      bumpCallsDesk(60);
     });
 
     // Patch the token in every cached paginated page
@@ -59,7 +80,6 @@ export function useLiveTokens(): { connected: boolean } {
       try {
         const payload: TokenUpdatedPayload = JSON.parse(e.data as string);
 
-        // Update across all paginated token list queries
         qc.setQueriesData<PaginatedTokenPage>(
           { queryKey: ["tokens"], exact: false },
           (old) => {
@@ -69,9 +89,9 @@ export function useLiveTokens(): { connected: boolean } {
                 ? {
                     ...t,
                     detectionGainPct: payload.gainPct,
-                    athGainPct:       payload.athGainPct,
-                    buyPressure:      payload.buyPressure,
-                    status:           payload.status,
+                    athGainPct: payload.athGainPct,
+                    buyPressure: payload.buyPressure,
+                    status: payload.status,
                   }
                 : t,
             );
@@ -79,21 +99,23 @@ export function useLiveTokens(): { connected: boolean } {
           },
         );
 
-        // Patch single-token detail if open
         qc.setQueryData<Record<string, unknown>>(["token", payload.tokenId], (old) => {
           if (!old) return old;
           return {
             ...old,
             detectionGainPct: payload.gainPct,
-            athGainPct:       payload.athGainPct,
-            buyPressure:      payload.buyPressure,
-            status:           payload.status,
+            athGainPct: payload.athGainPct,
+            buyPressure: payload.buyPressure,
+            status: payload.status,
           };
         });
-      } catch (err) { console.warn("[SSE] token:updated parse error", err); }
+
+        bumpCallsPrices();
+      } catch (err) {
+        console.warn("[SSE] token:updated parse error", err);
+      }
     });
 
-    // Remove deleted token from all cached pages; invalidate dashboard counts
     es.addEventListener("token:deleted", (e: MessageEvent) => {
       try {
         const payload: TokenDeletedPayload = JSON.parse(e.data as string);
@@ -103,44 +125,42 @@ export function useLiveTokens(): { connected: boolean } {
           (old) => {
             if (!old?.data) return old;
             const filtered = old.data.filter((t) => t.id !== payload.tokenId);
-            const removed  = old.data.length - filtered.length;
+            const removed = old.data.length - filtered.length;
             if (removed === 0) return old;
             return {
               ...old,
-              data:  filtered,
+              data: filtered,
               total: Math.max(0, old.total - removed),
             };
           },
         );
 
-        // Refresh dashboard stat counts
         qc.invalidateQueries({ queryKey: ["dashboard"] });
-      } catch {}
+        bumpCallsDesk(60);
+      } catch { /* ignore */ }
     });
 
     es.addEventListener("token:sold", (e: MessageEvent) => {
       try {
         const payload: TokenSoldPayload = JSON.parse(e.data);
-        // Invalidate to trigger a fresh fetch that includes the new sell
         qc.invalidateQueries({ queryKey: ["token", payload.tokenId] });
-      } catch {}
+      } catch { /* ignore */ }
     });
 
-    // Invalidate the DB-backed holders cache for this token so the detail
-    // page refreshes automatically when the background worker finishes a sync.
     es.addEventListener("holders:updated", (e: MessageEvent) => {
       try {
         const payload: { tokenId: number } = JSON.parse(e.data);
         qc.invalidateQueries({ queryKey: ["holders", payload.tokenId] });
-      } catch {}
+      } catch { /* ignore */ }
     });
 
     es.onerror = () => {
       connectedRef.current = false;
-      // EventSource auto-reconnects; no manual retry needed
     };
 
     return () => {
+      if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
+      if (callsPriceTimer.current) clearTimeout(callsPriceTimer.current);
       es.close();
       connectedRef.current = false;
     };

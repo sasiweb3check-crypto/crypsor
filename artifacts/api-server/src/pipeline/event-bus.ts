@@ -69,6 +69,15 @@ export interface IntelScoredEvent {
   trigger: "first" | "score_change" | "status_change" | "fast_path";
 }
 
+/** Desk sync — Waiting / Best / Hot / Latest should refetch immediately. */
+export interface CallsChangedEvent {
+  reason: "insert" | "surface" | "entry" | "score" | "waiting";
+  tokenId?: number;
+  symbol?: string | null;
+  qualityLabel?: string | null;
+  at?: string;
+}
+
 /** Rich event for the live feed tape — emitted by monitor (buy/sell) and social-intel-service */
 export interface FeedItemEvent {
   id:   string;
@@ -123,6 +132,7 @@ type BusMap = {
   "token:deleted":         [TokenDeletedEvent];
   "holders:updated":       [HoldersUpdatedEvent];
   "intel:scored":          [IntelScoredEvent];
+  "calls:changed":         [CallsChangedEvent];
   "feed:item":             [FeedItemEvent];
 };
 
