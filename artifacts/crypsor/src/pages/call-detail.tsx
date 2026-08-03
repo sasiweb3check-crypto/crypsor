@@ -1,7 +1,5 @@
 /**
- * FOMO-style call detail — opened from Best Calls cards.
- * Shows CALL/CURRENT/ATH, your tracked wallet buyers, Crypsor holder intel,
- * CTO/creator, snap tape.
+ * Call detail — light strip layout; MC via prices:desk SSE, buys via token:bought.
  */
 import { useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -18,6 +16,7 @@ import {
   CALLS_TOKEN_KEY, fetchCallDetail,
   type CallBuyer, type CallCard, type CrypsorWalletRow,
 } from "@/lib/calls-api";
+import { useLiveSse } from "@/hooks/use-live-tokens";
 
 function crypsorLabelColor(label: string): string {
   switch (label) {
@@ -35,7 +34,7 @@ function CrypsorWalletRowView({ w }: { w: CrypsorWalletRow }) {
   const { toast } = useToast();
   return (
     <li
-      className="py-2.5 space-y-1"
+      className="py-1.5 space-y-0.5"
       style={{ borderBottom: "1px solid var(--cryp-line)" }}
     >
       <div className="flex items-center justify-between gap-2">
@@ -81,7 +80,7 @@ function LiveBar({ now, peak }: { now: number; peak: number }) {
   const peakPct = Math.min(100, (peak / max) * 100);
   return (
     <div>
-      <div className="relative h-2.5 rounded-full overflow-hidden" style={{ background: "rgba(125,180,170,0.12)" }}>
+      <div className="relative h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(125,180,170,0.12)" }}>
         <div
           className="absolute inset-y-0 left-0 rounded-full"
           style={{ width: `${peakPct}%`, background: "rgba(62,207,142,0.22)" }}
@@ -94,9 +93,9 @@ function LiveBar({ now, peak }: { now: number; peak: number }) {
           }}
         />
       </div>
-      <div className="flex items-center justify-between mt-2 text-[12px]">
+      <div className="flex items-center justify-between mt-1.5 text-[11px]">
         <span className="font-mono-num text-[var(--cryp-warn)]">Now {now.toFixed(2)}×</span>
-        <span className="font-mono-num text-[var(--cryp-gain)]">Peak {peak.toFixed(1)}× ✓</span>
+        <span className="font-mono-num text-[var(--cryp-gain)]">Peak {peak.toFixed(1)}×</span>
       </div>
     </div>
   );
@@ -106,11 +105,11 @@ function BuyerRow({ b }: { b: CallBuyer }) {
   const { toast } = useToast();
   return (
     <li
-      className="flex items-center justify-between gap-2 py-2.5"
+      className="flex items-center justify-between gap-2 py-1.5"
       style={{ borderBottom: "1px solid var(--cryp-line)" }}
     >
       <div className="min-w-0">
-        <div className="text-[13px] font-bold text-[var(--cryp-text)] truncate">{b.label}</div>
+        <div className="text-[12px] font-bold text-[var(--cryp-text)] truncate">{b.label}</div>
         <button
           type="button"
           className="text-[11px] font-mono-num text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]"
@@ -145,19 +144,19 @@ function DetailHero({ c }: { c: CallCard }) {
   const nowX = Number.isFinite(c.nowMultiple) ? c.nowMultiple : 1;
 
   return (
-    <div className="call-card space-y-4">
-      <div className="flex items-start gap-3">
+    <div className="call-card space-y-3 !p-3">
+      <div className="flex items-start gap-2.5">
         {!imgBroken ? (
           <img
             src={imgSrc}
             alt=""
-            className="w-14 h-14 rounded-full object-cover shrink-0"
+            className="w-10 h-10 rounded-full object-cover shrink-0"
             style={{ background: "var(--cryp-elevated)", border: "1px solid var(--cryp-line)" }}
             onError={() => setImgBroken(true)}
           />
         ) : (
           <div
-            className="w-14 h-14 rounded-full shrink-0 flex items-center justify-center text-[13px] font-bold"
+            className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-[11px] font-bold"
             style={{ background: "rgba(61,154,139,0.18)", color: "var(--cryp-mint)" }}
           >
             {sym.slice(0, 2)}
@@ -165,7 +164,7 @@ function DetailHero({ c }: { c: CallCard }) {
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <h1 className="font-display text-[22px] font-extrabold">${sym}</h1>
+            <h1 className="font-display text-[18px] font-extrabold">${sym}</h1>
             <button
               type="button"
               onClick={() => {
@@ -197,16 +196,16 @@ function DetailHero({ c }: { c: CallCard }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 gap-1.5">
         {[
           { l: "Call MC", v: formatCompactUsd(c.calledMcUsd) },
           { l: "Current", v: formatCompactUsd(c.currentMcUsd) },
           { l: "ATH", v: formatCompactUsd(c.athMcUsd), accent: "var(--cryp-gain)" },
         ].map(x => (
-          <div key={x.l} className="call-stat !py-3 !px-3">
-            <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">{x.l}</div>
+          <div key={x.l} className="call-stat !py-2 !px-2">
+            <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">{x.l}</div>
             <div
-              className="font-mono-num text-[16px] font-bold mt-1"
+              className="font-mono-num text-[13px] font-bold mt-0.5"
               style={{ color: x.accent ?? "var(--cryp-text)" }}
             >
               {x.v}
@@ -279,6 +278,7 @@ function DetailHero({ c }: { c: CallCard }) {
 export default function CallDetailPage() {
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
+  const { connected } = useLiveSse();
   const id = Number(params.id);
   const [wantWinrate, setWantWinrate] = useState(false);
 
@@ -286,7 +286,9 @@ export default function CallDetailPage() {
     queryKey: CALLS_TOKEN_KEY(id, wantWinrate),
     queryFn: () => fetchCallDetail(id, { winrate: wantWinrate }),
     enabled: Number.isFinite(id),
-    refetchInterval: 15_000,
+    // prices:desk + token:bought SSE keep this fresh; poll is backup
+    refetchInterval: connected ? 60_000 : 12_000,
+    staleTime: connected ? 8_000 : 2_000,
     placeholderData: keepPreviousData,
     retry: 3,
   });
@@ -306,24 +308,32 @@ export default function CallDetailPage() {
   }, [buyers]);
 
   return (
-    <div className="px-4 pt-3 pb-10 space-y-4 max-w-lg mx-auto w-full">
-      <button
-        type="button"
-        onClick={() => setLocation("/")}
-        className="inline-flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-widest text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]"
-      >
-        <ArrowLeft className="w-4 h-4" />
-        Calls
-      </button>
+    <div className="px-3 pt-2.5 pb-8 space-y-2.5 max-w-lg mx-auto w-full">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setLocation("/")}
+          className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          Desk
+        </button>
+        <span className={cn(
+          "text-[9px] uppercase tracking-widest",
+          connected ? "text-[var(--cryp-gain)]" : "text-[var(--cryp-mute)]",
+        )}>
+          {connected ? "Live" : "Sync"}
+        </span>
+      </div>
 
       {isLoading && !card && (
-        <div className="call-card shimmer-card h-64" />
+        <div className="call-card shimmer-card h-40 !p-3" />
       )}
 
       {isError && !card && (
-        <div className="call-card text-center py-10 space-y-3">
-          <div className="text-[var(--cryp-loss)] text-[13px]">Couldn’t load call</div>
-          <div className="text-[11px] text-[var(--cryp-mute)]">
+        <div className="call-card text-center py-8 space-y-2 !p-3">
+          <div className="text-[var(--cryp-loss)] text-[12px]">Couldn’t load call</div>
+          <div className="text-[10px] text-[var(--cryp-mute)]">
             {error instanceof Error ? error.message : "Retry"}
           </div>
           <button type="button" className="call-action mx-auto" onClick={() => void refetch()}>
@@ -345,29 +355,28 @@ export default function CallDetailPage() {
         </button>
       )}
       {winrateLoaded && card?.avgWalletWinRate != null && (
-        <div className="text-[12px] font-mono-num text-[var(--cryp-mint)] text-center">
+        <div className="text-[11px] font-mono-num text-[var(--cryp-mint)] text-center">
           Buyer WR avg {(card.avgWalletWinRate * 100).toFixed(0)}%
         </div>
       )}
 
-      {/* Tracked wallet buyers */}
-      <section className="call-card">
-        <div className="flex items-center gap-2 mb-1">
-          <Users className="w-4 h-4 text-[var(--cryp-teal)]" />
-          <h2 className="font-display text-[13px] font-bold uppercase tracking-widest">
-            Your wallet buys
+      <section className="call-card !p-3">
+        <div className="flex items-center gap-2 mb-0.5">
+          <Users className="w-3.5 h-3.5 text-[var(--cryp-teal)]" />
+          <h2 className="font-display text-[11px] font-bold uppercase tracking-widest">
+            Wallet buys
           </h2>
-          <span className="ml-auto text-[11px] font-mono-num text-[var(--cryp-mute)]">
+          <span className="ml-auto text-[10px] font-mono-num text-[var(--cryp-mute)]">
             {uniqueBuyers.length}
           </span>
         </div>
-        <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed mb-2">
+        <p className="text-[10px] text-[var(--cryp-mute)] leading-relaxed mb-1.5">
           {data?.walletBuysNote
-            ?? "Wallets from your tracked list (walletdatasource) that bought this token — scanned via Helius into token_buys. Not the full holder set."}
+            ?? "Tracked wallets that bought — live via Helius → token:bought SSE."}
         </p>
         {uniqueBuyers.length === 0 ? (
-          <div className="text-[12px] text-[var(--cryp-mute)] py-6 text-center">
-            No tracked-wallet buys recorded yet for this token
+          <div className="text-[11px] text-[var(--cryp-mute)] py-4 text-center">
+            No tracked-wallet buys yet
           </div>
         ) : (
           <ul>
@@ -376,24 +385,23 @@ export default function CallDetailPage() {
         )}
       </section>
 
-      {/* Crypsor holder intel — OWN labels, not GMGN KOL/smart */}
-      <section className="call-card">
-        <div className="flex items-center gap-2 mb-1">
-          <Brain className="w-4 h-4 text-[var(--cryp-mint)]" />
-          <h2 className="font-display text-[13px] font-bold uppercase tracking-widest">
-            Crypsor wallet intel
+      <section className="call-card !p-3">
+        <div className="flex items-center gap-2 mb-0.5">
+          <Brain className="w-3.5 h-3.5 text-[var(--cryp-mint)]" />
+          <h2 className="font-display text-[11px] font-bold uppercase tracking-widest">
+            Crypsor intel
           </h2>
-          <span className="ml-auto text-[11px] font-mono-num text-[var(--cryp-mute)]">
+          <span className="ml-auto text-[10px] font-mono-num text-[var(--cryp-mute)]">
             {crypsorWallets.length}
           </span>
         </div>
-        <p className="text-[11px] text-[var(--cryp-mute)] leading-relaxed mb-2">
+        <p className="text-[10px] text-[var(--cryp-mute)] leading-relaxed mb-1.5">
           {data?.crypsorNote
-            ?? "Our background labelling of this token’s holders (behaviour, weightage, Crypsor win-rate). Not GMGN KOL / smart tags."}
+            ?? "Our holder labels — not GMGN KOL/smart."}
         </p>
         {crypsorWallets.length === 0 ? (
-          <div className="text-[12px] text-[var(--cryp-mute)] py-6 text-center">
-            Judging holders in the background — refresh shortly after holder snapshots land
+          <div className="text-[11px] text-[var(--cryp-mute)] py-4 text-center">
+            Judging holders in background…
           </div>
         ) : (
           <ul>
@@ -404,12 +412,11 @@ export default function CallDetailPage() {
         )}
       </section>
 
-      {/* Creator / security */}
       {card && (
-        <section className="call-card space-y-2">
-          <div className="flex items-center gap-2 mb-1">
-            <Shield className="w-4 h-4 text-[var(--cryp-teal)]" />
-            <h2 className="font-display text-[13px] font-bold uppercase tracking-widest">
+        <section className="call-card space-y-2 !p-3">
+          <div className="flex items-center gap-2 mb-0.5">
+            <Shield className="w-3.5 h-3.5 text-[var(--cryp-teal)]" />
+            <h2 className="font-display text-[11px] font-bold uppercase tracking-widest">
               Creator · CTO
             </h2>
           </div>
@@ -446,15 +453,15 @@ export default function CallDetailPage() {
 
       {/* Snap tape */}
       {snaps.length > 0 && (
-        <section className="call-card">
-          <h2 className="font-display text-[13px] font-bold uppercase tracking-widest mb-2">
+        <section className="call-card !p-3">
+          <h2 className="font-display text-[11px] font-bold uppercase tracking-widest mb-1.5">
             Observation tape
           </h2>
-          <ul className="space-y-1.5 max-h-56 overflow-y-auto no-scrollbar">
+          <ul className="space-y-1 max-h-48 overflow-y-auto no-scrollbar">
             {[...snaps].reverse().map((s, i) => (
               <li
                 key={`${s.at}-${i}`}
-                className="flex items-center justify-between text-[11px] font-mono-num py-1"
+                className="flex items-center justify-between text-[10px] font-mono-num py-0.5"
                 style={{ borderBottom: "1px solid rgba(125,180,170,0.08)" }}
               >
                 <span className="text-[var(--cryp-mute)]">

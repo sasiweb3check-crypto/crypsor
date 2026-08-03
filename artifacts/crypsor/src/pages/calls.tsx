@@ -1,6 +1,6 @@
 /**
- * Token desk — lightweight mobile table with score/label + 1H/6H momentum filters.
- * Max 20 rows/page via API pagination.
+ * Token desk — lightweight live table (SSE-first; poll only as backup).
+ * Waiting / Best / Hot / Latest · buys · pending badge.
  */
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,6 +16,7 @@ import {
   type CallCard, type CallMode, type FeedFilters, type StatsPeriod,
 } from "@/lib/calls-api";
 import { OPS_SUMMARY_KEY, fetchOpsSummary } from "@/lib/ops-api";
+import { useLiveSse } from "@/hooks/use-live-tokens";
 
 const MODES: { id: CallMode; label: string }[] = [
   { id: "waiting", label: "Waiting" },
@@ -97,7 +98,6 @@ function gainClass(v: number | null | undefined) {
 function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
   const [, setLocation] = useLocation();
   const sym = safeSymbol(c.symbol, c.address) || "?";
-  // Current gain = now multiple vs entry (or 1h when waiting without entry context display)
   const currentGainPct = c.gainPct != null && Number.isFinite(c.gainPct)
     ? c.gainPct
     : (c.nowMultiple > 0 ? (c.nowMultiple - 1) * 100 : null);
@@ -110,19 +110,19 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
       onClick={() => setLocation(`/calls/${c.id}`)}
     >
       <td className="tok-td tok-td-token">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0">
           <TokenThumb logoUri={c.logoUri} address={c.address} symbol={c.symbol} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1 min-w-0">
-              <span className="font-display font-bold text-[12px] sm:text-[13px] truncate">${sym}</span>
+              <span className="font-display font-bold text-[12px] truncate">${sym}</span>
               {waiting ? (
                 <span className="tok-chip tok-chip-wait">Wait</span>
               ) : c.callLabel ? (
                 <span className="tok-chip hidden sm:inline">{c.callLabel}</span>
               ) : null}
             </div>
-            <div className="text-[10px] text-[var(--cryp-mute)] truncate">
-              {c.calledAt ? `${formatTimeAgo(c.calledAt)}` : "—"}
+            <div className="text-[9px] text-[var(--cryp-mute)] truncate">
+              {c.calledAt ? formatTimeAgo(c.calledAt) : "—"}
               {c.gain1hPct != null && (
                 <span className={cn("ml-1", gainClass(c.gain1hPct))}>
                   1H {fmtPct(c.gain1hPct, 0)}
@@ -142,6 +142,12 @@ function TableRow({ c, waiting }: { c: CallCard; waiting: boolean }) {
       <td className={cn("tok-td tok-td-num font-mono-num", gainClass(athGainPct))}>
         <span className="tok-gain-main">{fmtPct(athGainPct, 0)}</span>
         <span className="tok-gain-sub">{fmtX(c.athMultiple)}</span>
+      </td>
+      <td className={cn(
+        "tok-td tok-td-num font-mono-num",
+        c.walletBuys > 0 ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)]",
+      )}>
+        {c.walletBuys > 0 ? c.walletBuys : "—"}
       </td>
       <td className="tok-td tok-td-link">
         <a
@@ -219,13 +225,13 @@ function readModeFromUrl(): CallMode {
 
 export default function CallsPage() {
   const qc = useQueryClient();
+  const { connected } = useLiveSse();
   const [mode, setMode] = useState<CallMode>(readModeFromUrl);
   const [page, setPage] = useState(1);
   const [period, setPeriod] = useState<StatsPeriod>("7d");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<FeedFilters>(emptyFilters);
 
-  // Keep mode in sync when nav / back / Crypsor home link changes the URL
   useEffect(() => {
     const sync = () => {
       const next = readModeFromUrl();
@@ -236,7 +242,6 @@ export default function CallsPage() {
       });
     };
     window.addEventListener("popstate", sync);
-    // Same-document replaceState from tabs doesn't fire popstate — poll lightly
     const id = window.setInterval(sync, 800);
     return () => {
       window.removeEventListener("popstate", sync);
@@ -244,19 +249,22 @@ export default function CallsPage() {
     };
   }, []);
 
+  // SSE drives freshness; poll only when Live drops (or slow safety net)
+  const feedPollMs = connected
+    ? (mode === "waiting" ? 60_000 : 90_000)
+    : (mode === "waiting" ? 12_000 : 20_000);
+
   const {
     data, isLoading, isFetching, isError, error, refetch, isPlaceholderData,
   } = useQuery({
     queryKey: CALLS_FEED_KEY(mode, page, filters),
     queryFn: () => fetchCallsFeed(mode, page, PAGE_SIZE, filters),
-    // prices:desk SSE patches MC live; poll is backup if SSE drops
-    refetchInterval: mode === "waiting" ? 15_000 : 25_000,
-    staleTime: 3_000,
+    refetchInterval: feedPollMs,
+    staleTime: connected ? 8_000 : 2_000,
     placeholderData: keepPreviousData,
     retry: 3,
   });
 
-  // Never paint another tab's rows while the new mode is loading
   const showPlaceholder = isPlaceholderData || (data != null && data.mode !== mode);
   const cards = showPlaceholder ? [] : (data?.cards ?? []);
   const total = showPlaceholder ? 0 : (data?.total ?? 0);
@@ -265,7 +273,7 @@ export default function CallsPage() {
   const { data: stats } = useQuery({
     queryKey: CALLS_STATS_KEY(period),
     queryFn: () => fetchCallsStats(period),
-    refetchInterval: 30_000,
+    refetchInterval: connected ? 90_000 : 30_000,
     staleTime: 15_000,
     placeholderData: keepPreviousData,
   });
@@ -273,7 +281,7 @@ export default function CallsPage() {
   const { data: opsSummary } = useQuery({
     queryKey: OPS_SUMMARY_KEY,
     queryFn: fetchOpsSummary,
-    refetchInterval: 30_000,
+    refetchInterval: connected ? 90_000 : 25_000,
     staleTime: 15_000,
   });
 
@@ -334,7 +342,7 @@ export default function CallsPage() {
   }, [stats]);
 
   return (
-    <div className="px-2.5 sm:px-4 pt-3 pb-10 space-y-3 w-full max-w-full overflow-x-hidden">
+    <div className="px-2 sm:px-3 pt-2.5 pb-8 space-y-2.5 w-full max-w-full overflow-x-hidden">
       <div className="call-tabs" role="tablist" aria-label="Call modes">
         {MODES.map(m => {
           const active = mode === m.id;
@@ -358,12 +366,13 @@ export default function CallsPage() {
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-2 min-h-[22px]">
-        <p className="text-[11px] text-[var(--cryp-mute)] truncate font-mono-num">
+      <div className="flex items-center justify-between gap-2 min-h-[18px]">
+        <p className="text-[10px] text-[var(--cryp-mute)] truncate font-mono-num">
           {mode === "waiting"
-            ? `${pendingN || total || 0} pending · latest first`
+            ? `${pendingN || total || 0} pending · live`
             : (statsLine ?? (isFetching ? "sync…" : "—"))}
-          {total > 0 && ` · ${total} shown`}
+          {total > 0 && ` · ${total}`}
+          {connected && <span className="text-[var(--cryp-gain)] ml-1">· SSE</span>}
         </p>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -478,13 +487,14 @@ export default function CallsPage() {
               <th className="tok-th tok-th-num">MC</th>
               <th className="tok-th tok-th-num">Entry</th>
               <th className="tok-th tok-th-num">ATH</th>
+              <th className="tok-th tok-th-num tok-th-buys">Buys</th>
               <th className="tok-th tok-th-link">GMGN</th>
             </tr>
           </thead>
           <tbody>
             {isError && (
               <tr>
-                <td colSpan={5} className="tok-empty">
+                <td colSpan={6} className="tok-empty">
                   <div className="text-[13px] text-[var(--cryp-loss)]">Couldn’t load</div>
                   <div className="text-[11px] text-[var(--cryp-mute)] mt-1">
                     {error instanceof Error ? error.message : "API waking up"}
@@ -498,15 +508,15 @@ export default function CallsPage() {
             {!isError && (isLoading || showPlaceholder) && cards.length === 0 && (
               [0, 1, 2, 3, 4].map(i => (
                 <tr key={i} className="tok-row">
-                  <td colSpan={5} className="tok-td">
-                    <div className="shimmer h-10 rounded-lg" />
+                  <td colSpan={6} className="tok-td">
+                    <div className="shimmer h-8 rounded-md" />
                   </td>
                 </tr>
               ))
             )}
             {!isError && !isLoading && !showPlaceholder && cards.length === 0 && (
               <tr>
-                <td colSpan={5} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
+                <td colSpan={6} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
                   {mode === "waiting" ? "Queue clear" : "No matches"}
                 </td>
               </tr>

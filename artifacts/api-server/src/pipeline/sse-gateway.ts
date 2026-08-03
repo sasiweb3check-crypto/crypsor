@@ -1,16 +1,16 @@
 /**
  * SSE Gateway (Server-Sent Events)
  *
- * Pushes real-time token updates to connected dashboard clients.
- * No polling needed — the dashboard subscribes once and receives diffs.
+ * Pushes real-time desk updates to connected clients.
  *
- * Events emitted to clients:
- *   token:updated  — when projection is recomputed (gain%, buyPressure, status)
- *   token:sold     — when a tracked wallet sells
- *   ping           — keepalive every 25 s
+ * Events:
+ *   connected / ping
+ *   calls:changed   — Waiting/Best/Hot/Latest membership
+ *   prices:desk     — live MC ticks for desk + detail
+ *   token:bought    — tracked wallet buy (buys / Latest freshness)
+ *   token:sold / token:updated / token:deleted / holders:updated / feed:event
  *
- * Usage:
- *   GET /api/events   (text/event-stream)
+ * Usage: GET /api/events  (text/event-stream)
  */
 
 import type { Request, Response } from "express";
@@ -79,6 +79,18 @@ export function startSseGateway(): void {
       athGainPct:   evt.athGainPct,
       buyPressure:  evt.buyPressure,
       status:       evt.status,
+    });
+  });
+
+  eventBus.on("token:bought", (evt) => {
+    broadcast("token:bought", {
+      tokenId: evt.tokenId,
+      tokenAddress: evt.tokenAddress,
+      walletId: evt.walletId,
+      chain: evt.chain,
+      amount: evt.amount,
+      txHash: evt.txHash,
+      boughtAt: evt.boughtAt instanceof Date ? evt.boughtAt.toISOString() : evt.boughtAt,
     });
   });
 

@@ -721,8 +721,8 @@ async function loadWaitingCalls(limit: number): Promise<{
   cards: WaitingCallCard[];
   pendingFirstCalls: number;
 }> {
-  // v4: latest-called + momentum/1h for table filters
-  const cacheKey = `calls:waiting:v6:${limit}`;
+  // v7: wallet_buys join + momentum/1h for table filters
+  const cacheKey = `calls:waiting:v7:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
@@ -749,10 +749,16 @@ async function loadWaitingCalls(limit: number): Promise<{
       t.sec_is_honeypot, t.sec_mint_renounced, t.sec_freeze_renounced,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       ${MOMENTUM_SELECT}
     FROM pro_calls pc
     JOIN tracked_tokens t ON t.id = pc.token_id
     ${SNAP1H_LATERAL}
+    LEFT JOIN LATERAL (
+      SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
+      FROM token_buys tb
+      WHERE tb.token_id = pc.token_id
+    ) buys ON TRUE
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND pc.call_alert_sent_at IS NULL
       AND pc.runner_alert_sent_at IS NULL
@@ -813,8 +819,9 @@ async function loadWaitingCalls(limit: number): Promise<{
       ? Math.max(0, Math.round((Date.now() - firstSeen) / 60_000))
       : null;
 
+    const walletBuys = Number(r.wallet_buys ?? 0);
     const q = computeCallQuality({
-      walletBuys: 0,
+      walletBuys,
       calledKol: Number(r.called_kol_count ?? 0),
       calledSmart: Number(r.called_smart_count ?? 0),
       liveKol: Number(r.live_kol ?? 0),
@@ -864,7 +871,7 @@ async function loadWaitingCalls(limit: number): Promise<{
       gainPct,
       nowMultiple,
       athMultiple: Math.round(athMultiple * 100) / 100,
-      walletBuys: 0,
+      walletBuys,
       buyVolumeHintUsd: null,
       calledKol: Number(r.called_kol_count ?? 0),
       calledSmart: Number(r.called_smart_count ?? 0),

@@ -71,7 +71,7 @@ export interface IntelScoredEvent {
 
 /** Desk sync — Waiting / Best / Hot / Latest should refetch immediately. */
 export interface CallsChangedEvent {
-  reason: "insert" | "surface" | "entry" | "score" | "waiting";
+  reason: "insert" | "surface" | "entry" | "score" | "waiting" | "buy";
   tokenId?: number;
   symbol?: string | null;
   qualityLabel?: string | null;

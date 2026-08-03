@@ -172,16 +172,16 @@ body {
   border: 1px solid rgba(125, 180, 170, 0.1);
 }
 .call-card {
-  background: rgba(12, 20, 28, 0.92);
-  border: 1px solid rgba(125, 180, 170, 0.12);
-  border-radius: 12px;
-  padding: 0.9rem 1rem;
+  background: rgba(12, 20, 28, 0.88);
+  border: 1px solid rgba(125, 180, 170, 0.1);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
 }
 .call-stat {
-  background: rgba(12, 20, 28, 0.92);
-  border: 1px solid rgba(125, 180, 170, 0.12);
-  border-radius: 12px;
-  padding: 0.7rem 0.85rem;
+  background: rgba(12, 20, 28, 0.88);
+  border: 1px solid rgba(125, 180, 170, 0.1);
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
 }
 .wallet-pill {
   display: inline-flex;
@@ -337,9 +337,9 @@ body {
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--cryp-line);
-  background: rgba(12, 20, 28, 0.88);
+  background: rgba(12, 20, 28, 0.82);
 }
 .tok-table {
   width: 100%;
@@ -349,24 +349,25 @@ body {
 }
 .tok-th {
   text-align: left;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cryp-mute);
-  padding: 0.4rem 0.25rem;
+  padding: 0.3rem 0.2rem;
   border-bottom: 1px solid var(--cryp-line);
   white-space: nowrap;
   position: sticky;
   top: 0;
   background: rgba(8, 14, 20, 0.96);
 }
-.tok-th-num { text-align: right; width: 15%; }
-.tok-th-token { width: 42%; }
-.tok-th-link { text-align: center; width: 13%; }
+.tok-th-num { text-align: right; width: 13%; }
+.tok-th-token { width: 36%; }
+.tok-th-buys { width: 9%; }
+.tok-th-link { text-align: center; width: 11%; }
 .tok-td {
-  padding: 0.4rem 0.25rem;
-  border-bottom: 1px solid rgba(125, 180, 170, 0.06);
+  padding: 0.32rem 0.2rem;
+  border-bottom: 1px solid rgba(125, 180, 170, 0.05);
   vertical-align: middle;
   font-size: 11px;
   overflow: hidden;
@@ -374,7 +375,7 @@ body {
 }
 .tok-td-token { max-width: 0; }
 .tok-td-num { text-align: right; white-space: nowrap; }
-.tok-td-link { text-align: center; width: 13%; }
+.tok-td-link { text-align: center; width: 11%; }
 .tok-gain-main { display: block; line-height: 1.15; }
 .tok-gain-sub {
   display: block;
@@ -411,8 +412,8 @@ body {
 .tok-row:hover { background: rgba(61, 154, 139, 0.07); }
 .tok-row:last-child .tok-td { border-bottom: none; }
 .tok-thumb {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   object-fit: cover;
   flex-shrink: 0;
@@ -545,9 +546,10 @@ body {
 }
 
 @media (min-width: 640px) {
-  .tok-th, .tok-td { padding: 0.6rem 0.65rem; font-size: 12px; }
-  .tok-thumb { width: 34px; height: 34px; }
-  .tok-th-token { width: 42%; }
-  .tok-th-num { width: 15%; }
-  .tok-th-link, .tok-td-link { width: 13%; }
+  .tok-th, .tok-td { padding: 0.45rem 0.4rem; font-size: 12px; }
+  .tok-thumb { width: 28px; height: 28px; }
+  .tok-th-token { width: 34%; }
+  .tok-th-num { width: 13%; }
+  .tok-th-buys { width: 8%; }
+  .tok-th-link, .tok-td-link { width: 12%; }
 }

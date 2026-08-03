@@ -23,6 +23,7 @@ import {
 } from "@/lib/ops-api";
 import { CALLS_WAITING_KEY, fetchCallsWaiting } from "@/lib/calls-api";
 import { cn, formatTimeAgo, safeSymbol } from "@/lib/utils";
+import { useLiveSse } from "@/hooks/use-live-tokens";
 
 const API_LABEL = getApiBase().replace(/\/$/, "") || "(same origin)";
 
@@ -55,11 +56,12 @@ function Pill({
 }
 
 function WaitingQueuePanel({ count }: { count: number }) {
+  const { connected } = useLiveSse();
   const { data, isLoading } = useQuery({
     queryKey: CALLS_WAITING_KEY,
     queryFn: () => fetchCallsWaiting(12),
-    refetchInterval: 15_000,
-    staleTime: 8_000,
+    refetchInterval: connected ? 60_000 : 12_000,
+    staleTime: connected ? 10_000 : 4_000,
   });
   const cards = data?.cards ?? [];
 
@@ -68,7 +70,7 @@ function WaitingQueuePanel({ count }: { count: number }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-[#f59e0b]">
           <Hourglass className="w-3 h-3" />
-          Waiting · {count} pending first call{count === 1 ? "" : "s"}
+          Waiting · {count} pending{connected ? " · live" : ""}
         </div>
         <Link href="/?mode=waiting">
           <span className="text-[9px] uppercase tracking-widest text-[#8b949e] hover:text-[#f59e0b] cursor-pointer">
@@ -121,6 +123,7 @@ function WaitingQueuePanel({ count }: { count: number }) {
 
 export default function OpsPage() {
   const [kind, setKind] = useState<OpsKind>("all");
+  const { connected } = useLiveSse();
 
   const {
     data: summary,
@@ -131,8 +134,8 @@ export default function OpsPage() {
   } = useQuery({
     queryKey: OPS_SUMMARY_KEY,
     queryFn: fetchOpsSummary,
-    refetchInterval: 12_000,
-    staleTime: 8_000,
+    refetchInterval: connected ? 60_000 : 12_000,
+    staleTime: connected ? 12_000 : 6_000,
     placeholderData: keepPreviousData,
   });
 
@@ -146,8 +149,8 @@ export default function OpsPage() {
   } = useQuery({
     queryKey: OPS_LOG_KEY(kind),
     queryFn: () => fetchOpsLog(kind),
-    refetchInterval: 12_000,
-    staleTime: 8_000,
+    refetchInterval: connected ? 45_000 : 12_000,
+    staleTime: connected ? 10_000 : 6_000,
     placeholderData: keepPreviousData,
   });
 
@@ -160,7 +163,7 @@ export default function OpsPage() {
   } = useQuery({
     queryKey: OPS_PING_KEY,
     queryFn: fetchOpsPing,
-    refetchInterval: 20_000,
+    refetchInterval: connected ? 60_000 : 20_000,
     staleTime: 15_000,
     retry: 3,
     placeholderData: keepPreviousData,

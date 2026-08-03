@@ -1,16 +1,24 @@
 /**
- * useLiveTokens
+ * Live SSE — single EventSource for the whole desk.
  *
- * Opens SSE to /api/events and patches React Query caches in real-time.
- * - calls:changed → Waiting/Best insert/surface/ENTRY
- * - prices:desk → patch MC/gain on Calls desk without waiting for poll
- * - reconnect → invalidate desk (missed events during the gap)
+ * - calls:changed → Waiting/Best/Hot/Latest + pending badge
+ * - prices:desk → patch MC/gain on feed + call detail (no poll wait)
+ * - token:bought → bump buy counts, refresh detail buyers, desk feeds
+ * - reconnect → invalidate desk (EventSource has no backlog)
  */
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getApiBase } from "@/lib/api-base";
-import type { CallCard, FeedPage } from "@/lib/calls-api";
+import type { CallCard, CallBuyer, CallSnap, CrypsorWalletRow, FeedPage } from "@/lib/calls-api";
+
+type CallDetailPayload = {
+  card: CallCard | null;
+  buyers: CallBuyer[];
+  snaps: CallSnap[];
+  crypsorWallets?: CrypsorWalletRow[];
+  winrateLoaded?: boolean;
+};
 
 interface TokenUpdatedPayload {
   tokenId: number;
@@ -32,6 +40,13 @@ interface TokenDeletedPayload {
   tokenAddress: string;
 }
 
+interface TokenBoughtPayload {
+  tokenId: number;
+  tokenAddress: string;
+  walletId: number;
+  boughtAt?: string;
+}
+
 interface PricesDeskPayload {
   ticks: Array<{
     tokenId: number;
@@ -47,6 +62,14 @@ interface PaginatedTokenPage {
   total: number;
   page: number;
   pages: number;
+}
+
+type LiveSseValue = { connected: boolean };
+
+const LiveSseContext = createContext<LiveSseValue>({ connected: false });
+
+export function useLiveSse(): LiveSseValue {
+  return useContext(LiveSseContext);
 }
 
 function patchCallCard(
@@ -74,7 +97,6 @@ function patchCallCard(
     athMultiple = Math.round((athMcUsd / called) * 100) / 100;
   }
 
-  // Keep 1H in sync with live MC when we have a baseline (mc1h or young since-call)
   let gain1hPct = card.gain1hPct;
   const baseline1h = (card as CallCard & { mc1hUsd?: number | null }).mc1hUsd;
   if (baseline1h != null && baseline1h > 0) {
@@ -100,10 +122,11 @@ function patchCallCard(
   };
 }
 
-export function useLiveTokens(): { connected: boolean } {
+function useLiveTokensInternal(): LiveSseValue {
   const qc = useQueryClient();
   const [connected, setConnected] = useState(false);
   const callsBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const buyBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sawDisconnect = useRef(false);
 
   useEffect(() => {
@@ -117,6 +140,17 @@ export function useLiveTokens(): { connected: boolean } {
         void qc.invalidateQueries({ queryKey: ["calls-waiting"] });
         void qc.invalidateQueries({ queryKey: ["calls-stats"] });
         void qc.invalidateQueries({ queryKey: ["opsSummary"] });
+      }, ms);
+    };
+
+    const bumpBuys = (tokenId: number, ms = 80) => {
+      if (buyBumpTimer.current) clearTimeout(buyBumpTimer.current);
+      buyBumpTimer.current = setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ["calls-token", tokenId] });
+        void qc.invalidateQueries({ queryKey: ["calls-feed"] });
+        void qc.invalidateQueries({ queryKey: ["calls-waiting"] });
+        void qc.invalidateQueries({ queryKey: ["opsSummary"] });
+        void qc.invalidateQueries({ queryKey: ["opsLog"] });
       }, ms);
     };
 
@@ -138,11 +172,21 @@ export function useLiveTokens(): { connected: boolean } {
           return changed ? { ...old, cards } : old;
         },
       );
+
+      // Patch open call-detail caches (any winrate flag)
+      qc.setQueriesData<CallDetailPayload>(
+        { queryKey: ["calls-token"] },
+        (old) => {
+          if (!old?.card) return old;
+          const tick = byId.get(old.card.id);
+          if (!tick) return old;
+          return { ...old, card: patchCallCard(old.card, tick) };
+        },
+      );
     };
 
     es.addEventListener("connected", () => {
       setConnected(true);
-      // After a disconnect, replay desk state — EventSource has no backlog
       if (sawDisconnect.current) {
         bumpCallsDesk(0);
       }
@@ -157,6 +201,29 @@ export function useLiveTokens(): { connected: boolean } {
         applyDeskPrices(JSON.parse(e.data as string) as PricesDeskPayload);
       } catch (err) {
         console.warn("[SSE] prices:desk parse error", err);
+      }
+    });
+
+    es.addEventListener("token:bought", (e: MessageEvent) => {
+      try {
+        const payload: TokenBoughtPayload = JSON.parse(e.data as string);
+        // Optimistic buy-count bump on visible rows (distinct wallets — approx)
+        qc.setQueriesData<FeedPage>(
+          { queryKey: ["calls-feed"] },
+          (old) => {
+            if (!old?.cards?.length) return old;
+            let changed = false;
+            const cards = old.cards.map((c) => {
+              if (c.id !== payload.tokenId) return c;
+              changed = true;
+              return { ...c, walletBuys: (c.walletBuys ?? 0) + 1 };
+            });
+            return changed ? { ...old, cards } : old;
+          },
+        );
+        bumpBuys(payload.tokenId, 100);
+      } catch (err) {
+        console.warn("[SSE] token:bought parse error", err);
       }
     });
 
@@ -226,6 +293,7 @@ export function useLiveTokens(): { connected: boolean } {
       try {
         const payload: TokenSoldPayload = JSON.parse(e.data);
         qc.invalidateQueries({ queryKey: ["token", payload.tokenId] });
+        qc.invalidateQueries({ queryKey: ["calls-token", payload.tokenId] });
       } catch { /* ignore */ }
     });
 
@@ -233,6 +301,7 @@ export function useLiveTokens(): { connected: boolean } {
       try {
         const payload: { tokenId: number } = JSON.parse(e.data);
         qc.invalidateQueries({ queryKey: ["holders", payload.tokenId] });
+        qc.invalidateQueries({ queryKey: ["calls-token", payload.tokenId] });
       } catch { /* ignore */ }
     });
 
@@ -243,10 +312,26 @@ export function useLiveTokens(): { connected: boolean } {
 
     return () => {
       if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
+      if (buyBumpTimer.current) clearTimeout(buyBumpTimer.current);
       es.close();
       setConnected(false);
     };
   }, [qc]);
 
   return { connected };
+}
+
+/** Mount once in AppShell — provides connected flag + wires SSE. */
+export function LiveSseProvider({ children }: { children: ReactNode }) {
+  const value = useLiveTokensInternal();
+  return (
+    <LiveSseContext.Provider value={value}>
+      {children}
+    </LiveSseContext.Provider>
+  );
+}
+
+/** @deprecated Prefer useLiveSse() — kept for any leftover imports. */
+export function useLiveTokens(): LiveSseValue {
+  return useLiveSse();
 }
