@@ -1,5 +1,5 @@
 /**
- * Wallet Track API — enter a token mint, fetch GMGN holders, judge from scratch.
+ * Wallet Track API — free holders + Crypsor labels; GMGN only for KOL/smart overlay.
  *
  * POST /api/wallet-track/analyze  { token: "<mint or tracked id>", chain?: "solana" }
  * GET  /api/wallet-track/:token   ?chain=solana
@@ -10,24 +10,32 @@ import { db } from "@workspace/db";
 import { tracked_tokens } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { apiFail, apiOk } from "../lib/api-envelope";
+import { CHAIN_MAP, gmgnFetch, nextProxy } from "../lib/gmgn-client";
 import {
-  CHAIN_MAP,
-  gmgnFetch,
-  nextProxy,
-} from "../lib/gmgn-client";
+  classifyRunStatus,
+  enrichHoldersBatch,
+  estimateAthMultiple,
+  fetchDexPulse,
+  fetchRugSnapshot,
+  fetchTopHoldersFree,
+  type FreeHolder,
+} from "../lib/wallet-track-free";
 import {
-  judgeHolders,
+  buildTokenBoard,
+  extractGmgnOverlays,
+  judgeFreeHolders,
   summarizeHolders,
-  type GmgnHolderRaw,
   type JudgedWallet,
+  type TokenBoard,
   type TokenHolderSummary,
 } from "../lib/wallet-track-judge";
 
 const router = Router();
 
 const SOL_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** GMGN used only to tag KOL/smart among our free holder set — keep pages light. */
 const GMGN_PAGE_SIZE = 20;
-const GMGN_MAX_PAGES = 10; // up to 200 holders per analyze
+const GMGN_MAX_PAGES = 5;
 
 type TokenMeta = {
   id: number | null;
@@ -43,7 +51,6 @@ async function resolveToken(input: string, chainHint: string): Promise<TokenMeta
   const raw = input.trim();
   if (!raw) return null;
 
-  // Numeric tracked id
   if (/^\d+$/.test(raw)) {
     const id = Number(raw);
     const [row] = await db.select().from(tracked_tokens).where(eq(tracked_tokens.id, id)).limit(1);
@@ -79,7 +86,6 @@ async function resolveToken(input: string, chainHint: string): Promise<TokenMeta
     };
   }
 
-  // Not in DB — still allow analyze by mint (GMGN only)
   return {
     id: null,
     address: raw,
@@ -91,102 +97,58 @@ async function resolveToken(input: string, chainHint: string): Promise<TokenMeta
   };
 }
 
-async function fetchDexMeta(mint: string): Promise<{
-  name: string | null;
-  symbol: string | null;
-  marketCapUsd: string | null;
-  priceUsd: string | null;
-  liquidityUsd: string | null;
-  dexUrl: string | null;
-} | null> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8_000);
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
-      signal: ctrl.signal,
-      headers: { Accept: "application/json" },
-    });
-    clearTimeout(t);
-    if (!res.ok) return null;
-    const body = await res.json() as {
-      pairs?: Array<{
-        baseToken?: { name?: string; symbol?: string; address?: string };
-        marketCap?: number;
-        fdv?: number;
-        priceUsd?: string;
-        liquidity?: { usd?: number };
-        url?: string;
-      }>;
-    };
-    const pair = (body.pairs ?? []).find(p =>
-      (p.baseToken?.address ?? "").toLowerCase() === mint.toLowerCase(),
-    ) ?? body.pairs?.[0];
-    if (!pair) return null;
-    const mc = pair.marketCap ?? pair.fdv;
-    return {
-      name: pair.baseToken?.name ?? null,
-      symbol: pair.baseToken?.symbol ?? null,
-      marketCapUsd: mc != null ? String(mc) : null,
-      priceUsd: pair.priceUsd ?? null,
-      liquidityUsd: pair.liquidity?.usd != null ? String(pair.liquidity.usd) : null,
-      dexUrl: pair.url ?? null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function fetchGmgnHolders(chain: string, mint: string): Promise<{
-  holders: GmgnHolderRaw[];
+/** Lightweight GMGN pull — we only keep KOL/smart overlays. */
+async function fetchGmgnIdentityRows(chain: string, mint: string): Promise<{
+  rows: Array<{
+    address?: string;
+    account_address?: string;
+    twitter_name?: string | null;
+    twitter_username?: string | null;
+    tags?: string[];
+    maker_token_tags?: string[];
+  }>;
   pages: number;
   ok: boolean;
   status: number;
-  error?: string;
 }> {
   const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
   const proxy = nextProxy();
-  const holders: GmgnHolderRaw[] = [];
+  const rows: Array<{
+    address?: string;
+    account_address?: string;
+    twitter_name?: string | null;
+    twitter_username?: string | null;
+    tags?: string[];
+    maker_token_tags?: string[];
+  }> = [];
   let pages = 0;
   let lastStatus = 0;
 
   for (let page = 0; page < GMGN_MAX_PAGES; page++) {
     const offset = page * GMGN_PAGE_SIZE;
     const url = `https://gmgn.ai/vas/api/v1/token_holders/${c}/${mint}?limit=${GMGN_PAGE_SIZE}&offset=${offset}`;
-    const res = await gmgnFetch(url, proxy);
-    lastStatus = res.status;
-    if (!res.ok) {
-      return {
-        holders,
-        pages,
-        ok: holders.length > 0,
-        status: res.status,
-        error: holders.length === 0
-          ? `GMGN holders fetch failed (HTTP ${res.status})`
-          : undefined,
-      };
+    try {
+      const res = await gmgnFetch(url, proxy);
+      lastStatus = res.status;
+      if (!res.ok) {
+        return { rows, pages, ok: rows.length > 0, status: res.status };
+      }
+      const list: unknown[] =
+        (res.data as { data?: { data?: { list?: unknown[] } } })?.data?.data?.list
+        ?? (res.data as { data?: { list?: unknown[] } })?.data?.list
+        ?? [];
+      pages++;
+      if (list.length === 0) break;
+      for (const row of list) {
+        rows.push(row as (typeof rows)[number]);
+      }
+      if (list.length < GMGN_PAGE_SIZE) break;
+    } catch {
+      return { rows, pages, ok: rows.length > 0, status: lastStatus || 0 };
     }
-
-    const list: unknown[] =
-      (res.data as { data?: { data?: { list?: unknown[] } } })?.data?.data?.list
-      ?? (res.data as { data?: { list?: unknown[] } })?.data?.list
-      ?? [];
-
-    pages++;
-    if (list.length === 0) break;
-    for (const row of list) holders.push(row as GmgnHolderRaw);
-    if (list.length < GMGN_PAGE_SIZE) break;
   }
 
-  return { holders, pages, ok: true, status: lastStatus || 200 };
-}
-
-async function fetchHolderStat(chain: string, mint: string): Promise<Record<string, unknown> | null> {
-  const c = CHAIN_MAP[chain.toLowerCase()] ?? "sol";
-  const proxy = nextProxy();
-  const res = await gmgnFetch(`https://gmgn.ai/vas/api/v1/token_holder_stat/${c}/${mint}`, proxy);
-  if (!res.ok) return null;
-  const root = res.data as { data?: { data?: Record<string, unknown>; stat?: Record<string, unknown> } };
-  return (root?.data?.data ?? root?.data?.stat ?? root?.data ?? null) as Record<string, unknown> | null;
+  return { rows, pages, ok: true, status: lastStatus || 200 };
 }
 
 export type WalletTrackReport = {
@@ -194,64 +156,110 @@ export type WalletTrackReport = {
     priceUsd: string | null;
     liquidityUsd: string | null;
     dexUrl: string | null;
+    imageUrl: string | null;
   };
+  board: TokenBoard;
   summary: TokenHolderSummary;
   wallets: JudgedWallet[];
-  gmgnStat: Record<string, unknown> | null;
   fetch: {
     holderRows: number;
-    pages: number;
+    freeOk: boolean;
+    gmgnOverlayRows: number;
+    gmgnPages: number;
     gmgnOk: boolean;
     gmgnStatus: number;
     dexOk: boolean;
+    rugOk: boolean;
+    enrichedWallets: number;
   };
   note: string;
   fetchedAt: string;
 };
 
-async function analyzeToken(input: string, chain: string): Promise<WalletTrackReport | { error: string; code: string }> {
+async function analyzeToken(
+  input: string,
+  chain: string,
+): Promise<WalletTrackReport | { error: string; code: string }> {
   const resolved = await resolveToken(input, chain);
   if (!resolved) {
     return { error: "Invalid token — paste a Solana mint or tracked token id", code: "bad_token" };
   }
 
-  const [dex, gmgnHolders, gmgnStat] = await Promise.all([
-    fetchDexMeta(resolved.address),
-    fetchGmgnHolders(resolved.chain, resolved.address),
-    fetchHolderStat(resolved.chain, resolved.address),
+  // Free path first (required)
+  const [holderPack, pulse, rug] = await Promise.all([
+    fetchTopHoldersFree(resolved.address, 30),
+    fetchDexPulse(resolved.address),
+    fetchRugSnapshot(resolved.address),
   ]);
 
-  if (!gmgnHolders.ok && gmgnHolders.holders.length === 0) {
+  if (!holderPack.holders.length) {
     return {
-      error: gmgnHolders.error ?? "Could not fetch holders from GMGN",
-      code: "gmgn_holders_failed",
+      error: "Could not fetch holders from free Solana RPC",
+      code: "free_holders_failed",
     };
   }
 
-  const wallets = judgeHolders(gmgnHolders.holders);
+  // Cap enrich cost — top 20 by hold %
+  const toEnrich = [...holderPack.holders]
+    .sort((a, b) => b.pct - a.pct)
+    .slice(0, 20)
+    .map((h) => h.wallet);
+
+  const [onChainMap, gmgnIdentity] = await Promise.all([
+    enrichHoldersBatch(toEnrich, 3),
+    fetchGmgnIdentityRows(resolved.chain, resolved.address),
+  ]);
+
+  const overlays = extractGmgnOverlays(gmgnIdentity.rows);
+  const runStatus = classifyRunStatus(pulse, rug);
+  const athEst = estimateAthMultiple(pulse);
+  const wallets = judgeFreeHolders(
+    holderPack.holders as FreeHolder[],
+    onChainMap,
+    overlays,
+    pulse?.pairCreatedAt ?? null,
+  );
   const summary = summarizeHolders(wallets);
+  const board = buildTokenBoard(pulse, rug, runStatus, athEst);
+
+  // Extra board risk from rug
+  if (rug.rugged) summary.riskFlags.unshift("token flagged rugged (RugCheck)");
+  if (rug.mintAuthority) summary.riskFlags.push("mint authority still live");
+  if (rug.freezeAuthority) summary.riskFlags.push("freeze authority still live");
+  if ((rug.top10Pct ?? 0) >= 40) summary.riskFlags.push(`top10 hold ~${rug.top10Pct!.toFixed(0)}%`);
 
   return {
     token: {
       ...resolved,
-      name: resolved.name ?? dex?.name ?? null,
-      symbol: resolved.symbol ?? dex?.symbol ?? null,
-      marketCapUsd: resolved.marketCapUsd ?? dex?.marketCapUsd ?? null,
-      priceUsd: dex?.priceUsd ?? null,
-      liquidityUsd: dex?.liquidityUsd ?? null,
-      dexUrl: dex?.dexUrl ?? null,
+      name: resolved.name ?? pulse?.name ?? null,
+      symbol: resolved.symbol ?? pulse?.symbol ?? null,
+      marketCapUsd:
+        resolved.marketCapUsd
+        ?? (pulse?.marketCap != null ? String(pulse.marketCap) : null),
+      priceUsd: pulse?.priceUsd != null ? String(pulse.priceUsd) : null,
+      liquidityUsd: pulse?.liquidityUsd != null ? String(pulse.liquidityUsd) : null,
+      dexUrl: pulse?.pairAddress
+        ? `https://dexscreener.com/solana/${pulse.pairAddress}`
+        : null,
+      imageUrl: pulse?.imageUrl ?? null,
+      status: resolved.status ?? runStatus,
     },
+    board,
     summary,
     wallets,
-    gmgnStat,
     fetch: {
-      holderRows: gmgnHolders.holders.length,
-      pages: gmgnHolders.pages,
-      gmgnOk: gmgnHolders.ok,
-      gmgnStatus: gmgnHolders.status,
-      dexOk: Boolean(dex),
+      holderRows: holderPack.holders.length,
+      freeOk: true,
+      gmgnOverlayRows: overlays.size,
+      gmgnPages: gmgnIdentity.pages,
+      gmgnOk: gmgnIdentity.ok,
+      gmgnStatus: gmgnIdentity.status,
+      dexOk: Boolean(pulse),
+      rugOk: rug.score != null || rug.risks.length > 0,
+      enrichedWallets: onChainMap.size,
     },
-    note: "KOL/smart labels are GMGN pass-through. Score/label otherwise are Crypsor Wallet Track (no cabal/balance-bracket).",
+    note:
+      "Holders from free Solana RPC. Labels/scores are Crypsor model (age, funding cluster, sniper timing, concentration). GMGN used only for KOL/smart overlay.",
     fetchedAt: new Date().toISOString(),
   };
 }
