@@ -31,6 +31,7 @@ import {
   isProBannedToken,
 } from "../lib/solana-memecoin-gate";
 import { opsLog } from "../lib/ops-log";
+import { ensureTokenCreatorStats } from "../lib/pump-creator";
 
 // ── Helius DAS — token image resolver ─────────────────────────────────────────
 // Replaces the blocked PumpFun frontend-api (HTTP 530 from Cloudflare).
@@ -322,6 +323,11 @@ async function enrichToken(job: MetadataJobData): Promise<void> {
     await db.update(tracked_tokens)
       .set({ lastBuyAt: new Date(job.boughtAt) })
       .where(eq(tracked_tokens.id, job.tokenId));
+
+    // Pump creator track record + graduated (non-fatal)
+    if (job.chain === "solana" || job.chain === "sol") {
+      await ensureTokenCreatorStats(job.tokenId, job.tokenAddress).catch(() => {});
+    }
 
   } catch (err) {
     healthMonitor.error("metadata-service", err);

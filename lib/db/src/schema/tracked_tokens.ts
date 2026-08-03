@@ -140,6 +140,12 @@ export const tracked_tokens = pgTable(
     secRatTraderAmtRate:    real("sec_rat_trader_amt_rate"),
     secCreatorCreatedCount: integer("sec_creator_created_count"),  // how many tokens creator launched
     secFetchedAt:           timestamp("sec_fetched_at"),
+    // ── Pump.fun creator / graduation enrich ────────────────────────────────
+    // migrated (above) = graduated off bonding curve. These add creator track record.
+    creatorUsername:        text("creator_username"),             // pump profile username
+    pumpAthMarketCapUsd:    text("pump_ath_market_cap_usd"),      // this mint ATH from pump
+    creatorStats:           jsonb("creator_stats"),               // CreatorStatsPayload
+    creatorStatsFetchedAt:  timestamp("creator_stats_fetched_at"),
     // ── Composite scoring (scoringEngine.ts — holder-velocity-dominant weights) ──
     // Runs alongside intelligenceScore; same sub-scores, different formula.
     compositeScore:         real("composite_score"),

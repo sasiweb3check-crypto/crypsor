@@ -127,6 +127,11 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS crypsor_wallet_intel_weight_idx ON crypsor_wallet_intel (weightage)`,
   `CREATE INDEX IF NOT EXISTS crypsor_wte_token_idx ON crypsor_wallet_token_events (token_id)`,
   `CREATE INDEX IF NOT EXISTS crypsor_wte_wallet_idx ON crypsor_wallet_token_events (wallet_address)`,
+  // Pump.fun creator / graduation enrich on tracked_tokens
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS creator_username text`,
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS pump_ath_market_cap_usd text`,
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS creator_stats jsonb`,
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS creator_stats_fetched_at timestamptz`,
 ];
 
 /** Idempotent indexes that make /api/pro/history + stats cheap on Aiven. */

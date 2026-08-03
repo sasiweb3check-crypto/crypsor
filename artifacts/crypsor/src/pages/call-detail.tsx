@@ -179,6 +179,14 @@ function DetailHero({ c }: { c: CallCard }) {
               <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
                 style={{ color: "#04120c", background: "#7dd3c0" }}>CTO</span>
             )}
+            {c.graduated && (
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                style={{ color: "#04120c", background: "var(--cryp-mint)" }}>Graduated</span>
+            )}
+            {c.creatorStats?.trustedDev && (
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+                style={{ color: "#04120c", background: "#f0c14b" }}>Trusted dev</span>
+            )}
             {athX >= 2 && (
               <span className="ath-pill">{athX >= 10 ? Math.round(athX) : athX.toFixed(1)}x ATH</span>
             )}
@@ -413,19 +421,28 @@ export default function CallDetailPage() {
       </section>
 
       {card && (
-        <section className="call-card space-y-2 !p-3">
+        <section className="call-card space-y-2.5 !p-3">
           <div className="flex items-center gap-2 mb-0.5">
             <Shield className="w-3.5 h-3.5 text-[var(--cryp-teal)]" />
             <h2 className="font-display text-[11px] font-bold uppercase tracking-widest">
-              Creator · CTO
+              Creator · CTO · Graduated
             </h2>
           </div>
+
           <div className="grid grid-cols-2 gap-2 text-[12px]">
             <div>
               <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">CTO</div>
               <div className={cn("font-bold mt-0.5", card.ctoFlag ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-text)]")}>
                 {card.ctoFlag === true ? "Yes (community)" : card.ctoFlag === false ? "No" : "Unknown"}
               </div>
+              <div className="text-[9px] text-[var(--cryp-mute)] mt-0.5">GMGN security flag</div>
+            </div>
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Graduated</div>
+              <div className={cn("font-bold mt-0.5", card.graduated ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-warn)]")}>
+                {card.graduated ? "Yes · PumpSwap" : "Bonding curve"}
+              </div>
+              <div className="text-[9px] text-[var(--cryp-mute)] mt-0.5">pump.fun complete</div>
             </div>
             <div>
               <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Creator</div>
@@ -436,17 +453,118 @@ export default function CallDetailPage() {
               </div>
             </div>
             <div>
-              <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Created tokens</div>
-              <div className="font-mono-num font-bold mt-0.5">
-                {card.creatorCreatedCount ?? "—"}
+              <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Pump ATH</div>
+              <div className="font-mono-num font-bold mt-0.5 text-[var(--cryp-gain)]">
+                {formatCompactUsd(card.pumpAthMcUsd ?? card.athMcUsd)}
               </div>
             </div>
-            <div>
-              <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Creator addr</div>
-              <div className="font-mono-num text-[11px] mt-0.5 truncate">
-                {card.creatorAddress ? truncateAddress(card.creatorAddress) : "—"}
+          </div>
+
+          {/* Creator identity + trust */}
+          <div className="pt-1 space-y-1.5" style={{ borderTop: "1px solid var(--cryp-line)" }}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">Deployer</div>
+                <div className="font-mono-num text-[11px] mt-0.5 truncate">
+                  {card.creatorUsername ? `@${card.creatorUsername}` : "—"}
+                  {card.creatorAddress && (
+                    <button
+                      type="button"
+                      className="ml-1.5 text-[var(--cryp-mute)] hover:text-[var(--cryp-mint)]"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(card.creatorAddress!);
+                      }}
+                    >
+                      {truncateAddress(card.creatorAddress)}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {card.creatorStats && (
+                <div className="text-right shrink-0">
+                  <div className={cn(
+                    "text-[10px] font-bold uppercase tracking-wider",
+                    card.creatorStats.trustedDev ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-warn)]",
+                  )}>
+                    {card.creatorStats.trustLabel}
+                    {card.creatorStats.trustedDev ? " · trusted" : ""}
+                  </div>
+                  <div className="text-[10px] font-mono-num text-[var(--cryp-mute)] mt-0.5">
+                    {card.creatorStats.tokenCount} launched · {card.creatorStats.migratedCount} grad
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5 text-[11px]">
+              <div className="call-stat !py-1.5 !px-2">
+                <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">Launches</div>
+                <div className="font-mono-num font-bold mt-0.5">
+                  {card.creatorStats?.tokenCount ?? card.creatorCreatedCount ?? "—"}
+                </div>
+              </div>
+              <div className="call-stat !py-1.5 !px-2">
+                <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">Migrated</div>
+                <div className="font-mono-num font-bold mt-0.5">
+                  {card.creatorStats?.migratedCount ?? "—"}
+                </div>
+              </div>
+              <div className="call-stat !py-1.5 !px-2">
+                <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">Max ATH</div>
+                <div className="font-mono-num font-bold mt-0.5 text-[var(--cryp-gain)]">
+                  {formatCompactUsd(card.creatorStats?.maxAthUsd ?? null)}
+                </div>
               </div>
             </div>
+
+            {card.creatorStats?.tokens && card.creatorStats.tokens.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[9px] uppercase tracking-widest text-[var(--cryp-mute)]">
+                  Creator tokens (pump.fun)
+                </div>
+                <ul className="max-h-40 overflow-y-auto no-scrollbar space-y-1">
+                  {card.creatorStats.tokens.map((t) => (
+                    <li
+                      key={t.mint}
+                      className="flex items-center justify-between gap-2 text-[10px] font-mono-num py-0.5"
+                      style={{ borderBottom: "1px solid rgba(125,180,170,0.08)" }}
+                    >
+                      <div className="min-w-0 truncate">
+                        <span className="font-bold text-[var(--cryp-text)]">
+                          ${t.symbol || "?"}
+                        </span>
+                        <span className="text-[var(--cryp-mute)] ml-1 truncate">
+                          {t.name || truncateAddress(t.mint)}
+                        </span>
+                        {t.mint === card.address && (
+                          <span className="ml-1 text-[var(--cryp-mint)]">· this</span>
+                        )}
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <span className={t.complete ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-warn)]"}>
+                          {t.complete ? "grad" : "curve"}
+                        </span>
+                        <span className="ml-1.5 text-[var(--cryp-gain)]">
+                          ATH {formatCompactUsd(t.athMc)}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {card.creatorAddress && (
+              <a
+                href={`https://pump.fun/profile/${card.creatorAddress}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-[var(--cryp-mint)]"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Pump profile
+              </a>
+            )}
           </div>
         </section>
       )}
