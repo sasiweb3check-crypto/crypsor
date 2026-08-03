@@ -431,7 +431,8 @@ async function checkAndAlert(): Promise<void> {
     WHERE pc.surfaced_at IS NOT NULL
       AND pc.quality_label IN ('very_good', 'good')
       AND (
-        (pc.runner_alert_sent_at IS NULL AND pc.called_at >= NOW() - INTERVAL '3 hours')
+        -- Keep evaluating pending ENTRY while still on Waiting (was 3h — desk kept cards longer)
+        (pc.runner_alert_sent_at IS NULL AND pc.called_at >= NOW() - INTERVAL '18 hours')
         OR (
           (pc.runner_alert_sent_at IS NOT NULL OR pc.call_alert_sent_at IS NOT NULL)
           AND COALESCE(pc.ath_multiple, 1) >= 2

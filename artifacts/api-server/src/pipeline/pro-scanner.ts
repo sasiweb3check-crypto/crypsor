@@ -147,6 +147,8 @@ function shouldSurface(opts: {
 }
 
 async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candidate[]> {
+  // Gate MC on live tracked_tokens first — intel_log MC is often stale/null
+  // from the first score pass before price landed, which permanently skipped tokens.
   const result = await db.execute(sql`
     SELECT DISTINCT ON (l.token_id)
       l.token_id,
@@ -154,7 +156,7 @@ async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candida
       t.chain,
       t.symbol,
       l.computed_at,
-      l.market_cap_usd,
+      COALESCE(NULLIF(t.market_cap_usd, ''), l.market_cap_usd) AS market_cap_usd,
       l.intelligence_score,
       l.holder_kol_count,
       l.holder_smart_count,
@@ -166,8 +168,8 @@ async function loadCandidates(onlyTokenId?: number, limit = 40): Promise<Candida
     FROM token_intel_log l
     JOIN tracked_tokens t ON t.id = l.token_id
     WHERE l.intelligence_score >= ${MIN_INTEL}
-      AND l.market_cap_usd::numeric >= ${MIN_MC}
-      AND l.market_cap_usd::numeric <= ${MAX_MC}
+      AND COALESCE(NULLIF(t.market_cap_usd, ''), l.market_cap_usd)::numeric >= ${MIN_MC}
+      AND COALESCE(NULLIF(t.market_cap_usd, ''), l.market_cap_usd)::numeric <= ${MAX_MC}
       AND l.status_after IN ('new', 'active', 'watch')
       AND COALESCE(t.status, '') <> 'ignored'
       AND COALESCE(UPPER(t.symbol), '') NOT IN (

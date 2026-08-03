@@ -265,6 +265,13 @@ async function upsertToken(address: string, chain: string, meta: {
 
   if (existing.length > 0) {
     const { id, marketCapUsd } = existing[0];
+    // Re-buy: keep lastBuyAt fresh so desk/intel see ongoing activity
+    await db.update(tracked_tokens).set({
+      lastBuyAt: new Date(),
+      ...(meta.symbol ? { symbol: meta.symbol } : {}),
+      ...(meta.name ? { name: meta.name } : {}),
+      ...(meta.logoUri ? { logoUri: meta.logoUri } : {}),
+    }).where(eq(tracked_tokens.id, id)).catch(() => {});
     // Back-fill missing metadata asynchronously — never block the scan loop
     if (!marketCapUsd) enrichTokenAsync(id, chain, address);
     return id;
@@ -291,7 +298,12 @@ async function upsertToken(address: string, chain: string, meta: {
   })
   .onConflictDoUpdate({
     target: [tracked_tokens.address, tracked_tokens.chain],
-    set: { name: meta.name ?? null, symbol: meta.symbol ?? null, lastBuyAt: new Date() },
+    // Never null-out enriched name/symbol on a race with a partial meta insert
+    set: {
+      lastBuyAt: new Date(),
+      ...(meta.name ? { name: meta.name } : {}),
+      ...(meta.symbol ? { symbol: meta.symbol } : {}),
+    },
   })
   .returning({ id: tracked_tokens.id });
 
@@ -306,9 +318,13 @@ async function recordBuy(opts: {
 }): Promise<boolean> {
   try {
     if (opts.txHash) {
-      // Dedup by tx globally and by wallet+token+tx (same buy path)
+      // One Solana tx can include multiple mints — dedup per wallet+token+tx
       const dup = await db.select({ id: token_buys.id }).from(token_buys)
-        .where(eq(token_buys.txHash, opts.txHash)).limit(1);
+        .where(and(
+          eq(token_buys.walletId, opts.walletId),
+          eq(token_buys.tokenId, opts.tokenId),
+          eq(token_buys.txHash, opts.txHash),
+        )).limit(1);
       if (dup.length > 0) return false;
     } else if (opts.boughtAt) {
       // No signature — soft-dedup same wallet/token within 2s window

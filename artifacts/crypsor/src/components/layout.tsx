@@ -5,10 +5,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
 import { PAGE_SIZE, fetchCallsFeed } from "@/lib/calls-api";
+import { useLiveTokens } from "@/hooks/use-live-tokens";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const qc = useQueryClient();
+  const { connected } = useLiveTokens();
   const onUtility = location === "/ops" || location === "/settings" || location.startsWith("/wallet")
     || location.startsWith("/ops/") || location.startsWith("/settings/");
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
@@ -53,9 +55,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Link>
 
         <div className="flex items-center gap-1">
-          <span className="hidden sm:inline-flex items-center gap-1.5 mr-2 text-[10px] uppercase tracking-widest text-[var(--cryp-gain)]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--cryp-gain)] pulse-dot" />
-            Live
+          <span
+            className={cn(
+              "hidden sm:inline-flex items-center gap-1.5 mr-2 text-[10px] uppercase tracking-widest",
+              connected ? "text-[var(--cryp-gain)]" : "text-[var(--cryp-mute)]",
+            )}
+            title={connected ? "SSE connected" : "SSE reconnecting — polling backup"}
+          >
+            <span
+              className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                connected ? "bg-[var(--cryp-gain)] pulse-dot" : "bg-[var(--cryp-mute)]",
+              )}
+            />
+            {connected ? "Live" : "Sync"}
           </span>
           <Link href="/wallet-track">
             <button

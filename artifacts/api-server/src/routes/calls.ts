@@ -722,7 +722,7 @@ async function loadWaitingCalls(limit: number): Promise<{
   pendingFirstCalls: number;
 }> {
   // v4: latest-called + momentum/1h for table filters
-  const cacheKey = `calls:waiting:v5:${limit}`;
+  const cacheKey = `calls:waiting:v6:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
@@ -756,13 +756,7 @@ async function loadWaitingCalls(limit: number): Promise<{
     WHERE COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND pc.call_alert_sent_at IS NULL
       AND pc.runner_alert_sent_at IS NULL
-      AND (
-        pc.quality_label = 'very_good'
-        OR (
-          t.sec_cto_flag IS TRUE
-          AND pc.quality_label IN ('good', 'very_good')
-        )
-      )
+      AND pc.quality_label IN ('good', 'very_good')
     ORDER BY pc.called_at DESC NULLS LAST
     LIMIT ${Math.min(Math.max(limit, 1), 200)}
   `);

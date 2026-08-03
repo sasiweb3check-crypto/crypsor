@@ -145,7 +145,9 @@ export async function fetchDexScreener(
     const pair = chainPairs.find(p => p.dexId === "raydium")
       ?? chainPairs[0]
       ?? json.pairs[0];
-    const mc = pair.marketCap ?? pair.fdv ?? null;
+    // Circulating MC only — never store FDV as marketCap (1B-supply fake caps)
+    const mc = pair.marketCap ?? null;
+    const fdv = pair.fdv ?? null;
 
     healthMonitor.ok("metadata-service", Date.now() - t0);
     return {
@@ -154,7 +156,7 @@ export async function fetchDexScreener(
       priceUsd:     pair.priceUsd ?? null,
       logoUri:      pair.info?.imageUrl ?? null,
       marketCapUsd: mc !== null ? String(mc) : null,
-      fdvUsd:       pair.fdv !== undefined ? String(pair.fdv) : null,
+      fdvUsd:       fdv !== null ? String(fdv) : null,
       liquidityUsd: pair.liquidity?.usd !== undefined ? String(pair.liquidity.usd) : null,
       volume24hUsd: pair.volume?.h24   !== undefined ? String(pair.volume.h24)  : null,
       tokenCreatedAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null,
