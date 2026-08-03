@@ -1067,9 +1067,18 @@ router.get("/calls/feed", async (req, res) => {
         return b.callScore - a.callScore;
       });
     } else if (mode === "hot") {
-      out = [...out].sort(
-        (a, b) => (b.nowMultiple - a.nowMultiple) || (b.callScore - a.callScore),
-      );
+      // Heat = short-window action (1H gain + momentum), not lifetime multiple
+      out = [...out].sort((a, b) => {
+        const heat = (c: CallCard) => {
+          const g1h = c.gain1hPct != null && Number.isFinite(c.gain1hPct) ? c.gain1hPct : 0;
+          const mom = Number(c.momentum1h ?? 0) || 0;
+          const nowBoost = Math.max(0, (c.nowMultiple ?? 1) - 1) * 8;
+          return g1h * 2.2 + mom * 0.6 + nowBoost;
+        };
+        const d = heat(b) - heat(a);
+        if (d !== 0) return d;
+        return (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
+      });
     } else {
       // latest — newest called first
       out = [...out].sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
@@ -1084,7 +1093,11 @@ router.get("/calls/feed", async (req, res) => {
       ...pagePack,
       universe,
       mode,
-      note: "Best/Hot/Latest = ENTRY-served only. Waiting is a separate queue. Max 20/page.",
+      note: mode === "best"
+        ? "Best = ENTRY-served · elite/strong score rank"
+        : mode === "hot"
+          ? "Hot = ENTRY-served · 1H heat + momentum (live)"
+          : "Latest = ENTRY-served · newest calls first",
     }));
   } catch (err) {
     console.error("calls feed error", err);
