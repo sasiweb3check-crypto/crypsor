@@ -47,7 +47,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[9px] tracking-[0.2em] uppercase mt-0.5">
-              {onWallet ? "Wallet" : onDetail ? "Detail" : location.startsWith("/ops") ? "Logs" : "Desk"}
+              {onWallet ? "Wallet Track" : onDetail ? "Detail" : location.startsWith("/ops") ? "Logs" : "Desk"}
             </div>
           </div>
         </Link>
@@ -57,10 +57,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--cryp-gain)] pulse-dot" />
             Live
           </span>
-          <Link href="/wallet">
+          <Link href="/wallet-track">
             <button
               type="button"
-              aria-label="Wallet search"
+              aria-label="Wallet Track"
               className={cn(
                 "w-10 h-10 flex items-center justify-center rounded-xl transition-colors",
                 onWallet
