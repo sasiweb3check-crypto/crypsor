@@ -21,6 +21,10 @@ import {
   MIN_ENTRY_OBSERVATION_SNAPS,
   type RunnerPhase,
 } from "../lib/runner-score";
+import {
+  ensureTokenCreatorStats,
+  type CreatorStatsPayload,
+} from "../lib/pump-creator";
 
 const router = Router();
 
@@ -86,6 +90,13 @@ export type CallCard = {
   creatorClose: boolean | null;
   creatorAddress: string | null;
   creatorCreatedCount: number | null;
+  /** Pump.fun graduated (migrated off bonding curve). Present on detail; optional on feed. */
+  graduated?: boolean;
+  creatorUsername?: string | null;
+  /** This mint's ATH MC from pump.fun when available. */
+  pumpAthMcUsd?: number | null;
+  /** Creator track record from pump.fun (token count, migrations, prior ATH, trust). */
+  creatorStats?: CreatorStatsPayload | null;
   socials: { twitter?: string; telegram?: string; website?: string };
   /** ENTRY ping fired (Telegram or in-app) — what win-rate counts */
   entryServed: boolean;
@@ -543,6 +554,8 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
       t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      COALESCE(t.migrated, false) AS migrated,
+      t.creator_username, t.pump_ath_market_cap_usd, t.creator_stats,
       ${MOMENTUM_SELECT},
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       cryp.crypsor_quality_n,
@@ -618,6 +631,13 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
     ? Math.round((currentMc / calledMc) * 100) / 100
     : 1;
 
+  const pumpAth = r.pump_ath_market_cap_usd != null
+    ? Number(r.pump_ath_market_cap_usd)
+    : null;
+  const creatorStats = (r.creator_stats && typeof r.creator_stats === "object")
+    ? (r.creator_stats as CreatorStatsPayload)
+    : null;
+
   return {
     id: Number(r.token_id),
     address: String(r.address),
@@ -668,6 +688,10 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
     creatorClose,
     creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
     creatorCreatedCount,
+    graduated: Boolean(r.migrated),
+    creatorUsername: r.creator_username != null ? String(r.creator_username) : null,
+    pumpAthMcUsd: pumpAth != null && Number.isFinite(pumpAth) ? pumpAth : null,
+    creatorStats,
     socials: extractSocials(r.raw_metadata),
     entryServed,
     properServe,
@@ -1251,6 +1275,31 @@ router.get("/calls/token/:tokenId", async (req, res) => {
     } catch (err) {
       console.warn("calls token single-card failed", err);
       card = null;
+    }
+
+    // Enrich pump creator / graduation on detail open (cached 30m on token row)
+    if (card?.address) {
+      try {
+        const enrich = await ensureTokenCreatorStats(tokenId, card.address);
+        if (enrich) {
+          // Reload card so UI sees persisted creator_stats / graduated
+          const refreshed = await loadSingleCallCard(tokenId);
+          if (refreshed) card = refreshed;
+          else {
+            card = {
+              ...card,
+              graduated: enrich.graduated || card.graduated,
+              creatorAddress: enrich.creatorAddress ?? card.creatorAddress,
+              creatorUsername: enrich.creatorUsername ?? card.creatorUsername ?? null,
+              creatorCreatedCount: enrich.creatorStats?.tokenCount ?? card.creatorCreatedCount,
+              pumpAthMcUsd: enrich.pumpAthMarketCapUsd ?? card.pumpAthMcUsd ?? null,
+              creatorStats: enrich.creatorStats ?? card.creatorStats ?? null,
+            };
+          }
+        }
+      } catch (err) {
+        console.warn("calls token creator enrich failed", err);
+      }
     }
 
     // Buyers = YOUR sensor wallets (Helius → token_buys). WR join only if requested.

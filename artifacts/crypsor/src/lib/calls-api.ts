@@ -5,8 +5,8 @@ import { apiFetch, ApiError } from "@/lib/api-fetch";
 
 type Envelope<T> = { ok: boolean; data?: T; error?: string };
 
-async function callsFetch<T>(path: string): Promise<T> {
-  const body = await apiFetch<Envelope<T> | T>(path);
+async function callsFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const body = await apiFetch<Envelope<T> | T>(path, { timeoutMs: 45_000, ...init });
   if (body && typeof body === "object" && "ok" in body) {
     const env = body as Envelope<T>;
     if (!env.ok || env.data === undefined) {
@@ -18,6 +18,33 @@ async function callsFetch<T>(path: string): Promise<T> {
 }
 
 export type CallLabel = "elite" | "strong" | "watch" | "noise";
+
+export type CreatorTokenRow = {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  complete: boolean;
+  usdMc: number | null;
+  athMc: number | null;
+  createdAt: string | null;
+  twitter: string | null;
+};
+
+export type CreatorTrustLabel = "trusted" | "proven" | "serial" | "fresh" | "unknown";
+
+export type CreatorStats = {
+  address: string;
+  username: string | null;
+  followers: number | null;
+  tokenCount: number;
+  migratedCount: number;
+  maxAthUsd: number | null;
+  trustLabel: CreatorTrustLabel;
+  trustedDev: boolean;
+  tokens: CreatorTokenRow[];
+  fetchedAt: string;
+  source: "pump.fun";
+};
 
 export type CallCard = {
   id: number;
@@ -62,6 +89,10 @@ export type CallCard = {
   creatorClose: boolean | null;
   creatorAddress: string | null;
   creatorCreatedCount: number | null;
+  graduated?: boolean;
+  creatorUsername?: string | null;
+  pumpAthMcUsd?: number | null;
+  creatorStats?: CreatorStats | null;
   socials: { twitter?: string; telegram?: string; website?: string };
   entryServed?: boolean;
   properServe?: boolean;
