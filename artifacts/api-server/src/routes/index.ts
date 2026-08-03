@@ -15,7 +15,7 @@ import runnerRouter   from "./runner";
 import traderRouter   from "./trader";
 import callsRouter    from "./calls";
 import opsRouter      from "./ops";
-import walletIntelRouter from "./wallet-intel";
+import walletTrackRouter from "./wallet-track";
 import { sseHandler } from "../pipeline/sse-gateway";
 import { apiFail } from "../lib/api-envelope";
 
@@ -57,7 +57,7 @@ router.use("/monitor",   monitorRouter);
 router.use("/pipeline",  pipelineRouter);
 router.use("/assets",    assetsRouter);
 router.use(callsRouter);
-router.use(walletIntelRouter);
+router.use(walletTrackRouter);
 router.use(proRouter);
 router.use(opsRouter);
 

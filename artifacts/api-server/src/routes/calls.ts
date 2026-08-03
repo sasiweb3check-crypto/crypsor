@@ -1390,13 +1390,6 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       crypsorWallets = [];
     }
 
-    if (crypsorWallets.length === 0) {
-      try {
-        const { enqueueWalletIntel } = await import("../pipeline/wallet-intel");
-        enqueueWalletIntel(tokenId);
-      } catch { /* non-fatal */ }
-    }
-
     res.setHeader("Cache-Control", "private, max-age=6");
     res.json(apiOk({
       card,
@@ -1407,7 +1400,7 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       walletBuysNote:
         "Wallet buys = distinct wallets from YOUR tracked list (walletdatasource) that bought this token via Helius scan → token_buys. Not GMGN holders.",
       crypsorNote:
-        "Crypsor wallet intel = our background labelling of token holders from holder snapshots (behaviour score, weightage). Win-rate fields load only with ?winrate=1.",
+        "Legacy crypsor_wallet_intel rows (if any). Live holder scoring is on Wallet Track — paste a mint there.",
     }));
   } catch (err) {
     console.error("calls token error", err);
