@@ -98,7 +98,7 @@ function patchCallCard(
   }
 
   let gain1hPct = card.gain1hPct;
-  const baseline1h = (card as CallCard & { mc1hUsd?: number | null }).mc1hUsd;
+  const baseline1h = card.mc1hUsd;
   if (baseline1h != null && baseline1h > 0) {
     gain1hPct = Math.round(((currentMcUsd - baseline1h) / baseline1h) * 1000) / 10;
   } else if (

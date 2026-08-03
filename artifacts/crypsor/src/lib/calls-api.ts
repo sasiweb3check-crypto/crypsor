@@ -82,6 +82,8 @@ export type CallCard = {
   volumeIntensityScore: number | null;
   /** 1h MC % vs ~1h snapshot (or since-call if token is young). */
   gain1hPct: number | null;
+  /** Baseline MC for live 1H recompute via prices:desk SSE. */
+  mc1hUsd?: number | null;
   momentum1h: number;
   momentum6h: number;
   tokenAgeMin: number | null;
@@ -129,6 +131,77 @@ export type CallStats = {
 };
 
 export type CallMode = "best" | "latest" | "hot" | "waiting";
+
+/** Client / SSE desk column sort */
+export type DeskSortKey = "default" | "mc" | "entry" | "ath" | "buys" | "called" | "heat" | "score";
+export type DeskSortDir = "asc" | "desc";
+
+export function heatScore(c: CallCard): number {
+  const g1h = c.gain1hPct != null && Number.isFinite(c.gain1hPct) ? c.gain1hPct : 0;
+  const mom = Number(c.momentum1h ?? 0) || 0;
+  const nowBoost = Math.max(0, (c.nowMultiple ?? 1) - 1) * 8;
+  return g1h * 2.2 + mom * 0.6 + nowBoost;
+}
+
+export function sortDeskCards(
+  cards: CallCard[],
+  mode: CallMode,
+  sortKey: DeskSortKey = "default",
+  sortDir: DeskSortDir = "desc",
+): CallCard[] {
+  const dir = sortDir === "asc" ? 1 : -1;
+  const key = sortKey === "default"
+    ? (mode === "hot" ? "heat" : mode === "best" ? "score" : "called")
+    : sortKey;
+
+  const tier = (l: CallCard["callLabel"]) =>
+    l === "elite" ? 0 : l === "strong" ? 1 : l === "watch" ? 2 : 3;
+
+  return [...cards].sort((a, b) => {
+    if (key === "called") {
+      return sortDir === "asc"
+        ? (a.calledAt ?? "").localeCompare(b.calledAt ?? "")
+        : (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
+    }
+    if (key === "score") {
+      // elite first when descending
+      const td = tier(a.callLabel) - tier(b.callLabel);
+      if (td !== 0) return sortDir === "asc" ? -td : td;
+      const sd = (b.callScore ?? 0) - (a.callScore ?? 0);
+      return sortDir === "asc" ? -sd : sd;
+    }
+
+    let d = 0;
+    switch (key) {
+      case "mc":
+        d = (a.currentMcUsd ?? 0) - (b.currentMcUsd ?? 0);
+        break;
+      case "entry":
+        d = (a.nowMultiple ?? 0) - (b.nowMultiple ?? 0);
+        break;
+      case "ath":
+        d = (a.athMultiple ?? 0) - (b.athMultiple ?? 0);
+        break;
+      case "buys":
+        d = (a.walletBuys ?? 0) - (b.walletBuys ?? 0);
+        break;
+      case "heat":
+        d = heatScore(a) - heatScore(b);
+        break;
+      default:
+        d = 0;
+    }
+    if (d !== 0) return d * dir;
+    return (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
+  });
+}
+
+export const MODE_BLURB: Record<CallMode, string> = {
+  waiting: "Pending ENTRY · newest first · hold reasons live",
+  best: "ENTRY served · elite → strong score rank",
+  hot: "ENTRY served · 1H heat + momentum · live re-rank",
+  latest: "ENTRY served · just called · newest first",
+};
 
 export type FeedFilters = {
   label?: string;
