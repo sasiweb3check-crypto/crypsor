@@ -7,11 +7,13 @@ import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
 import { PAGE_SIZE, fetchCallsFeed } from "@/lib/calls-api";
 import { ALERTS_UNREAD_KEY, fetchAlerts } from "@/lib/alerts-api";
 import { LiveSseProvider, useLiveSse } from "@/hooks/use-live-tokens";
+import { usePipelineKeepalive } from "@/hooks/use-pipeline-keepalive";
 
 function ShellChrome({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const qc = useQueryClient();
   const { connected } = useLiveSse();
+  usePipelineKeepalive(true);
   const onUtility = location === "/ops" || location === "/settings" || location.startsWith("/wallet")
     || location.startsWith("/ops/") || location.startsWith("/settings/")
     || location.startsWith("/alerts");
