@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "pnpm install --no-frozen-lockfile",
-  "buildCommand": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/crypsor run build",
+  "buildCommand": "pnpm --filter @workspace/api-server run build && node scripts/prepare-vercel-api.mjs && pnpm --filter @workspace/crypsor run build",
   "outputDirectory": "artifacts/crypsor/dist/public",
   "rewrites": [
     {
@@ -38,7 +38,7 @@
     "api/index.js": {
       "maxDuration": 60,
       "memory": 1024,
-      "includeFiles": "artifacts/api-server/dist/**"
+      "includeFiles": "api/**"
     }
   }
 }
