@@ -571,8 +571,21 @@ export function applyPumpDeskFilters<T extends {
   filter: PumpFilterId,
   sort: PumpSortId,
   minScore: number,
+  opts?: { maxPairAgeMin?: number; maxDetectAgeMin?: number },
 ): T[] {
+  const now = Date.now();
   let filtered = cards.filter((c) => (c.pumpScore ?? 0) >= minScore);
+
+  const maxPair = opts?.maxPairAgeMin;
+  if (maxPair != null && maxPair > 0) {
+    const cutoff = now - maxPair * 60_000;
+    filtered = filtered.filter((c) => (c.pumpPairCreatedAt ?? 0) >= cutoff);
+  }
+  const maxDetect = opts?.maxDetectAgeMin;
+  if (maxDetect != null && maxDetect > 0) {
+    const cutoff = now - maxDetect * 60_000;
+    filtered = filtered.filter((c) => (c.pumpDetectedAt ?? 0) >= cutoff);
+  }
 
   switch (filter) {
     case "intra":
@@ -595,7 +608,7 @@ export function applyPumpDeskFilters<T extends {
       });
       break;
     case "new": {
-      const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+      const twoHoursAgo = now - 2 * 60 * 60 * 1000;
       filtered = filtered.filter((c) => (c.pumpPairCreatedAt ?? 0) > twoHoursAgo);
       break;
     }
@@ -603,7 +616,6 @@ export function applyPumpDeskFilters<T extends {
       filtered = filtered.filter((c) => (c.pumpVolume24h ?? 0) >= 50_000);
       break;
     case "dev":
-      // Upstream: keyword match on name/symbol OR socialSignal >= 4
       filtered = filtered.filter((c) =>
         hasDevKeyword(c.name, c.symbol)
         || (c.pumpSocialSignal ?? 0) >= 4);

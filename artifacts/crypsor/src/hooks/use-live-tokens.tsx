@@ -111,14 +111,35 @@ function patchCallCard(
     gain1hPct = Math.round(((currentMcUsd - called) / called) * 1000) / 10;
   }
 
+  const detectMc = card.pumpMcAtDetection;
+  let pumpMcGainSinceDetection = card.pumpMcGainSinceDetection;
+  let pumpGainSinceDetection = card.pumpGainSinceDetection;
+  if (detectMc != null && detectMc > 0) {
+    pumpMcGainSinceDetection = ((currentMcUsd - detectMc) / detectMc) * 100;
+    pumpGainSinceDetection = pumpMcGainSinceDetection;
+  }
+
+  const athForPump = athMcUsd != null && Number.isFinite(athMcUsd) ? athMcUsd : card.athMcUsd;
+  let pumpAthMcGain = card.pumpAthMcGain;
+  let pumpAthGain = card.pumpAthGain;
+  if (athForPump != null && detectMc != null && detectMc > 0) {
+    pumpAthMcGain = ((athForPump - detectMc) / detectMc) * 100;
+    pumpAthGain = pumpAthMcGain;
+  }
+
   return {
     ...card,
     currentMcUsd,
-    athMcUsd: athMcUsd != null && Number.isFinite(athMcUsd) ? athMcUsd : card.athMcUsd,
+    pumpMarketCap: currentMcUsd,
+    athMcUsd: athForPump != null && Number.isFinite(athForPump) ? athForPump : card.athMcUsd,
     gainPct,
     gain1hPct,
     nowMultiple: Number.isFinite(nowMultiple) ? nowMultiple : card.nowMultiple,
     athMultiple: Number.isFinite(athMultiple) ? athMultiple : card.athMultiple,
+    pumpMcGainSinceDetection,
+    pumpGainSinceDetection,
+    pumpAthMcGain,
+    pumpAthGain,
   };
 }
 
@@ -127,6 +148,7 @@ function useLiveTokensInternal(): LiveSseValue {
   const [connected, setConnected] = useState(false);
   const callsBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const buyBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alertBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sawDisconnect = useRef(false);
 
   useEffect(() => {
@@ -151,6 +173,15 @@ function useLiveTokensInternal(): LiveSseValue {
         void qc.invalidateQueries({ queryKey: ["calls-waiting"] });
         void qc.invalidateQueries({ queryKey: ["opsSummary"] });
         void qc.invalidateQueries({ queryKey: ["opsLog"] });
+      }, ms);
+    };
+
+    const bumpAlerts = (ms = 250) => {
+      if (alertBumpTimer.current) clearTimeout(alertBumpTimer.current);
+      alertBumpTimer.current = setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ["pump-alerts"] });
+        void qc.invalidateQueries({ queryKey: ["pump-alerts-stats"] });
+        void qc.invalidateQueries({ queryKey: ["pump-alerts-unread"] });
       }, ms);
     };
 
@@ -216,22 +247,23 @@ function useLiveTokensInternal(): LiveSseValue {
           symbol: string | null;
           address: string | null;
         };
-        void qc.invalidateQueries({ queryKey: ["pump-alerts"] });
-        void qc.invalidateQueries({ queryKey: ["pump-alerts-stats"] });
-        void qc.invalidateQueries({ queryKey: ["pump-alerts-unread"] });
+        bumpAlerts(200);
 
         // Browser notification center (OS banner)
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-          const n = new Notification(payload.title || payload.label, {
-            body: payload.body ?? payload.label,
-            tag: `pump-alert-${payload.id}`,
-            renotify: true,
-          });
-          n.onclick = () => {
-            window.focus();
-            window.location.href = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/calls/${payload.tokenId}`;
-            n.close();
-          };
+          try {
+            const n = new Notification(payload.title || payload.label, {
+              body: payload.body ?? payload.label,
+              tag: `pump-alert-${payload.id}`,
+            });
+            n.onclick = () => {
+              window.focus();
+              window.location.href = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/calls/${payload.tokenId}`;
+              n.close();
+            };
+          } catch (notifErr) {
+            console.warn("[SSE] browser notification failed", notifErr);
+          }
         }
       } catch (err) {
         console.warn("[SSE] alert:pump parse error", err);
@@ -347,6 +379,7 @@ function useLiveTokensInternal(): LiveSseValue {
     return () => {
       if (callsBumpTimer.current) clearTimeout(callsBumpTimer.current);
       if (buyBumpTimer.current) clearTimeout(buyBumpTimer.current);
+      if (alertBumpTimer.current) clearTimeout(alertBumpTimer.current);
       es.close();
       setConnected(false);
     };

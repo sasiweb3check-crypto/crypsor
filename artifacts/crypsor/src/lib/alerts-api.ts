@@ -94,7 +94,7 @@ export function fetchAlerts(opts?: {
 }) {
   const qs = new URLSearchParams();
   qs.set("page", String(opts?.page ?? 1));
-  qs.set("limit", String(opts?.limit ?? 40));
+  qs.set("limit", String(opts?.limit ?? 12));
   if (opts?.unread) qs.set("unread", "1");
   if (opts?.kind) qs.set("kind", opts.kind);
   return alertsFetch<AlertsPage>(`api/alerts?${qs.toString()}`);
@@ -114,9 +114,9 @@ export function markAlertsRead(opts: { ids?: number[]; all?: boolean }) {
 
 export function alertAccent(kind: string): string {
   if (kind === "STRONG_BUY") return "var(--cryp-gain)";
-  if (kind === "INTRA_NOW") return "#ff8300";
-  if (kind.startsWith("ATH_") || kind === "GAIN_50") return "var(--cryp-mint)";
-  if (kind === "LARRY" || kind === "EEI") return "#a78bfa";
-  if (kind.startsWith("GRADE_")) return "var(--cryp-teal)";
+  if (kind === "INTRA_NOW") return "#ea580c";
+  if (kind.startsWith("ATH_") || kind === "GAIN_50") return "var(--cryp-accent)";
+  if (kind === "LARRY" || kind === "EEI") return "#0ea5e9";
+  if (kind.startsWith("GRADE_")) return "var(--cryp-accent)";
   return "var(--cryp-text)";
 }
