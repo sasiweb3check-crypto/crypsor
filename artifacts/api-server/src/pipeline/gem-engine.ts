@@ -316,6 +316,10 @@ export async function evaluateGemForScan(tokenId: number, pair: DexPairLike): Pr
     const hot = (pairAgeMin != null && pairAgeMin < 240) || Number(row.gem_streak ?? 0) > 0;
     const intel = await getGemIntel(tokenId, row.address, "solana", hot);
 
+    const pumpProtocol = /pump$/i.test(row.address);
+    const dexId = (pair.dexId ?? "").toLowerCase();
+    const pumpPool = dexId === "pumpswap" || dexId === "pumpfun-bonding";
+
     await writeGemSnapshot(tokenId, pair, row.holder_count, intel);
     const tape = await loadTape(tokenId);
 
@@ -351,12 +355,15 @@ export async function evaluateGemForScan(tokenId: number, pair: DexPairLike): Pr
       sniperHoldPct: intel?.sniperHoldPct ?? null,
       bundlerHoldPct: intel?.bundlerHoldPct ?? null,
       honeypot: row.sec_is_honeypot,
-      mintRenounced: row.sec_mint_renounced,
-      freezeRenounced: row.sec_freeze_renounced,
+      // pump.fun protocol facts fill security gaps: mint/freeze authority is
+      // burned at creation; pumpswap/bonding LP is protocol-owned and burned.
+      mintRenounced: row.sec_mint_renounced ?? (pumpProtocol ? true : null),
+      freezeRenounced: row.sec_freeze_renounced ?? (pumpProtocol ? true : null),
       buyTaxPct: taxPct(row.sec_buy_tax),
       sellTaxPct: taxPct(row.sec_sell_tax),
-      lpLocked: row.sec_lp_locked,
+      lpLocked: row.sec_lp_locked ?? (pumpPool ? true : null),
       securityFetched: Boolean(row.sec_fetched),
+      pumpProtocol,
       trackedWalletBuys: Number(row.tracked_wallets ?? 0),
       prevGemStreak: Number(row.gem_streak ?? 0),
     };
