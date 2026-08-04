@@ -37,7 +37,7 @@ export const SETTINGS_KEY = ["settings"] as const;
 export const HELIUS_USAGE_KEY = ["helius-usage"] as const;
 
 export function fetchSettings() {
-  return apiFetch<SettingRow[]>("api/settings", { timeoutMs: 20_000 });
+  return apiFetch<SettingRow[]>("api/settings", { timeoutMs: 55_000 });
 }
 
 export function upsertSetting(key: string, value: string) {
@@ -45,14 +45,14 @@ export function upsertSetting(key: string, value: string) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, value }),
-    timeoutMs: 20_000,
+    timeoutMs: 55_000,
   });
 }
 
 export async function fetchHeliusUsage(): Promise<HeliusUsage> {
   const body = await apiFetch<Envelope<HeliusUsage> | HeliusUsage>(
     "api/settings/helius-usage",
-    { timeoutMs: 20_000 },
+    { timeoutMs: 55_000 },
   );
   if (body && typeof body === "object" && "ok" in body) {
     const env = body as Envelope<HeliusUsage>;

@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { UpsertSettingBody } from "@workspace/api-zod";
 import { invalidateTelegramPushCache } from "../lib/telegram-push";
 import { apiFail, apiOk } from "../lib/api-envelope";
+import { monitorStatus } from "../lib/monitor";
 
 const router = Router();
 
@@ -70,6 +71,10 @@ router.put("/", async (req, res) => {
       .returning();
     if (key === "telegram_push_enabled") {
       invalidateTelegramPushCache();
+    }
+    if (key === "helius_api_key") {
+      monitorStatus.heliusConfigured = Boolean(value);
+      monitorStatus.heliusLastError = null;
     }
     res.json({
       id: row.id,

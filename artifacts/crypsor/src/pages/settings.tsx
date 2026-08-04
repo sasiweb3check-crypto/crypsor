@@ -55,15 +55,22 @@ export default function Settings() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
-      await upsertSetting("helius_api_key", heliusKey.trim());
-      await upsertSetting("helius_project_id", heliusProjectId.trim());
+      const key = heliusKey.trim();
+      if (!key) throw new Error("Paste a Helius API key first");
+      const jobs = [upsertSetting("helius_api_key", key)];
+      // Skip empty project id — one less cold-start request
+      if (heliusProjectId.trim()) {
+        jobs.push(upsertSetting("helius_project_id", heliusProjectId.trim()));
+      }
+      await Promise.all(jobs);
     },
     onSuccess: () => {
       setHeliusSaved(true);
       toast({ title: "Saved", description: "Helius settings updated." });
       setTimeout(() => setHeliusSaved(false), 3000);
       void qc.invalidateQueries({ queryKey: SETTINGS_KEY });
-      if (checkUsage) void usageQuery.refetch();
+      void qc.invalidateQueries({ queryKey: HELIUS_USAGE_KEY });
+      setCheckUsage(true);
     },
     onError: (err) => {
       toast({
