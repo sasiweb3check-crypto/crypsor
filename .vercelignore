@@ -1,15 +1,16 @@
-# Local / OS junk
+# Local / OS junk (not needed for install/build)
 .env
 .env.*
 !.env.example
 node_modules
-dist
 .tsbuildinfo
 .DS_Store
 
-# Heavy / unused for the Vercel function bundle
-artifacts/crypsor/dist
+# Large / unused for the Vercel function + static deploy
 attached_assets
 scripts
 **/*.md
 !replit.md
+
+# Do NOT ignore artifacts/api-server/dist — buildCommand creates
+# dist/vercel.mjs and api/index.js imports it.
