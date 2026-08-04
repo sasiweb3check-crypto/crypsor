@@ -37,6 +37,10 @@ async function apiFetchOnce<T>(path: string, init?: ApiFetchInit): Promise<T> {
       throw new ApiError("Request timed out — API may be waking up", 0);
     }
     const msg = err instanceof Error ? err.message : "Failed to fetch";
+    // Browsers often surface cold-start / network aborts as generic Failed to fetch
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      throw new ApiError("Network error — API may be cold-starting; retry in a few seconds", 0);
+    }
     throw new ApiError(msg, 0);
   } finally {
     clearTimeout(timer);
