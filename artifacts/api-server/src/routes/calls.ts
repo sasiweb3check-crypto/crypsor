@@ -280,6 +280,17 @@ export type CallCard = {
   pumpFreshness?: number | null;
   pumpBuyPassCount?: number | null;
   pumpIntraPassCount?: number | null;
+  /** GEM engine — the one final trusted score (0–100). */
+  gemScore?: number | null;
+  /** GEM | WATCH | NEUTRAL | AVOID */
+  gemVerdict?: string | null;
+  /** Evidence completeness 0–1 (GEM requires ≥0.7). */
+  gemConfidence?: number | null;
+  gemComponents?: Record<string, number> | null;
+  gemVetoes?: string[] | null;
+  gemSnapshots?: number | null;
+  gemFirstAt?: string | null;
+  gemCallMcUsd?: number | null;
 };
 
 /** Shared select extras for momentum + 1h MC gain (snapshot lateral). */
@@ -732,13 +743,22 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
       COALESCE(t.momentum_1h, 0)::int AS momentum_1h,
       COALESCE(t.momentum_6h, 0)::int AS momentum_6h,
       t.volume_intensity_score,
-      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
+      g.score AS gem_score,
+      g.verdict AS gem_verdict,
+      g.confidence AS gem_confidence,
+      g.components AS gem_components,
+      g.vetoes AS gem_vetoes,
+      g.snapshots_used AS gem_snapshots,
+      g.first_gem_at AS gem_first_at,
+      g.gem_call_mc_usd
     FROM tracked_tokens t
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
       FROM token_buys tb
       WHERE tb.token_id = t.id
     ) buys ON TRUE
+    LEFT JOIN gem_scores g ON g.token_id = t.id
     WHERE t.id = ${tokenId}
       AND EXISTS (SELECT 1 FROM token_buys tb WHERE tb.token_id = t.id)
     LIMIT 1
@@ -824,6 +844,14 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
     entryServed: true,
     properServe: pump.pumpGrade === "S" || pump.pumpGrade === "A",
     ...pump,
+    gemScore: r.gem_score != null ? Number(r.gem_score) : null,
+    gemVerdict: (r.gem_verdict as string | null) ?? null,
+    gemConfidence: r.gem_confidence != null ? Number(r.gem_confidence) : null,
+    gemComponents: (r.gem_components as Record<string, number> | null) ?? null,
+    gemVetoes: (r.gem_vetoes as string[] | null) ?? null,
+    gemSnapshots: r.gem_snapshots != null ? Number(r.gem_snapshots) : null,
+    gemFirstAt: toIsoUtc(r.gem_first_at),
+    gemCallMcUsd: r.gem_call_mc_usd != null ? Number(r.gem_call_mc_usd) : null,
   };
 }
 
@@ -1360,7 +1388,7 @@ function paginateCards<T>(cards: T[], page: number, limit: number) {
  * Crypsor call-quality / pro_calls / GMGN are NOT used here (kept as backup loaders below).
  */
 async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v13-pump-buys:${limit}`;
+  const cacheKey = `calls:feed:v14-gem:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -1384,7 +1412,15 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
       COALESCE(t.momentum_1h, 0)::int AS momentum_1h,
       COALESCE(t.momentum_6h, 0)::int AS momentum_6h,
       t.volume_intensity_score,
-      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
+      g.score AS gem_score,
+      g.verdict AS gem_verdict,
+      g.confidence AS gem_confidence,
+      g.components AS gem_components,
+      g.vetoes AS gem_vetoes,
+      g.snapshots_used AS gem_snapshots,
+      g.first_gem_at AS gem_first_at,
+      g.gem_call_mc_usd
     FROM tracked_tokens t
     JOIN LATERAL (
       SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys,
@@ -1392,6 +1428,7 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
       FROM token_buys tb
       WHERE tb.token_id = t.id
     ) buys ON buys.wallet_buys > 0
+    LEFT JOIN gem_scores g ON g.token_id = t.id
     WHERE t.chain = 'solana'
       AND COALESCE(t.status, '') NOT IN ('ignored', 'archive')
       AND t.pump_scan IS NOT NULL
@@ -1466,6 +1503,14 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
       entryServed: true,
       properServe: (pump.pumpGrade === "S" || pump.pumpGrade === "A"),
       ...pump,
+      gemScore: r.gem_score != null ? Number(r.gem_score) : null,
+      gemVerdict: (r.gem_verdict as string | null) ?? null,
+      gemConfidence: r.gem_confidence != null ? Number(r.gem_confidence) : null,
+      gemComponents: (r.gem_components as Record<string, number> | null) ?? null,
+      gemVetoes: (r.gem_vetoes as string[] | null) ?? null,
+      gemSnapshots: r.gem_snapshots != null ? Number(r.gem_snapshots) : null,
+      gemFirstAt: toIsoUtc(r.gem_first_at),
+      gemCallMcUsd: r.gem_call_mc_usd != null ? Number(r.gem_call_mc_usd) : null,
     };
   });
 
@@ -1475,10 +1520,10 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
 }
 
 const PUMP_FILTERS = new Set([
-  "all", "top", "intra", "buy", "watch", "micro", "new", "volume", "dev", "gained",
+  "all", "gem", "top", "intra", "buy", "watch", "micro", "new", "volume", "dev", "gained",
 ]);
 const PUMP_SORTS = new Set([
-  "score", "gain_now", "ath_gain", "volume", "price_change", "newest", "oldest_detect", "txns",
+  "score", "gem", "gain_now", "ath_gain", "volume", "price_change", "newest", "oldest_detect", "txns",
 ]);
 
 router.get("/calls/feed", async (req, res) => {

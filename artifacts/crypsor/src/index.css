@@ -158,6 +158,10 @@ body {
 .desk-card-buy {
   border-left: 3px solid var(--cryp-gain);
 }
+.desk-card-gem {
+  border-left: 3px solid #7c3aed;
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.09), var(--cryp-surface) 42%);
+}
 
 .desk-page {
   display: flex;
@@ -362,6 +366,17 @@ body {
   color: #047857;
   background: rgba(5, 150, 105, 0.12);
   border-color: rgba(5, 150, 105, 0.3);
+}
+.desk-badge-gem {
+  color: #6d28d9;
+  background: rgba(124, 58, 237, 0.12);
+  border-color: rgba(124, 58, 237, 0.35);
+  font-weight: 700;
+}
+.desk-badge-avoid {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.3);
 }
 .desk-badge-watch {
   color: #b45309;

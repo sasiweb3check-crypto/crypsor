@@ -10,6 +10,42 @@ import {
 
 /** Idempotent schema patches for Pro GMGN verify freeze + alerts + snapshots. */
 const SCHEMA_STATEMENTS = [
+  // GEM engine — evidence tape + final trusted score
+  `CREATE TABLE IF NOT EXISTS gem_snapshots (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL,
+     at timestamptz NOT NULL DEFAULT NOW(),
+     mc_usd real,
+     liq_usd real,
+     price_usd real,
+     vol_5m real,
+     vol_1h real,
+     vol_24h real,
+     buys_5m integer,
+     sells_5m integer,
+     buys_1h integer,
+     sells_1h integer,
+     price_change_5m real,
+     price_change_1h real,
+     holder_count integer
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_gem_snapshots_token_at ON gem_snapshots (token_id, at DESC)`,
+  `CREATE TABLE IF NOT EXISTS gem_scores (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL UNIQUE,
+     score real NOT NULL,
+     verdict text NOT NULL,
+     confidence real NOT NULL,
+     components jsonb NOT NULL,
+     vetoes jsonb,
+     snapshots_used integer NOT NULL DEFAULT 0,
+     gem_streak integer NOT NULL DEFAULT 0,
+     first_gem_at timestamptz,
+     gem_call_mc_usd real,
+     peak_after_call_mc real,
+     updated_at timestamptz NOT NULL DEFAULT NOW(),
+     created_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS kol_smart_source text`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_at timestamptz`,
   `ALTER TABLE pro_calls ADD COLUMN IF NOT EXISTS verified_wallets text`,
