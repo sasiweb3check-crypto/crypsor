@@ -9,6 +9,7 @@ import {
   fetchWalletHoldings, persistTraders,
 } from "../lib/gmgn-client";
 import { buildHolderIntel } from "../lib/holder-intel";
+import { publicApiOrigin } from "../lib/public-url";
 
 const router = Router();
 
@@ -20,7 +21,7 @@ function resolveLogoUri(imagePath: string | null | undefined, logoUri: string | 
     const rel = path.startsWith("/api/assets")
       ? path
       : `/api/assets${path.startsWith("/") ? path : `/${path}`}`;
-    const base = (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
+    const base = publicApiOrigin();
     return base ? `${base}${rel}` : rel;
   }
   return external || null;

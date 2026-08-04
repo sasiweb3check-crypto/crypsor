@@ -1,9 +1,18 @@
+# Prefer the root vercel.json (SPA + Express API + crons).
+# This file kept only so `vercel` from this folder still routes to Express.
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "rewrites": [
     {
       "source": "/(.*)",
       "destination": "/api/index.ts"
     }
-  ]
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  }
 }

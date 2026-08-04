@@ -1,4 +1,7 @@
+# Deprecated — SPA-only. Prefer the monorepo root vercel.json which deploys
+# the desk + Express API together on Vercel.
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
       "source": "/(.*)",

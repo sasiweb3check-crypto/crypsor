@@ -19,7 +19,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 // Keep the process alive across transient async failures (Redis blips, flaky
-// upstreams). Uncaught sync exceptions still exit after logging so Render can
+// upstreams). Uncaught sync exceptions still exit after logging so the host can
 // restart from a clean state.
 process.on("unhandledRejection", (reason) => {
   logger.error({ err: reason }, "Unhandled promise rejection — process kept alive");

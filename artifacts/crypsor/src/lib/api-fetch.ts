@@ -1,6 +1,6 @@
 /**
  * Shared fetch helper — timeout + consistent base URL so tab loads
- * survive Render cold starts instead of hanging forever.
+ * survive API cold starts instead of hanging forever.
  */
 import { getApiBase } from "@/lib/api-base";
 

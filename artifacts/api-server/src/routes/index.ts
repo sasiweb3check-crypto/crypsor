@@ -17,10 +17,21 @@ import callsRouter    from "./calls";
 import opsRouter      from "./ops";
 import walletTrackRouter from "./wallet-track";
 import alertsRouter   from "./alerts";
+import cronRouter     from "./cron";
 import { sseHandler } from "../pipeline/sse-gateway";
 import { apiFail } from "../lib/api-envelope";
+import { ensureVercelRuntime } from "../vercel-runtime";
 
 const router: IRouter = Router();
+
+// Fluid Compute: ensure wallet/pump loops are running on this warm instance.
+router.use((_req, _res, next) => {
+  if (process.env.VERCEL) {
+    void ensureVercelRuntime().finally(() => next());
+    return;
+  }
+  next();
+});
 
 /**
  * Legacy / heavy surfaces (holders bulk, caller, runner desk, trader autopilot,
@@ -50,6 +61,7 @@ function blockHeavyPaths(req: Request, res: Response, next: NextFunction) {
 }
 
 router.use(healthRouter);
+router.use(cronRouter);
 router.use("/settings",  settingsRouter);
 router.use("/wallets",   walletsRouter);
 router.use("/tokens",    tokensRouter);
