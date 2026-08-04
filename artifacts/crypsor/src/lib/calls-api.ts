@@ -126,48 +126,60 @@ export type CallStats = {
   universe?: number;
 };
 
-/** Filter presets — pump-fullend FilterBar */
+/** Filter presets — pump-fullend FilterBar (compact labels for mobile) */
 export const PUMP_FILTER_PRESETS: { id: PumpFilterId; label: string }[] = [
-  { id: "all", label: "ALL" },
-  { id: "top", label: "S+A GRADE" },
-  { id: "intra", label: "INTRADAY" },
-  { id: "buy", label: "READY TO BUY" },
-  { id: "watch", label: "WATCH CLOSELY" },
-  { id: "micro", label: "SAFE <$50K" },
-  { id: "new", label: "NEW (<2H)" },
-  { id: "volume", label: "HIGH VOL" },
-  { id: "dev", label: "DEV TOKENS" },
-  { id: "gained", label: "GAINED 50%+" },
+  { id: "all", label: "All" },
+  { id: "top", label: "S+A" },
+  { id: "intra", label: "Intra" },
+  { id: "buy", label: "Buy" },
+  { id: "watch", label: "Watch" },
+  { id: "micro", label: "Micro" },
+  { id: "new", label: "New" },
+  { id: "volume", label: "Vol" },
+  { id: "dev", label: "Dev" },
+  { id: "gained", label: "Gained" },
 ];
 
 export const PUMP_SORT_OPTIONS: { id: PumpSortId; label: string }[] = [
-  { id: "score", label: "Strategy Score" },
-  { id: "gain_now", label: "Gain Since Detection" },
-  { id: "ath_gain", label: "ATH Since Detection" },
-  { id: "volume", label: "Volume 24H" },
-  { id: "price_change", label: "Price Change 24H" },
-  { id: "newest", label: "Newest First" },
-  { id: "oldest_detect", label: "Oldest Detected" },
-  { id: "txns", label: "Transaction Count" },
+  { id: "score", label: "Score" },
+  { id: "gain_now", label: "Gain" },
+  { id: "ath_gain", label: "ATH" },
+  { id: "newest", label: "Created" },
+  { id: "oldest_detect", label: "Detected" },
+  { id: "volume", label: "Volume" },
+  { id: "txns", label: "Txns" },
+  { id: "price_change", label: "Price %" },
+];
+
+/** Pair / creation age caps (minutes). 0 = any */
+export const PAIR_AGE_OPTIONS: { id: number; label: string }[] = [
+  { id: 0, label: "Any age" },
+  { id: 15, label: "<15m" },
+  { id: 60, label: "<1h" },
+  { id: 360, label: "<6h" },
+  { id: 1440, label: "<24h" },
+];
+
+/** Detection age caps (minutes). 0 = any */
+export const DETECT_AGE_OPTIONS: { id: number; label: string }[] = [
+  { id: 0, label: "Any detect" },
+  { id: 30, label: "Detect <30m" },
+  { id: 120, label: "Detect <2h" },
+  { id: 360, label: "Detect <6h" },
+  { id: 1440, label: "Detect <24h" },
 ];
 
 export const FILTER_BLURB: Record<PumpFilterId, string> = {
-  all: "All buy-sourced tokens · pump-sdk score rank",
-  top: "S + A grade only · strategy fit",
-  intra: "Intraday signal · act / watch window",
-  buy: "STRONG BUY · 6+ conditions",
-  watch: "WATCH · 4–5 conditions",
-  micro: "Under $50K MC · liquid enough",
-  new: "Pair age under 2 hours",
-  volume: "24H volume ≥ $50K",
-  dev: "Name/symbol keywords or socialSignal ≥ 4",
-  gained: "≥50% MC since detection",
-};
-
-export type FeedFilters = {
-  filter?: PumpFilterId;
-  sort?: PumpSortId;
-  minScore?: number;
+  all: "Buy-sourced · pump score",
+  top: "S + A grade",
+  intra: "Intraday window",
+  buy: "Ready to buy",
+  watch: "Watch closely",
+  micro: "Under $50K MC",
+  new: "Created <2h",
+  volume: "Vol ≥ $50K",
+  dev: "Dev narrative",
+  gained: "≥50% since detect",
 };
 
 export type FeedPage = {
@@ -181,18 +193,23 @@ export type FeedPage = {
   filter?: string;
   sort?: string;
   minScore?: number;
+  maxPairAgeMin?: number | null;
+  maxDetectAgeMin?: number | null;
   note?: string;
   pendingFirstCalls?: number;
 };
 
-export const PAGE_SIZE = 20;
+/** Keep pages small for mobile + SSE friendliness */
+export const PAGE_SIZE = 12;
 
 export const CALLS_FEED_KEY = (
   filter: PumpFilterId,
   sort: PumpSortId,
   page: number,
   minScore: number,
-) => ["calls-feed", "pump", filter, sort, page, minScore] as const;
+  maxPairAgeMin = 0,
+  maxDetectAgeMin = 0,
+) => ["calls-feed", "pump", filter, sort, page, minScore, maxPairAgeMin, maxDetectAgeMin] as const;
 
 export const CALLS_STATS_KEY = (period: StatsPeriod = "7d") => ["calls-stats", period] as const;
 export const CALLS_WAITING_KEY = ["calls-waiting"] as const;
@@ -203,6 +220,8 @@ export function fetchCallsFeed(
   limit = PAGE_SIZE,
   sort: PumpSortId = "score",
   minScore = 0,
+  maxPairAgeMin = 0,
+  maxDetectAgeMin = 0,
 ) {
   const qs = new URLSearchParams();
   qs.set("filter", filter);
@@ -210,6 +229,8 @@ export function fetchCallsFeed(
   qs.set("page", String(page));
   qs.set("limit", String(limit));
   if (minScore > 0) qs.set("minScore", String(minScore));
+  if (maxPairAgeMin > 0) qs.set("maxPairAgeMin", String(maxPairAgeMin));
+  if (maxDetectAgeMin > 0) qs.set("maxDetectAgeMin", String(maxDetectAgeMin));
   return callsFetch<FeedPage>(`api/calls/feed?${qs.toString()}`);
 }
 

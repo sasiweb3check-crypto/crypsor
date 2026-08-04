@@ -1495,6 +1495,8 @@ router.get("/calls/feed", async (req, res) => {
       const sortRaw = String(req.query.sort ?? "score").toLowerCase();
       const sort = (PUMP_SORTS.has(sortRaw) ? sortRaw : "score") as PumpSortId;
       const minScore = Math.max(0, parseFloat(String(req.query.minScore ?? req.query.minPumpScore ?? "0")) || 0);
+      const maxPairAgeMin = Math.max(0, parseFloat(String(req.query.maxPairAgeMin ?? "0")) || 0) || undefined;
+      const maxDetectAgeMin = Math.max(0, parseFloat(String(req.query.maxDetectAgeMin ?? "0")) || 0) || undefined;
 
       const pack = await loadPumpBuyDeskCards(400);
       const needsLiveGains = filter === "gained"
@@ -1506,7 +1508,10 @@ router.get("/calls/feed", async (req, res) => {
         // Rank/filter on live MC vs sticky detect MC
         working = refreshPumpDetectionGains(await overlayLiveMarketCaps(working));
       }
-      const ranked = applyPumpDeskFilters(working, filter, sort, minScore);
+      const ranked = applyPumpDeskFilters(working, filter, sort, minScore, {
+        maxPairAgeMin,
+        maxDetectAgeMin,
+      });
       const pagePack = paginateCards(ranked, page, limit);
       if (!needsLiveGains) {
         pagePack.cards = refreshPumpDetectionGains(
@@ -1522,6 +1527,8 @@ router.get("/calls/feed", async (req, res) => {
         filter,
         sort,
         minScore,
+        maxPairAgeMin: maxPairAgeMin ?? null,
+        maxDetectAgeMin: maxDetectAgeMin ?? null,
         note: "Pump-SDK desk · buy-sourced · MC gain since detection",
       }));
       return;

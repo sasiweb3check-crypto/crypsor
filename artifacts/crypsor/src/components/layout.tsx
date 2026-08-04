@@ -25,8 +25,8 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
       const page = await fetchAlerts({ page: 1, limit: 1 });
       return page.unread;
     },
-    refetchInterval: connected ? 45_000 : 12_000,
-    staleTime: 8_000,
+    refetchInterval: connected ? 90_000 : 20_000,
+    staleTime: 15_000,
   });
   const unread = unreadQ.data ?? 0;
 
@@ -34,12 +34,12 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
     void qc.prefetchQuery({
       queryKey: OPS_PING_KEY,
       queryFn: fetchOpsPing,
-      staleTime: 15_000,
+      staleTime: 30_000,
     });
     void qc.prefetchQuery({
-      queryKey: ["calls-feed", "pump", "all", "score", 1, 0],
-      queryFn: () => fetchCallsFeed("all", 1, PAGE_SIZE, "score", 0),
-      staleTime: 8_000,
+      queryKey: ["calls-feed", "pump", "all", "score", 1, 0, 0, 0],
+      queryFn: () => fetchCallsFeed("all", 1, PAGE_SIZE, "score", 0, 0, 0),
+      staleTime: 12_000,
     });
   }, [qc]);
 
@@ -48,17 +48,17 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
       <header
         className="sticky top-0 z-50 flex items-center justify-between px-3 h-11"
         style={{
-          background: "rgba(5,8,12,0.9)",
+          background: "rgba(255,255,255,0.88)",
           backdropFilter: "blur(12px)",
           borderBottom: "1px solid var(--cryp-line)",
         }}
       >
         <Link href="/">
           <div className="cursor-pointer select-none">
-            <div className="font-display text-[var(--cryp-mint)] font-extrabold tracking-[0.16em] text-[12px] uppercase">
+            <div className="font-display text-[var(--cryp-accent)] font-extrabold tracking-[0.14em] text-[13px] uppercase">
               Crypsor
             </div>
-            <div className="text-[var(--cryp-mute)] text-[8px] tracking-[0.18em] uppercase mt-0.5">
+            <div className="text-[var(--cryp-mute)] text-[8px] tracking-[0.16em] uppercase mt-0.5">
               {onWallet
                 ? "Wallet Track"
                 : onDetail
@@ -95,7 +95,7 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               className={cn(
                 "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
                 onWallet
-                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  ? "text-[var(--cryp-accent)] bg-[rgba(37,99,235,0.1)]"
                   : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
               )}
             >
@@ -109,7 +109,7 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               className={cn(
                 "relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
                 onAlerts
-                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  ? "text-[var(--cryp-accent)] bg-[rgba(37,99,235,0.1)]"
                   : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
               )}
             >
@@ -117,7 +117,7 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               {unread > 0 && (
                 <span
                   className="absolute top-1 right-1 min-w-[14px] h-[14px] px-0.5 rounded-full text-[8px] font-bold flex items-center justify-center"
-                  style={{ background: "var(--cryp-gain)", color: "#04120c" }}
+                  style={{ background: "var(--cryp-gain)", color: "#fff" }}
                 >
                   {unread > 99 ? "99+" : unread}
                 </span>
@@ -131,7 +131,7 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               className={cn(
                 "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
                 location.startsWith("/ops")
-                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  ? "text-[var(--cryp-accent)] bg-[rgba(37,99,235,0.1)]"
                   : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
               )}
             >
@@ -145,7 +145,7 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               className={cn(
                 "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
                 location.startsWith("/settings")
-                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  ? "text-[var(--cryp-accent)] bg-[rgba(37,99,235,0.1)]"
                   : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
               )}
             >
