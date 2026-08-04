@@ -114,6 +114,7 @@ for (const name of [
   "helius-scanner",
   "caller-alerts",
   "pro-scanner",
+  "pump-buy-scanner",
 ]) {
   healthMonitor.register(name);
 }

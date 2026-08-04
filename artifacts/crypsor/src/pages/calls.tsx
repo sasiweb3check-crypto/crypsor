@@ -51,6 +51,25 @@ const QUALITY_OPTS = [
   { id: "below", label: "Below" },
 ];
 
+const PUMP_GRADE_OPTS = [
+  { id: "all", label: "All grades" },
+  { id: "TOP", label: "S+A grade" },
+  { id: "S", label: "S" },
+  { id: "A", label: "A" },
+  { id: "B", label: "B" },
+  { id: "C", label: "C" },
+  { id: "D", label: "D" },
+];
+
+const PUMP_SIGNAL_OPTS = [
+  { id: "all", label: "All signals" },
+  { id: "buy", label: "Ready to buy" },
+  { id: "watch", label: "Watch closely" },
+  { id: "intra", label: "Intraday" },
+  { id: "micro", label: "Micro cap" },
+  { id: "dev", label: "Dev narrative" },
+];
+
 const emptyFilters: FeedFilters = {};
 
 function TokenThumb({
@@ -174,6 +193,26 @@ function TableRow({
                   {c.callLabel}
                 </span>
               ) : null}
+              {c.pumpGrade && (
+                <span className={cn(
+                  "tok-chip tok-chip-grade",
+                  `tok-chip-grade-${c.pumpGrade.toLowerCase()}`,
+                )}>
+                  {c.pumpGrade}
+                  {c.pumpScore != null ? ` ${c.pumpScore}` : ""}
+                </span>
+              )}
+              {c.pumpBuySignal === "STRONG_BUY" && (
+                <span className="tok-chip tok-chip-buy">Buy</span>
+              )}
+              {c.pumpBuySignal === "WATCH" && (
+                <span className="tok-chip tok-chip-pwatch">Watch</span>
+              )}
+              {c.pumpIntraSignal && (
+                <span className="tok-chip tok-chip-intra">
+                  {c.pumpIntraSignal === "INTRA_NOW" ? "Intra" : "Soon"}
+                </span>
+              )}
               {hot && heat > 50 && (
                 <span className="tok-chip tok-chip-hot">Hot</span>
               )}
@@ -201,6 +240,9 @@ function TableRow({
                   )}
                   {hot && c.momentum1h > 0 && (
                     <span className="ml-1 text-[var(--cryp-mint)]">mom {c.momentum1h}</span>
+                  )}
+                  {c.pumpTags?.[0] && (
+                    <span className="ml-1 opacity-80">{c.pumpTags[0].label}</span>
                   )}
                 </>
               )}
@@ -397,6 +439,9 @@ export default function CallsPage() {
     if (filters.minGain1h != null) n++;
     if (filters.minMom1h != null) n++;
     if (filters.minMom6h != null) n++;
+    if (filters.pumpGrade && filters.pumpGrade !== "all") n++;
+    if (filters.pumpSignal && filters.pumpSignal !== "all") n++;
+    if (filters.minPumpScore != null) n++;
     return n;
   }, [filters]);
 
@@ -581,6 +626,29 @@ export default function CallsPage() {
                 onChange={v => patchFilter("minMom1h", v)}
                 placeholder="Min mom buys"
                 ariaLabel="Minimum 1H momentum buy count"
+              />
+            </div>
+          </div>
+          <div className="tok-filters-section">
+            <div className="tok-filters-label">Pump grade · Signal · Min pump score</div>
+            <div className="tok-filters-row">
+              <FilterSelect
+                value={filters.pumpGrade ?? "all"}
+                onChange={v => patchFilter("pumpGrade", v === "all" ? undefined : v)}
+                options={PUMP_GRADE_OPTS}
+                ariaLabel="Pump strategy grade"
+              />
+              <FilterSelect
+                value={filters.pumpSignal ?? "all"}
+                onChange={v => patchFilter("pumpSignal", v === "all" ? undefined : v)}
+                options={PUMP_SIGNAL_OPTS}
+                ariaLabel="Pump signal"
+              />
+              <NumFilter
+                value={filters.minPumpScore}
+                onChange={v => patchFilter("minPumpScore", v)}
+                placeholder="Min pump"
+                ariaLabel="Minimum pump strategy score"
               />
             </div>
           </div>

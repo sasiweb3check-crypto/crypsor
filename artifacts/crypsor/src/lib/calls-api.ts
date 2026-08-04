@@ -108,6 +108,13 @@ export type CallCard = {
   snapsNeeded?: number;
   observationReady?: boolean;
   holdReason?: string;
+  /** Pump-SDK strategy (buy-sourced scanner from pump-fullend). */
+  pumpScore?: number | null;
+  pumpGrade?: "S" | "A" | "B" | "C" | "D" | null;
+  pumpBuySignal?: "STRONG_BUY" | "WATCH" | null;
+  pumpIntraSignal?: "INTRA_NOW" | "INTRA_SOON" | null;
+  pumpTags?: Array<{ label: string; type: "positive" | "warning" | "negative" }>;
+  pumpRecommendation?: string | null;
 };
 
 export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
@@ -211,6 +218,9 @@ export type FeedFilters = {
   minGain1h?: number;
   minMom1h?: number;
   minMom6h?: number;
+  pumpGrade?: string;
+  pumpSignal?: string;
+  minPumpScore?: number;
 };
 
 export type FeedPage = {
@@ -253,6 +263,9 @@ function buildFeedQs(
   if (filters.minGain1h != null) qs.set("minGain1h", String(filters.minGain1h));
   if (filters.minMom1h != null) qs.set("minMom1h", String(filters.minMom1h));
   if (filters.minMom6h != null) qs.set("minMom6h", String(filters.minMom6h));
+  if (filters.pumpGrade && filters.pumpGrade !== "all") qs.set("pumpGrade", filters.pumpGrade);
+  if (filters.pumpSignal && filters.pumpSignal !== "all") qs.set("pumpSignal", filters.pumpSignal);
+  if (filters.minPumpScore != null) qs.set("minPumpScore", String(filters.minPumpScore));
   return qs.toString();
 }
 
@@ -276,6 +289,9 @@ export function fetchCallsWaiting(limit = PAGE_SIZE, page = 1, filters: FeedFilt
   if (filters.minGain1h != null) qs.set("minGain1h", String(filters.minGain1h));
   if (filters.minMom1h != null) qs.set("minMom1h", String(filters.minMom1h));
   if (filters.minMom6h != null) qs.set("minMom6h", String(filters.minMom6h));
+  if (filters.pumpGrade && filters.pumpGrade !== "all") qs.set("pumpGrade", filters.pumpGrade);
+  if (filters.pumpSignal && filters.pumpSignal !== "all") qs.set("pumpSignal", filters.pumpSignal);
+  if (filters.minPumpScore != null) qs.set("minPumpScore", String(filters.minPumpScore));
   return callsFetch<{
     cards: CallCard[];
     total: number;
