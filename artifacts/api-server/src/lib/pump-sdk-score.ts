@@ -74,6 +74,20 @@ export type PumpScanPayload = {
   dexId: string | null;
   scannedAt: string;
   source: "token_buys";
+  marketCap: number;
+  liquidityUsd: number;
+  volume24h: number;
+  volume1h: number;
+  pairCreatedAt: number | null;
+  priceChange24h: number;
+  priceUsd: number;
+  freshnessMultiplier: number;
+  socialSignal: number;
+  detectedAt: number;
+  priceAtDetection: number;
+  athPrice: number;
+  gainSinceDetection: number;
+  athGain: number;
 };
 
 const VALID_DEX_IDS = new Set(["pumpswap", "raydium", "meteora", "orca"]);
@@ -372,10 +386,27 @@ export function getIntraSignal(token: DexPairLike, scoreResult: PumpScoreResult)
   return { level, passCount, urgency, firedAt: Date.now() };
 }
 
-export function buildPumpScanPayload(token: DexPairLike): PumpScanPayload {
+export function buildPumpScanPayload(
+  token: DexPairLike,
+  prev?: PumpScanPayload | null,
+): PumpScanPayload {
   const score = scoreToken(token);
   const buy = getBuySignal(token, score);
   const intra = getIntraSignal(token, score);
+  const priceUsd = parseFloat(String(token.priceUsd ?? 0)) || 0;
+  const now = Date.now();
+  const detectedAt = prev?.detectedAt ?? now;
+  const priceAtDetection = prev?.priceAtDetection && prev.priceAtDetection > 0
+    ? prev.priceAtDetection
+    : (priceUsd > 0 ? priceUsd : 0);
+  const athPrice = Math.max(prev?.athPrice ?? 0, priceUsd);
+  const gainSinceDetection = priceAtDetection > 0
+    ? ((priceUsd - priceAtDetection) / priceAtDetection) * 100
+    : 0;
+  const athGain = priceAtDetection > 0
+    ? ((athPrice - priceAtDetection) / priceAtDetection) * 100
+    : 0;
+
   return {
     score: score.total,
     grade: score.grade,
@@ -388,7 +419,122 @@ export function buildPumpScanPayload(token: DexPairLike): PumpScanPayload {
     dexId: token.dexId ?? null,
     scannedAt: new Date().toISOString(),
     source: "token_buys",
+    marketCap: token.marketCap || token.fdv || 0,
+    liquidityUsd: token.liquidity?.usd || 0,
+    volume24h: token.volume?.h24 || 0,
+    volume1h: token.volume?.h1 || 0,
+    pairCreatedAt: token.pairCreatedAt ?? null,
+    priceChange24h: token.priceChange?.h24 || 0,
+    priceUsd,
+    freshnessMultiplier: score.freshnessMultiplier,
+    socialSignal: score.scores.socialSignal,
+    detectedAt,
+    priceAtDetection,
+    athPrice,
+    gainSinceDetection,
+    athGain,
   };
+}
+
+export type PumpFilterId =
+  | "all" | "top" | "intra" | "buy" | "watch"
+  | "micro" | "new" | "volume" | "dev" | "gained";
+
+export type PumpSortId =
+  | "score" | "gain_now" | "ath_gain" | "volume"
+  | "price_change" | "newest" | "oldest_detect" | "txns";
+
+/** Filter + sort parity with pump-fullend FilterBar.applyFilters */
+export function applyPumpDeskFilters<T extends {
+  pumpScore: number | null;
+  pumpGrade: PumpGrade | null;
+  pumpBuySignal: PumpBuyLevel | null;
+  pumpIntraSignal: PumpIntraLevel | null;
+  pumpTags: PumpSignalTag[];
+  pumpMarketCap?: number | null;
+  pumpLiquidityUsd?: number | null;
+  pumpVolume24h?: number | null;
+  pumpPairCreatedAt?: number | null;
+  pumpPriceChange24h?: number | null;
+  pumpGainSinceDetection?: number | null;
+  pumpAthGain?: number | null;
+  pumpDetectedAt?: number | null;
+  pumpSocialSignal?: number | null;
+}>(
+  cards: T[],
+  filter: PumpFilterId,
+  sort: PumpSortId,
+  minScore: number,
+): T[] {
+  let filtered = cards.filter((c) => (c.pumpScore ?? 0) >= minScore);
+
+  switch (filter) {
+    case "intra":
+      filtered = filtered.filter((c) =>
+        c.pumpIntraSignal === "INTRA_NOW" || c.pumpIntraSignal === "INTRA_SOON");
+      break;
+    case "top":
+      filtered = filtered.filter((c) => c.pumpGrade === "S" || c.pumpGrade === "A");
+      break;
+    case "buy":
+      filtered = filtered.filter((c) => c.pumpBuySignal === "STRONG_BUY");
+      break;
+    case "watch":
+      filtered = filtered.filter((c) => c.pumpBuySignal === "WATCH");
+      break;
+    case "micro":
+      filtered = filtered.filter((c) => {
+        const mcap = c.pumpMarketCap ?? 0;
+        return mcap > 0 && mcap < 50_000 && (c.pumpLiquidityUsd ?? 0) >= 3_000;
+      });
+      break;
+    case "new": {
+      const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+      filtered = filtered.filter((c) => (c.pumpPairCreatedAt ?? 0) > twoHoursAgo);
+      break;
+    }
+    case "volume":
+      filtered = filtered.filter((c) => (c.pumpVolume24h ?? 0) >= 50_000);
+      break;
+    case "dev":
+      filtered = filtered.filter((c) =>
+        (c.pumpSocialSignal ?? 0) >= 4
+        || c.pumpTags.some((t) => t.label === "Dev Narrative" || t.label === "Larry Signal"));
+      break;
+    case "gained":
+      filtered = filtered.filter((c) => (c.pumpGainSinceDetection ?? 0) >= 50);
+      break;
+    default:
+      break;
+  }
+
+  const sorted = [...filtered];
+  switch (sort) {
+    case "gain_now":
+      sorted.sort((a, b) => (b.pumpGainSinceDetection ?? 0) - (a.pumpGainSinceDetection ?? 0));
+      break;
+    case "ath_gain":
+      sorted.sort((a, b) => (b.pumpAthGain ?? 0) - (a.pumpAthGain ?? 0));
+      break;
+    case "volume":
+      sorted.sort((a, b) => (b.pumpVolume24h ?? 0) - (a.pumpVolume24h ?? 0));
+      break;
+    case "price_change":
+      sorted.sort((a, b) => (b.pumpPriceChange24h ?? 0) - (a.pumpPriceChange24h ?? 0));
+      break;
+    case "newest":
+      sorted.sort((a, b) => (b.pumpPairCreatedAt ?? 0) - (a.pumpPairCreatedAt ?? 0));
+      break;
+    case "oldest_detect":
+      sorted.sort((a, b) => (a.pumpDetectedAt ?? Infinity) - (b.pumpDetectedAt ?? Infinity));
+      break;
+    case "txns":
+    case "score":
+    default:
+      sorted.sort((a, b) => (b.pumpScore ?? 0) - (a.pumpScore ?? 0));
+      break;
+  }
+  return sorted;
 }
 
 export function parsePumpScan(raw: unknown): PumpScanPayload | null {
@@ -398,6 +544,10 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
   if (!["S", "A", "B", "C", "D"].includes(grade)) return null;
   const score = Number(o.score);
   if (!Number.isFinite(score)) return null;
+  const num = (k: string, d = 0) => {
+    const n = Number(o[k]);
+    return Number.isFinite(n) ? n : d;
+  };
   return {
     score,
     grade: grade as PumpGrade,
@@ -419,5 +569,21 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
     dexId: o.dexId != null ? String(o.dexId) : null,
     scannedAt: o.scannedAt != null ? String(o.scannedAt) : new Date(0).toISOString(),
     source: "token_buys",
+    marketCap: num("marketCap"),
+    liquidityUsd: num("liquidityUsd"),
+    volume24h: num("volume24h"),
+    volume1h: num("volume1h"),
+    pairCreatedAt: o.pairCreatedAt != null && Number.isFinite(Number(o.pairCreatedAt))
+      ? Number(o.pairCreatedAt)
+      : null,
+    priceChange24h: num("priceChange24h"),
+    priceUsd: num("priceUsd"),
+    freshnessMultiplier: num("freshnessMultiplier", 1),
+    socialSignal: num("socialSignal"),
+    detectedAt: num("detectedAt", Date.now()),
+    priceAtDetection: num("priceAtDetection"),
+    athPrice: num("athPrice"),
+    gainSinceDetection: num("gainSinceDetection"),
+    athGain: num("athGain"),
   };
 }

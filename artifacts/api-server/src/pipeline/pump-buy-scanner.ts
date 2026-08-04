@@ -66,13 +66,13 @@ async function scanBoughtToken(tokenId: number, tokenAddress: string, chain: str
       return;
     }
 
-    const payload = buildPumpScanPayload(pair);
     const prevRow = await db
       .select({ pumpScan: tracked_tokens.pumpScan })
       .from(tracked_tokens)
       .where(eq(tracked_tokens.id, tokenId))
       .limit(1);
     const prev = parsePumpScan(prevRow[0]?.pumpScan);
+    const payload = buildPumpScanPayload(pair, prev);
 
     await db
       .update(tracked_tokens)

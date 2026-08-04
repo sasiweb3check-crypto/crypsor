@@ -198,15 +198,27 @@ function DetailHero({ c }: { c: CallCard }) {
             Called {c.calledAt ? formatTimeAgo(c.calledAt) : "—"} ago
             {" · "}
             <span className="uppercase tracking-wider text-[var(--cryp-mint)]">
-              {c.callLabel} {c.callScore}
+              {c.pumpGrade
+                ? `Pump ${c.pumpGrade}${c.pumpScore != null ? ` ${c.pumpScore}` : ""}`
+                : `${c.callLabel} ${c.callScore}`}
             </span>
-            {c.pumpGrade && (
+            {c.pumpBuySignal === "STRONG_BUY" && (
+              <>
+                {" · "}
+                <span className="uppercase tracking-wider text-[var(--cryp-gain)]">BUY</span>
+              </>
+            )}
+            {c.pumpBuySignal === "WATCH" && (
+              <>
+                {" · "}
+                <span className="uppercase tracking-wider text-[var(--cryp-warn)]">WATCH</span>
+              </>
+            )}
+            {c.pumpIntraSignal && (
               <>
                 {" · "}
                 <span className="uppercase tracking-wider text-[var(--cryp-warn)]">
-                  Pump {c.pumpGrade}
-                  {c.pumpScore != null ? ` ${c.pumpScore}` : ""}
-                  {c.pumpBuySignal === "STRONG_BUY" ? " · BUY" : c.pumpBuySignal === "WATCH" ? " · WATCH" : ""}
+                  {c.pumpIntraSignal === "INTRA_NOW" ? "INTRA" : "SOON"}
                 </span>
               </>
             )}

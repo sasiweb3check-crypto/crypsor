@@ -72,9 +72,9 @@ function WaitingQueuePanel({ count }: { count: number }) {
           <Hourglass className="w-3 h-3" />
           Waiting · {count} pending{connected ? " · live" : ""}
         </div>
-        <Link href="/?mode=waiting">
+        <Link href="/?filter=top">
           <span className="text-[9px] uppercase tracking-widest text-[#8b949e] hover:text-[#f59e0b] cursor-pointer">
-            Full list →
+            Desk →
           </span>
         </Link>
       </div>
