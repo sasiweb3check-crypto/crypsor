@@ -22,6 +22,7 @@ import {
   type PumpScanPayload,
 } from "../lib/pump-sdk-score";
 import { evaluatePumpAlerts } from "./pump-alerts";
+import { evaluateGemForScan } from "./gem-engine";
 import { eventBus, type TokenBoughtEvent } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
 
@@ -213,6 +214,9 @@ async function scanBoughtToken(tokenId: number, tokenAddress: string, chain: str
       .where(eq(tracked_tokens.id, tokenId));
 
     await writePumpSnapshot(tokenId, payload);
+
+    // GEM engine: tape snapshot + final trusted score + GEM alerts
+    await evaluateGemForScan(tokenId, pair);
 
     // Notable pump alerts → Telegram + notification center
     await evaluatePumpAlerts(tokenId, payload);

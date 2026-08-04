@@ -39,7 +39,24 @@ export type PumpAlertKind =
   | "GAIN_50"
   | "ATH_2X"
   | "ATH_5X"
-  | "ATH_10X";
+  | "ATH_10X"
+  // GEM engine kinds (fired by gem-engine.ts, same pump_alerts table)
+  | "GEM_CALL"
+  | "GEM_2X"
+  | "GEM_5X"
+  | "GEM_10X";
+
+/**
+ * Telegram noise gate — only high-conviction kinds push to Telegram.
+ * Every kind is still recorded in pump_alerts for the in-app center.
+ * GEM kinds push from gem-engine directly (not through this evaluator).
+ */
+const TELEGRAM_PUSH_KINDS = new Set<PumpAlertKind>([
+  "STRONG_BUY",
+  "INTRA_NOW",
+  "ATH_5X",
+  "ATH_10X",
+]);
 
 const KIND_META: Record<PumpAlertKind, { label: string; priority: number }> = {
   STRONG_BUY: { label: "READY TO BUY", priority: 100 },
@@ -52,6 +69,10 @@ const KIND_META: Record<PumpAlertKind, { label: string; priority: number }> = {
   ATH_2X: { label: "ATH 2×", priority: 86 },
   ATH_5X: { label: "ATH 5×", priority: 92 },
   ATH_10X: { label: "ATH 10×", priority: 98 },
+  GEM_CALL: { label: "GEM CALL", priority: 110 },
+  GEM_2X: { label: "GEM 2×", priority: 105 },
+  GEM_5X: { label: "GEM 5×", priority: 107 },
+  GEM_10X: { label: "GEM 10×", priority: 109 },
 };
 
 export type PumpAlertEvent = {
@@ -81,7 +102,7 @@ function candidatesFromScan(scan: PumpScanPayload): PumpAlertKind[] {
   if (scan.buySignal === "STRONG_BUY") out.push("STRONG_BUY");
   if (scan.intraSignal === "INTRA_NOW") out.push("INTRA_NOW");
   if (scan.grade === "S") out.push("GRADE_S");
-  if (scan.grade === "A" || scan.grade === "S") out.push("GRADE_A");
+  else if (scan.grade === "A") out.push("GRADE_A"); // no dual-fire with GRADE_S
   if (scan.scores.earlyExplosionIndex >= 8) out.push("LARRY");
   else if (scan.scores.earlyExplosionIndex >= 5) out.push("EEI");
 
@@ -239,15 +260,19 @@ export async function evaluatePumpAlerts(
         | undefined;
       if (!row) continue;
 
-      const tgText = buildTelegramText({
-        kind,
-        label: metaK.label,
-        sym,
-        address: meta.address,
-        scan,
-        title,
-      });
-      const tg = await sendTelegramMessage(tgText);
+      // Noise gate: record everything in-app, push only high-conviction kinds
+      let tg: { ok: boolean; error?: string | null } = { ok: false, error: "muted_kind" };
+      if (TELEGRAM_PUSH_KINDS.has(kind)) {
+        const tgText = buildTelegramText({
+          kind,
+          label: metaK.label,
+          sym,
+          address: meta.address,
+          scan,
+          title,
+        });
+        tg = await sendTelegramMessage(tgText);
+      }
       if (tg.ok || tg.error) {
         await db.execute(sql`
           UPDATE pump_alerts

@@ -24,12 +24,14 @@ export type PumpIntraSignal = "INTRA_NOW" | "INTRA_SOON";
 export type PumpTag = { label: string; type: "positive" | "warning" | "negative" };
 
 export type PumpFilterId =
-  | "all" | "top" | "intra" | "buy" | "watch"
+  | "all" | "gem" | "top" | "intra" | "buy" | "watch"
   | "micro" | "new" | "volume" | "dev" | "gained";
 
 export type PumpSortId =
-  | "score" | "gain_now" | "ath_gain" | "volume"
+  | "score" | "gem" | "gain_now" | "ath_gain" | "volume"
   | "price_change" | "newest" | "oldest_detect" | "txns";
+
+export type GemVerdict = "GEM" | "WATCH" | "NEUTRAL" | "AVOID";
 
 /** @deprecated Crypsor label — kept for type compat only */
 export type CallLabel = "elite" | "strong" | "watch" | "noise";
@@ -106,6 +108,16 @@ export type CallCard = {
   pumpFreshness?: number | null;
   pumpBuyPassCount?: number | null;
   pumpIntraPassCount?: number | null;
+  /** GEM engine — the one final trusted score (0–100). */
+  gemScore?: number | null;
+  gemVerdict?: GemVerdict | string | null;
+  /** Evidence completeness 0–1 (GEM verdict requires ≥0.7). */
+  gemConfidence?: number | null;
+  gemComponents?: Record<string, number> | null;
+  gemVetoes?: string[] | null;
+  gemSnapshots?: number | null;
+  gemFirstAt?: string | null;
+  gemCallMcUsd?: number | null;
 };
 
 export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
@@ -129,6 +141,7 @@ export type CallStats = {
 /** Filter presets — pump-fullend FilterBar (compact labels for mobile) */
 export const PUMP_FILTER_PRESETS: { id: PumpFilterId; label: string }[] = [
   { id: "all", label: "All" },
+  { id: "gem", label: "GEM" },
   { id: "top", label: "S+A" },
   { id: "intra", label: "Intra" },
   { id: "buy", label: "Buy" },
@@ -142,6 +155,7 @@ export const PUMP_FILTER_PRESETS: { id: PumpFilterId; label: string }[] = [
 
 export const PUMP_SORT_OPTIONS: { id: PumpSortId; label: string }[] = [
   { id: "score", label: "Score" },
+  { id: "gem", label: "GEM" },
   { id: "gain_now", label: "Gain" },
   { id: "ath_gain", label: "ATH" },
   { id: "newest", label: "Created" },
@@ -171,6 +185,7 @@ export const DETECT_AGE_OPTIONS: { id: number; label: string }[] = [
 
 export const FILTER_BLURB: Record<PumpFilterId, string> = {
   all: "Buy-sourced · pump score",
+  gem: "Trusted GEM calls · evidence-gated",
   top: "S + A grade",
   intra: "Intraday window",
   buy: "Ready to buy",

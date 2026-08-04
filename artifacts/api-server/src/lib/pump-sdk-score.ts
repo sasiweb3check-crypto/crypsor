@@ -20,6 +20,7 @@ export type DexPairLike = {
   volume?: { m5?: number; h1?: number; h6?: number; h24?: number };
   txns?: {
     m5?: { buys?: number; sells?: number };
+    h1?: { buys?: number; sells?: number };
     h24?: { buys?: number; sells?: number };
   };
   priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number };
@@ -535,11 +536,11 @@ export function effectivePumpAthGain(scan: {
 }
 
 export type PumpFilterId =
-  | "all" | "top" | "intra" | "buy" | "watch"
+  | "all" | "gem" | "top" | "intra" | "buy" | "watch"
   | "micro" | "new" | "volume" | "dev" | "gained";
 
 export type PumpSortId =
-  | "score" | "gain_now" | "ath_gain" | "volume"
+  | "score" | "gem" | "gain_now" | "ath_gain" | "volume"
   | "price_change" | "newest" | "oldest_detect" | "txns";
 
 function hasDevKeyword(name?: string | null, symbol?: string | null): boolean {
@@ -566,6 +567,8 @@ export function applyPumpDeskFilters<T extends {
   pumpAthGain?: number | null;
   pumpDetectedAt?: number | null;
   pumpSocialSignal?: number | null;
+  gemScore?: number | null;
+  gemVerdict?: string | null;
 }>(
   cards: T[],
   filter: PumpFilterId,
@@ -588,6 +591,13 @@ export function applyPumpDeskFilters<T extends {
   }
 
   switch (filter) {
+    case "gem":
+      // Trusted lane: confirmed GEM calls + high-score WATCH candidates.
+      // AVOID (vetoed) never shows here regardless of score.
+      filtered = filtered.filter((c) =>
+        c.gemVerdict !== "AVOID"
+        && (c.gemVerdict === "GEM" || (c.gemScore ?? 0) >= 55));
+      break;
     case "intra":
       filtered = filtered.filter((c) =>
         c.pumpIntraSignal === "INTRA_NOW" || c.pumpIntraSignal === "INTRA_SOON");
@@ -628,7 +638,16 @@ export function applyPumpDeskFilters<T extends {
   }
 
   const sorted = [...filtered];
+  const verdictRank = (v?: string | null) =>
+    v === "GEM" ? 0 : v === "WATCH" ? 1 : v === "NEUTRAL" ? 2 : v === "AVOID" ? 4 : 3;
   switch (sort) {
+    case "gem":
+      sorted.sort((a, b) => {
+        const d = verdictRank(a.gemVerdict) - verdictRank(b.gemVerdict);
+        if (d !== 0) return d;
+        return (b.gemScore ?? -1) - (a.gemScore ?? -1);
+      });
+      break;
     case "gain_now":
       sorted.sort((a, b) => (b.pumpGainSinceDetection ?? 0) - (a.pumpGainSinceDetection ?? 0));
       break;

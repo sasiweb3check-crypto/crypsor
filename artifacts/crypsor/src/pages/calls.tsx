@@ -60,6 +60,8 @@ function TokenCard({ c }: { c: CallCard }) {
   const grade = c.pumpGrade;
   const created = ageLabel(c.pumpPairCreatedAt);
   const detected = c.pumpDetectedAt ? ageLabel(c.pumpDetectedAt) : (c.calledAt ? formatTimeAgo(c.calledAt) : null);
+  const isGem = c.gemVerdict === "GEM";
+  const isAvoid = c.gemVerdict === "AVOID";
 
   return (
     <article
@@ -68,6 +70,7 @@ function TokenCard({ c }: { c: CallCard }) {
         grade === "S" && "desk-card-s",
         grade === "A" && "desk-card-a",
         c.pumpBuySignal === "STRONG_BUY" && "desk-card-buy",
+        isGem && "desk-card-gem",
       )}
       onClick={() => setLocation(`/calls/${c.id}`)}
       role="button"
@@ -84,6 +87,12 @@ function TokenCard({ c }: { c: CallCard }) {
         <div className="desk-card-id min-w-0 flex-1">
           <div className="desk-card-title-row">
             <h3 className="desk-card-sym">${sym}</h3>
+            {isGem && (
+              <span className="desk-badge desk-badge-gem">
+                GEM {c.gemScore != null ? Math.round(c.gemScore) : ""}
+              </span>
+            )}
+            {isAvoid && <span className="desk-badge desk-badge-avoid">Avoid</span>}
             {grade && (
               <span className={cn("desk-badge", `desk-badge-grade-${grade.toLowerCase()}`)}>
                 {grade}{c.pumpScore != null ? ` ${c.pumpScore}` : ""}
