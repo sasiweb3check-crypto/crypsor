@@ -9,14 +9,13 @@
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "build:web": "pnpm --filter @workspace/crypsor run build",
-    "deploy:prod": "vercel deploy --prod --yes"
+    "build:api": "pnpm --filter @workspace/api-server run build"
   },
   "dependencies": {
     "@replit/connectors-sdk": "^0.4.1"
   },
   "devDependencies": {
     "prettier": "^3.9.5",
-    "typescript": "~5.9.3",
-    "vercel": "^58.4.4"
+    "typescript": "~5.9.3"
   }
 }
