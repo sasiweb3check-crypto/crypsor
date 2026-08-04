@@ -10,6 +10,7 @@ import CallDetailPage from '@/pages/call-detail';
 import WalletTrackPage from '@/pages/wallet-track';
 import Settings from '@/pages/settings';
 import OpsPage from '@/pages/ops';
+import AlertsPage from '@/pages/alerts';
 import NotFound from '@/pages/not-found';
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,10 +39,10 @@ function Router() {
         <Route path="/wallet-track" component={WalletTrackPage} />
         <Route path="/wallet" component={WalletTrackPage} />
         <Route path="/ops" component={OpsPage} />
+        <Route path="/alerts" component={AlertsPage} />
         <Route path="/settings" component={Settings} />
         {/* Legacy surfaces removed from product — redirect home */}
         <Route path="/wallet/:address" component={RedirectHome} />
-        <Route path="/alerts" component={RedirectHome} />
         <Route path="/trader" component={RedirectHome} />
         <Route path="/pro" component={RedirectHome} />
         <Route path="/caller" component={RedirectHome} />

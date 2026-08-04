@@ -78,6 +78,29 @@ export interface CallsChangedEvent {
   at?: string;
 }
 
+/** Pump-desk notable alert (BUY / INTRA / grade / EEI / gain milestones). */
+export interface PumpAlertBusEvent {
+  id: number;
+  tokenId: number;
+  kind: string;
+  label: string;
+  title: string;
+  body: string | null;
+  score: number | null;
+  grade: string | null;
+  buySignal: string | null;
+  intraSignal: string | null;
+  marketCapUsd: number | null;
+  mcAtDetection: number | null;
+  gainPct: number | null;
+  athGainPct: number | null;
+  symbol: string | null;
+  name: string | null;
+  address: string | null;
+  telegramSent: boolean;
+  createdAt: string;
+}
+
 /** Batched live MC ticks for Calls desk (free DexScreener / PumpFun refresh). */
 export interface PricesDeskEvent {
   ticks: Array<{
@@ -146,6 +169,7 @@ type BusMap = {
   "calls:changed":         [CallsChangedEvent];
   "prices:desk":           [PricesDeskEvent];
   "feed:item":             [FeedItemEvent];
+  "alert:pump":            [PumpAlertBusEvent];
 };
 
 class TypedBus extends EventEmitter {

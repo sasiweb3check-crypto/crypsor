@@ -32,6 +32,7 @@ import { startProScanner }  from "../pipeline/pro-scanner";
 import { startProSnapshots } from "../pipeline/pro-snapshots";
 import { startDexAgent } from "../pipeline/dex-agent";
 import { startPumpBuyScanner } from "../pipeline/pump-buy-scanner";
+import { startPumpAlerts } from "../pipeline/pump-alerts";
 import { healthMonitor } from "../pipeline/health-monitor";
 import { fetchDexScreener } from "../pipeline/metadata-service";
 import { pipelineQueue } from "../lib/job-queue";
@@ -684,6 +685,7 @@ export function startMonitor(): void {
     logger.info("Legacy GMGN/Crypsor scoring pipeline DISABLED — pump-sdk desk active");
   }
   startPumpBuyScanner();
+  startPumpAlerts();
   healthMonitor.startWatchdog();
 
   logger.info("Token Intelligence Pipeline started (pump-sdk primary)");
