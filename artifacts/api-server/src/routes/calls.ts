@@ -48,6 +48,7 @@ export type PumpDeskFields = {
   pumpMarketCap: number | null;
   pumpLiquidityUsd: number | null;
   pumpVolume24h: number | null;
+  pumpTxns24h: number | null;
   pumpPairCreatedAt: number | null;
   pumpPriceChange24h: number | null;
   pumpGainSinceDetection: number | null;
@@ -70,6 +71,7 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
       pumpMarketCap: null,
       pumpLiquidityUsd: null,
       pumpVolume24h: null,
+      pumpTxns24h: null,
       pumpPairCreatedAt: null,
       pumpPriceChange24h: null,
       pumpGainSinceDetection: null,
@@ -89,6 +91,7 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
     pumpMarketCap: scan.marketCap,
     pumpLiquidityUsd: scan.liquidityUsd,
     pumpVolume24h: scan.volume24h,
+    pumpTxns24h: scan.txns24h,
     pumpPairCreatedAt: scan.pairCreatedAt,
     pumpPriceChange24h: scan.priceChange24h,
     pumpGainSinceDetection: scan.gainSinceDetection,
@@ -186,6 +189,7 @@ export type CallCard = {
   pumpMarketCap?: number | null;
   pumpLiquidityUsd?: number | null;
   pumpVolume24h?: number | null;
+  pumpTxns24h?: number | null;
   pumpPairCreatedAt?: number | null;
   pumpPriceChange24h?: number | null;
   pumpGainSinceDetection?: number | null;

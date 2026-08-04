@@ -78,6 +78,7 @@ export type PumpScanPayload = {
   liquidityUsd: number;
   volume24h: number;
   volume1h: number;
+  txns24h: number;
   pairCreatedAt: number | null;
   priceChange24h: number;
   priceUsd: number;
@@ -89,6 +90,12 @@ export type PumpScanPayload = {
   gainSinceDetection: number;
   athGain: number;
 };
+
+/** FilterBar.dev keyword list — pump-fullend FilterBar.applyFilters */
+export const PUMP_DEV_KEYWORDS = [
+  "sdk", "dev", "build", "code", "open", "source", "hack", "fork",
+  "api", "bot", "agent", "ai", "mcp", "tool", "github",
+] as const;
 
 const VALID_DEX_IDS = new Set(["pumpswap", "raydium", "meteora", "orca"]);
 
@@ -407,6 +414,9 @@ export function buildPumpScanPayload(
     ? ((athPrice - priceAtDetection) / priceAtDetection) * 100
     : 0;
 
+  const txBuys = token.txns?.h24?.buys || 0;
+  const txSells = token.txns?.h24?.sells || 0;
+
   return {
     score: score.total,
     grade: score.grade,
@@ -423,6 +433,7 @@ export function buildPumpScanPayload(
     liquidityUsd: token.liquidity?.usd || 0,
     volume24h: token.volume?.h24 || 0,
     volume1h: token.volume?.h1 || 0,
+    txns24h: txBuys + txSells,
     pairCreatedAt: token.pairCreatedAt ?? null,
     priceChange24h: token.priceChange?.h24 || 0,
     priceUsd,
@@ -444,8 +455,15 @@ export type PumpSortId =
   | "score" | "gain_now" | "ath_gain" | "volume"
   | "price_change" | "newest" | "oldest_detect" | "txns";
 
+function hasDevKeyword(name?: string | null, symbol?: string | null): boolean {
+  const combined = `${name || ""} ${symbol || ""}`.toLowerCase();
+  return PUMP_DEV_KEYWORDS.some((kw) => combined.includes(kw));
+}
+
 /** Filter + sort parity with pump-fullend FilterBar.applyFilters */
 export function applyPumpDeskFilters<T extends {
+  name?: string | null;
+  symbol?: string | null;
   pumpScore: number | null;
   pumpGrade: PumpGrade | null;
   pumpBuySignal: PumpBuyLevel | null;
@@ -454,6 +472,7 @@ export function applyPumpDeskFilters<T extends {
   pumpMarketCap?: number | null;
   pumpLiquidityUsd?: number | null;
   pumpVolume24h?: number | null;
+  pumpTxns24h?: number | null;
   pumpPairCreatedAt?: number | null;
   pumpPriceChange24h?: number | null;
   pumpGainSinceDetection?: number | null;
@@ -497,9 +516,10 @@ export function applyPumpDeskFilters<T extends {
       filtered = filtered.filter((c) => (c.pumpVolume24h ?? 0) >= 50_000);
       break;
     case "dev":
+      // Upstream: keyword match on name/symbol OR socialSignal >= 4
       filtered = filtered.filter((c) =>
-        (c.pumpSocialSignal ?? 0) >= 4
-        || c.pumpTags.some((t) => t.label === "Dev Narrative" || t.label === "Larry Signal"));
+        hasDevKeyword(c.name, c.symbol)
+        || (c.pumpSocialSignal ?? 0) >= 4);
       break;
     case "gained":
       filtered = filtered.filter((c) => (c.pumpGainSinceDetection ?? 0) >= 50);
@@ -529,6 +549,8 @@ export function applyPumpDeskFilters<T extends {
       sorted.sort((a, b) => (a.pumpDetectedAt ?? Infinity) - (b.pumpDetectedAt ?? Infinity));
       break;
     case "txns":
+      sorted.sort((a, b) => (b.pumpTxns24h ?? 0) - (a.pumpTxns24h ?? 0));
+      break;
     case "score":
     default:
       sorted.sort((a, b) => (b.pumpScore ?? 0) - (a.pumpScore ?? 0));
@@ -573,6 +595,7 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
     liquidityUsd: num("liquidityUsd"),
     volume24h: num("volume24h"),
     volume1h: num("volume1h"),
+    txns24h: num("txns24h"),
     pairCreatedAt: o.pairCreatedAt != null && Number.isFinite(Number(o.pairCreatedAt))
       ? Number(o.pairCreatedAt)
       : null,
