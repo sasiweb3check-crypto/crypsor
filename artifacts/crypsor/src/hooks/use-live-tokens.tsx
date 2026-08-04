@@ -204,6 +204,40 @@ function useLiveTokensInternal(): LiveSseValue {
       }
     });
 
+    es.addEventListener("alert:pump", (e: MessageEvent) => {
+      try {
+        const payload = JSON.parse(e.data as string) as {
+          id: number;
+          tokenId: number;
+          kind: string;
+          label: string;
+          title: string;
+          body: string | null;
+          symbol: string | null;
+          address: string | null;
+        };
+        void qc.invalidateQueries({ queryKey: ["pump-alerts"] });
+        void qc.invalidateQueries({ queryKey: ["pump-alerts-stats"] });
+        void qc.invalidateQueries({ queryKey: ["pump-alerts-unread"] });
+
+        // Browser notification center (OS banner)
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const n = new Notification(payload.title || payload.label, {
+            body: payload.body ?? payload.label,
+            tag: `pump-alert-${payload.id}`,
+            renotify: true,
+          });
+          n.onclick = () => {
+            window.focus();
+            window.location.href = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/calls/${payload.tokenId}`;
+            n.close();
+          };
+        }
+      } catch (err) {
+        console.warn("[SSE] alert:pump parse error", err);
+      }
+    });
+
     es.addEventListener("token:bought", (e: MessageEvent) => {
       try {
         const payload: TokenBoughtPayload = JSON.parse(e.data as string);

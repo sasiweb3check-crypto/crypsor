@@ -142,6 +142,11 @@ export function startSseGateway(): void {
     });
   });
 
+  // Pump desk alerts → browser notification center
+  eventBus.on("alert:pump", (evt) => {
+    broadcast("alert:pump", evt);
+  });
+
   logger.info("SSE gateway started");
 }
 

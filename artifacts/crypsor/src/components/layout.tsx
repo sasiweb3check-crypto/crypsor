@@ -1,10 +1,11 @@
 import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { Settings, Activity, Search } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { Settings, Activity, Search, Bell } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { OPS_PING_KEY, fetchOpsPing } from "@/lib/ops-api";
 import { PAGE_SIZE, fetchCallsFeed } from "@/lib/calls-api";
+import { ALERTS_UNREAD_KEY, fetchAlerts } from "@/lib/alerts-api";
 import { LiveSseProvider, useLiveSse } from "@/hooks/use-live-tokens";
 
 function ShellChrome({ children }: { children: React.ReactNode }) {
@@ -12,9 +13,22 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
   const { connected } = useLiveSse();
   const onUtility = location === "/ops" || location === "/settings" || location.startsWith("/wallet")
-    || location.startsWith("/ops/") || location.startsWith("/settings/");
+    || location.startsWith("/ops/") || location.startsWith("/settings/")
+    || location.startsWith("/alerts");
   const onDetail = location.startsWith("/calls/") || location.startsWith("/tokens/");
   const onWallet = location.startsWith("/wallet");
+  const onAlerts = location.startsWith("/alerts");
+
+  const unreadQ = useQuery({
+    queryKey: ALERTS_UNREAD_KEY,
+    queryFn: async () => {
+      const page = await fetchAlerts({ page: 1, limit: 1 });
+      return page.unread;
+    },
+    refetchInterval: connected ? 45_000 : 12_000,
+    staleTime: 8_000,
+  });
+  const unread = unreadQ.data ?? 0;
 
   useEffect(() => {
     void qc.prefetchQuery({
@@ -22,14 +36,11 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
       queryFn: fetchOpsPing,
       staleTime: 15_000,
     });
-    const modes = ["waiting", "best", "hot", "latest"] as const;
-    for (const mode of modes) {
-      void qc.prefetchQuery({
-        queryKey: ["calls-feed", mode, 1, {}],
-        queryFn: () => fetchCallsFeed(mode, 1, PAGE_SIZE, {}),
-        staleTime: 8_000,
-      });
-    }
+    void qc.prefetchQuery({
+      queryKey: ["calls-feed", "pump", "all", "score", 1, 0],
+      queryFn: () => fetchCallsFeed("all", 1, PAGE_SIZE, "score", 0),
+      staleTime: 8_000,
+    });
   }, [qc]);
 
   return (
@@ -48,7 +59,15 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               Crypsor
             </div>
             <div className="text-[var(--cryp-mute)] text-[8px] tracking-[0.18em] uppercase mt-0.5">
-              {onWallet ? "Wallet Track" : onDetail ? "Detail" : location.startsWith("/ops") ? "Logs" : "Desk"}
+              {onWallet
+                ? "Wallet Track"
+                : onDetail
+                  ? "Detail"
+                  : onAlerts
+                    ? "Alerts"
+                    : location.startsWith("/ops")
+                      ? "Logs"
+                      : "Desk"}
             </div>
           </div>
         </Link>
@@ -81,6 +100,28 @@ function ShellChrome({ children }: { children: React.ReactNode }) {
               )}
             >
               <Search className="w-4 h-4" />
+            </button>
+          </Link>
+          <Link href="/alerts">
+            <button
+              type="button"
+              aria-label="Alerts"
+              className={cn(
+                "relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
+                onAlerts
+                  ? "text-[var(--cryp-mint)] bg-[rgba(61,154,139,0.14)]"
+                  : "text-[var(--cryp-mute)] hover:text-[var(--cryp-text)]",
+              )}
+            >
+              <Bell className="w-4 h-4" />
+              {unread > 0 && (
+                <span
+                  className="absolute top-1 right-1 min-w-[14px] h-[14px] px-0.5 rounded-full text-[8px] font-bold flex items-center justify-center"
+                  style={{ background: "var(--cryp-gain)", color: "#04120c" }}
+                >
+                  {unread > 99 ? "99+" : unread}
+                </span>
+              )}
             </button>
           </Link>
           <Link href="/ops">

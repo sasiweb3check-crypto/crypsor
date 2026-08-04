@@ -118,6 +118,36 @@ const SCHEMA_STATEMENTS = [
    )`,
   `CREATE INDEX IF NOT EXISTS pump_scan_snapshots_token_snap_idx
      ON pump_scan_snapshots (token_id, snapshot_at DESC)`,
+  // Pump desk alerts (BUY / INTRA / grade / EEI / gain milestones)
+  `CREATE TABLE IF NOT EXISTS pump_alerts (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES tracked_tokens(id) ON DELETE CASCADE,
+     kind text NOT NULL,
+     label text NOT NULL,
+     title text NOT NULL,
+     body text,
+     score real,
+     grade text,
+     buy_signal text,
+     intra_signal text,
+     market_cap_usd text,
+     mc_at_detection text,
+     gain_pct real,
+     ath_gain_pct real,
+     symbol text,
+     name text,
+     address text,
+     telegram_sent boolean NOT NULL DEFAULT false,
+     telegram_error text,
+     read_at timestamptz,
+     created_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS pump_alerts_token_kind_uidx
+     ON pump_alerts (token_id, kind)`,
+  `CREATE INDEX IF NOT EXISTS pump_alerts_created_idx
+     ON pump_alerts (created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS pump_alerts_unread_idx
+     ON pump_alerts (read_at, created_at DESC)`,
   // Crypsor-owned wallet intel (separate from GMGN KOL/smart)
   `CREATE TABLE IF NOT EXISTS crypsor_wallet_intel (
      wallet_address text PRIMARY KEY,
