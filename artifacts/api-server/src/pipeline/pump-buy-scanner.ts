@@ -23,6 +23,7 @@ import {
 } from "../lib/pump-sdk-score";
 import { evaluatePumpAlerts } from "./pump-alerts";
 import { evaluateGemForScan } from "./gem-engine";
+import { fetchPumpFun } from "./price-service";
 import { eventBus, type TokenBoughtEvent } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
 
@@ -160,6 +161,26 @@ async function scanBoughtToken(tokenId: number, tokenAddress: string, chain: str
     const pairs = await fetchDexPairsForMint(tokenAddress);
     const pair = pickBestSolanaPair(pairs);
     if (!pair) {
+      // Bonding-curve token (pre-graduation): no Dex pair, but pump.fun has
+      // live MC + virtual liquidity. Feed the GEM engine a synthetic pair so
+      // the tape (MC velocity, holder growth) starts BEFORE graduation —
+      // that's where the earliest entries live. Legacy pump scan is skipped.
+      try {
+        const pf = await fetchPumpFun(tokenAddress, { timeoutMs: 5_000 });
+        const pfMc = pf?.marketCapUsd != null ? parseFloat(pf.marketCapUsd) : NaN;
+        if (Number.isFinite(pfMc) && pfMc > 0) {
+          const pfLiq = pf?.liquidityUsd != null ? parseFloat(pf.liquidityUsd) : NaN;
+          const synthetic: DexPairLike = {
+            chainId: "solana",
+            dexId: "pumpfun-bonding",
+            marketCap: pfMc,
+            priceUsd: pf!.price,
+            liquidity: Number.isFinite(pfLiq) && pfLiq > 0 ? { usd: pfLiq } : undefined,
+            pairCreatedAt: pf!.tokenCreatedAt ? pf!.tokenCreatedAt.getTime() : undefined,
+          };
+          await evaluateGemForScan(tokenId, synthetic);
+        }
+      } catch { /* bonding fallback is best-effort */ }
       log.debug({ tokenId, tokenAddress: tokenAddress.slice(0, 8) }, "no Dex pair yet");
       healthMonitor.ok("pump-buy-scanner", Date.now() - t0);
       return;

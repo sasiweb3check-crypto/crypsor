@@ -45,6 +45,15 @@ export const gem_snapshots = pgTable(
 
     /** tracked_tokens.holder_count at snapshot time (null = not fetched yet) */
     holderCount: integer("holder_count"),
+
+    /** GMGN live intel at snapshot time (gem-enrich) */
+    top10Pct: real("top10_pct"),
+    smartCount: integer("smart_count"),
+    kolCount: integer("kol_count"),
+    smartHoldPct: real("smart_hold_pct"),
+    kolHoldPct: real("kol_hold_pct"),
+    sniperHoldPct: real("sniper_hold_pct"),
+    bundlerHoldPct: real("bundler_hold_pct"),
   },
   (t) => [index("idx_gem_snapshots_token_at").on(t.tokenId, t.at)],
 );
