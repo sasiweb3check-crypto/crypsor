@@ -91,6 +91,7 @@ export type CallCard = {
   pumpMarketCap?: number | null;
   pumpLiquidityUsd?: number | null;
   pumpVolume24h?: number | null;
+  pumpTxns24h?: number | null;
   pumpPairCreatedAt?: number | null;
   pumpPriceChange24h?: number | null;
   pumpGainSinceDetection?: number | null;
@@ -140,7 +141,7 @@ export const PUMP_SORT_OPTIONS: { id: PumpSortId; label: string }[] = [
   { id: "price_change", label: "Price Change 24H" },
   { id: "newest", label: "Newest First" },
   { id: "oldest_detect", label: "Oldest Detected" },
-  { id: "txns", label: "Buys (tracked)" },
+  { id: "txns", label: "Transaction Count" },
 ];
 
 export const FILTER_BLURB: Record<PumpFilterId, string> = {
@@ -152,7 +153,7 @@ export const FILTER_BLURB: Record<PumpFilterId, string> = {
   micro: "Under $50K MC · liquid enough",
   new: "Pair age under 2 hours",
   volume: "24H volume ≥ $50K",
-  dev: "Dev / SDK narrative tags",
+  dev: "Name/symbol keywords or socialSignal ≥ 4",
   gained: "≥50% since detection",
 };
 
