@@ -11,6 +11,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { useQueryClient } from "@tanstack/react-query";
 import { getApiBase } from "@/lib/api-base";
 import type { CallCard, CallBuyer, CallSnap, CrypsorWalletRow, FeedPage } from "@/lib/calls-api";
+import type { GemCard, GemDetail, GemsPage } from "@/lib/gems-api";
 
 type CallDetailPayload = {
   card: CallCard | null;
@@ -143,6 +144,26 @@ function patchCallCard(
   };
 }
 
+function patchGemCard(
+  card: GemCard,
+  tick: PricesDeskPayload["ticks"][number],
+): GemCard {
+  const mc = tick.marketCapUsd != null && tick.marketCapUsd !== ""
+    ? Number(tick.marketCapUsd)
+    : card.currentMcUsd;
+  if (mc == null || !Number.isFinite(mc)) return card;
+  const callMc = card.callMcUsd;
+  const peak = Math.max(card.peakMcUsd ?? 0, mc) || null;
+  return {
+    ...card,
+    currentMcUsd: mc,
+    peakMcUsd: peak,
+    gainSinceCallPct: callMc && callMc > 0 ? ((mc - callMc) / callMc) * 100 : card.gainSinceCallPct,
+    peakMultiple: callMc && peak && callMc > 0 ? peak / callMc : card.peakMultiple,
+    offPeakPct: peak && peak > 0 ? (1 - mc / peak) * 100 : card.offPeakPct,
+  };
+}
+
 function useLiveTokensInternal(): LiveSseValue {
   const qc = useQueryClient();
   const [connected, setConnected] = useState(false);
@@ -162,6 +183,7 @@ function useLiveTokensInternal(): LiveSseValue {
         void qc.invalidateQueries({ queryKey: ["calls-waiting"] });
         void qc.invalidateQueries({ queryKey: ["calls-stats"] });
         void qc.invalidateQueries({ queryKey: ["opsSummary"] });
+        void qc.invalidateQueries({ queryKey: ["gems-log"] });
       }, ms);
     };
 
@@ -214,6 +236,33 @@ function useLiveTokensInternal(): LiveSseValue {
           return { ...old, card: patchCallCard(old.card, tick) };
         },
       );
+
+      // Patch GEM desk cards (live MC without refetch)
+      qc.setQueriesData<GemsPage>(
+        { queryKey: ["gems-feed"] },
+        (old) => {
+          if (!old?.cards?.length) return old;
+          let changed = false;
+          const cards = old.cards.map((c) => {
+            const tick = byId.get(c.id);
+            if (!tick) return c;
+            changed = true;
+            return patchGemCard(c, tick);
+          });
+          return changed ? { ...old, cards } : old;
+        },
+      );
+
+      // Patch open gem-detail cache
+      qc.setQueriesData<GemDetail>(
+        { queryKey: ["gem-detail"] },
+        (old) => {
+          if (!old?.card) return old;
+          const tick = byId.get(old.card.id);
+          if (!tick) return old;
+          return { ...old, card: { ...old.card, ...patchGemCard(old.card, tick) } };
+        },
+      );
     };
 
     es.addEventListener("connected", () => {
@@ -248,6 +297,11 @@ function useLiveTokensInternal(): LiveSseValue {
           address: string | null;
         };
         bumpAlerts(200);
+
+        // A new GEM call reshapes the gems board immediately
+        if (payload.kind === "GEM_CALL") {
+          void qc.invalidateQueries({ queryKey: ["gems-feed"] });
+        }
 
         // Browser notification center (OS banner)
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -288,6 +342,7 @@ function useLiveTokensInternal(): LiveSseValue {
           },
         );
         bumpBuys(payload.tokenId, 100);
+        void qc.invalidateQueries({ queryKey: ["gems-log"] });
       } catch (err) {
         console.warn("[SSE] token:bought parse error", err);
       }
