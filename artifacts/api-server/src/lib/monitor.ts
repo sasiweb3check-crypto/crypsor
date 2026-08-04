@@ -666,18 +666,27 @@ export function startMonitor(): void {
   startImageService();
   startSseGateway();
   startMigrationChecker();
-  startHoldersRefresh();
-  startIntelligenceEngine();
-  startSecurityService();
-  startCtoScan();
-  startCallerAlerts();
-  startProScanner();
-  startProSnapshots();
-  startDexAgent();
+  // ── LEGACY BACKUP (Crypsor scoring + GMGN) — off by default ──────────────
+  // Set CRYPSOR_LEGACY_PIPELINE=1 to re-enable holders GMGN / intel / pro / dex.
+  // Active desk uses pump-buy-scanner only (pump-fullend scoring).
+  const legacyOn = process.env.CRYPSOR_LEGACY_PIPELINE === "1";
+  if (legacyOn) {
+    startHoldersRefresh();
+    startIntelligenceEngine();
+    startSecurityService();
+    startCtoScan();
+    startCallerAlerts();
+    startProScanner();
+    startProSnapshots();
+    startDexAgent();
+    logger.warn("CRYPSOR_LEGACY_PIPELINE=1 — GMGN + Crypsor scoring services enabled");
+  } else {
+    logger.info("Legacy GMGN/Crypsor scoring pipeline DISABLED — pump-sdk desk active");
+  }
   startPumpBuyScanner();
   healthMonitor.startWatchdog();
 
-  logger.info("Token Intelligence Pipeline started");
+  logger.info("Token Intelligence Pipeline started (pump-sdk primary)");
 
   const loop = async (): Promise<void> => {
     const start = Date.now();

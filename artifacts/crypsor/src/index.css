@@ -147,6 +147,61 @@ body {
   background: rgba(12, 20, 28, 0.9);
   border: 1px solid var(--cryp-line);
 }
+.pump-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(12, 20, 28, 0.92);
+  border: 1px solid var(--cryp-line);
+}
+.pump-filter-chip {
+  padding: 0.35rem 0.55rem;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cryp-mute);
+  border: 1px solid transparent;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.pump-filter-chip:hover { color: var(--cryp-ink); }
+.pump-filter-chip-on {
+  color: var(--cryp-ink);
+  background: rgba(61, 154, 139, 0.22);
+  border-color: rgba(61, 154, 139, 0.4);
+}
+.pump-filter-buy.pump-filter-chip-on {
+  color: #04120c;
+  background: rgba(61, 180, 110, 0.85);
+  border-color: transparent;
+}
+.pump-filter-watch.pump-filter-chip-on {
+  color: #0a1016;
+  background: rgba(212, 160, 23, 0.85);
+  border-color: transparent;
+}
+.pump-filter-intra.pump-filter-chip-on {
+  color: #fff8f2;
+  background: rgba(196, 92, 38, 0.9);
+  border-color: transparent;
+}
+.pump-filter-top.pump-filter-chip-on {
+  color: #061018;
+  background: var(--cryp-mint);
+  border-color: transparent;
+}
+.tok-row-grade-s {
+  background: linear-gradient(90deg, rgba(240, 215, 140, 0.08), transparent 42%);
+}
+.tok-row-grade-a {
+  background: linear-gradient(90deg, rgba(61, 154, 139, 0.08), transparent 42%);
+}
+.tok-row-buy {
+  box-shadow: inset 3px 0 0 rgba(61, 180, 110, 0.7);
+}
 .call-tab {
   padding: 0.55rem 0.35rem;
   border-radius: 8px;

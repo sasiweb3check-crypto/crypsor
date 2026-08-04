@@ -1,76 +1,22 @@
 /**
- * Token desk — live Waiting / Best / Hot / Latest.
- * SSE patches MC; client re-sorts Hot heat live; clickable column sorts.
+ * Token desk v2 — pump-fullend scoring / filters / labels.
+ * Data source: tracked-wallet buys only. No Crypsor call-quality / GMGN rank.
  */
-import { startTransition, useEffect, useMemo, useState } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { startTransition, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import {
-  ArrowDown, ArrowUp, ArrowUpDown,
-  ChevronLeft, ChevronRight, ExternalLink, SlidersHorizontal,
-} from "lucide-react";
-import {
-  cn, formatCompactUsd, formatTimeAgo,
+  cn, formatCompactUsd,
   getGmgnUrl, safeSymbol, safeImageUrl,
 } from "@/lib/utils";
 import {
-  CALLS_FEED_KEY, CALLS_STATS_KEY, MODE_BLURB, PAGE_SIZE,
-  fetchCallsFeed, fetchCallsStats, heatScore, sortDeskCards,
-  type CallCard, type CallMode, type DeskSortDir, type DeskSortKey,
-  type FeedFilters, type StatsPeriod,
+  CALLS_FEED_KEY, FILTER_BLURB, PAGE_SIZE,
+  PUMP_FILTER_PRESETS, PUMP_SORT_OPTIONS,
+  fetchCallsFeed,
+  type CallCard, type PumpFilterId, type PumpSortId,
 } from "@/lib/calls-api";
-import { OPS_SUMMARY_KEY, fetchOpsSummary } from "@/lib/ops-api";
 import { useLiveSse } from "@/hooks/use-live-tokens";
-
-const MODES: { id: CallMode; label: string }[] = [
-  { id: "waiting", label: "Waiting" },
-  { id: "best", label: "Best" },
-  { id: "hot", label: "Hot" },
-  { id: "latest", label: "Latest" },
-];
-
-const STATS_PERIODS: { id: StatsPeriod; label: string }[] = [
-  { id: "1d", label: "1D" },
-  { id: "3d", label: "3D" },
-  { id: "7d", label: "7D" },
-  { id: "30d", label: "30D" },
-];
-
-const LABEL_OPTS = [
-  { id: "all", label: "All labels" },
-  { id: "elite", label: "Elite" },
-  { id: "strong", label: "Strong" },
-  { id: "watch", label: "Watch" },
-  { id: "noise", label: "Noise" },
-];
-
-const QUALITY_OPTS = [
-  { id: "all", label: "All scores" },
-  { id: "very_good", label: "Very good" },
-  { id: "good", label: "Good" },
-  { id: "below", label: "Below" },
-];
-
-const PUMP_GRADE_OPTS = [
-  { id: "all", label: "All grades" },
-  { id: "TOP", label: "S+A grade" },
-  { id: "S", label: "S" },
-  { id: "A", label: "A" },
-  { id: "B", label: "B" },
-  { id: "C", label: "C" },
-  { id: "D", label: "D" },
-];
-
-const PUMP_SIGNAL_OPTS = [
-  { id: "all", label: "All signals" },
-  { id: "buy", label: "Ready to buy" },
-  { id: "watch", label: "Watch closely" },
-  { id: "intra", label: "Intraday" },
-  { id: "micro", label: "Micro cap" },
-  { id: "dev", label: "Dev narrative" },
-];
-
-const emptyFilters: FeedFilters = {};
 
 function TokenThumb({
   logoUri, address, symbol,
@@ -102,11 +48,6 @@ function fmtPct(v: number | null | undefined, digits = 0) {
   return `${sign}${v.toFixed(digits)}%`;
 }
 
-function fmtX(v: number | null | undefined) {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return `${v >= 10 ? Math.round(v) : v.toFixed(1)}×`;
-}
-
 function gainClass(v: number | null | undefined) {
   if (v == null || !Number.isFinite(v)) return "text-[var(--cryp-mute)]";
   if (v > 0) return "text-[var(--cryp-gain)]";
@@ -114,170 +55,69 @@ function gainClass(v: number | null | undefined) {
   return "text-[var(--cryp-mute)]";
 }
 
-function SortHead({
-  label, col, active, dir, onSort, align = "right",
-}: {
-  label: string;
-  col: DeskSortKey;
-  active: DeskSortKey;
-  dir: DeskSortDir;
-  onSort: (k: DeskSortKey) => void;
-  align?: "left" | "right" | "center";
-}) {
-  const show = active === col;
-  return (
-    <th
-      className={cn(
-        "tok-th",
-        align === "right" && "tok-th-num",
-        align === "center" && "tok-th-link",
-        align === "left" && "tok-th-token",
-        col === "buys" && "tok-th-buys",
-      )}
-      aria-sort={show ? (dir === "asc" ? "ascending" : "descending") : "none"}
-    >
-      <button
-        type="button"
-        className={cn("tok-sort-btn", show && "tok-sort-btn-on")}
-        onClick={() => onSort(col)}
-        aria-label={`Sort by ${label}`}
-      >
-        <span>{label}</span>
-        {show ? (
-          dir === "asc" ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-        ) : (
-          <ArrowUpDown className="w-3 h-3 opacity-40" />
-        )}
-      </button>
-    </th>
-  );
-}
-
-function TableRow({
-  c, waiting, hot,
-}: {
-  c: CallCard;
-  waiting: boolean;
-  hot: boolean;
-}) {
+function TableRow({ c }: { c: CallCard }) {
   const [, setLocation] = useLocation();
   const sym = safeSymbol(c.symbol, c.address) || "?";
-  const currentGainPct = c.gainPct != null && Number.isFinite(c.gainPct)
-    ? c.gainPct
-    : (c.nowMultiple > 0 ? (c.nowMultiple - 1) * 100 : null);
-  const athGainPct = c.athMultiple > 0 ? (c.athMultiple - 1) * 100 : null;
   const gmgn = getGmgnUrl(c.chain, c.address);
-  const heat = hot ? heatScore(c) : 0;
+  const gain = c.pumpGainSinceDetection ?? c.gainPct;
+  const grade = c.pumpGrade;
 
   return (
     <tr
-      className={cn("tok-row", hot && heat > 40 && "tok-row-hot")}
+      className={cn(
+        "tok-row",
+        grade === "S" && "tok-row-grade-s",
+        grade === "A" && "tok-row-grade-a",
+        c.pumpBuySignal === "STRONG_BUY" && "tok-row-buy",
+      )}
       onClick={() => setLocation(`/calls/${c.id}`)}
     >
       <td className="tok-td tok-td-token">
         <div className="flex items-center gap-1.5 min-w-0">
           <TokenThumb logoUri={c.logoUri} address={c.address} symbol={c.symbol} />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1 min-w-0">
+            <div className="flex items-center gap-1 min-w-0 flex-wrap">
               <span className="font-display font-bold text-[12px] truncate">${sym}</span>
-              {waiting ? (
-                <span className="tok-chip tok-chip-wait">
-                  {c.runnerPhase || "Wait"}
-                </span>
-              ) : c.callLabel ? (
-                <span className={cn(
-                  "tok-chip hidden sm:inline",
-                  c.callLabel === "elite" && "tok-chip-elite",
-                  c.callLabel === "strong" && "tok-chip-strong",
-                )}>
-                  {c.callLabel}
-                </span>
-              ) : null}
-              {c.pumpGrade && (
-                <span className={cn(
-                  "tok-chip tok-chip-grade",
-                  `tok-chip-grade-${c.pumpGrade.toLowerCase()}`,
-                )}>
-                  {c.pumpGrade}
-                  {c.pumpScore != null ? ` ${c.pumpScore}` : ""}
+              {grade && (
+                <span className={cn("tok-chip tok-chip-grade", `tok-chip-grade-${grade.toLowerCase()}`)}>
+                  {grade} {c.pumpScore ?? ""}
                 </span>
               )}
               {c.pumpBuySignal === "STRONG_BUY" && (
-                <span className="tok-chip tok-chip-buy">Buy</span>
+                <span className="tok-chip tok-chip-buy">BUY</span>
               )}
               {c.pumpBuySignal === "WATCH" && (
-                <span className="tok-chip tok-chip-pwatch">Watch</span>
+                <span className="tok-chip tok-chip-pwatch">WATCH</span>
               )}
-              {c.pumpIntraSignal && (
-                <span className="tok-chip tok-chip-intra">
-                  {c.pumpIntraSignal === "INTRA_NOW" ? "Intra" : "Soon"}
-                </span>
+              {c.pumpIntraSignal === "INTRA_NOW" && (
+                <span className="tok-chip tok-chip-intra">INTRA</span>
               )}
-              {hot && heat > 50 && (
-                <span className="tok-chip tok-chip-hot">Hot</span>
+              {c.pumpIntraSignal === "INTRA_SOON" && (
+                <span className="tok-chip tok-chip-intra">SOON</span>
               )}
             </div>
             <div className="text-[9px] text-[var(--cryp-mute)] truncate">
-              {waiting ? (
-                <>
-                  {c.snapCount != null && (
-                    <span className="mr-1">snaps {c.snapCount}/{Math.max(5, (c.snapCount ?? 0) + (c.snapsNeeded ?? 0))}</span>
-                  )}
-                  <span className="text-[var(--cryp-warn)]">
-                    {c.holdReason || c.blockers?.[0] || (c.calledAt ? formatTimeAgo(c.calledAt) : "—")}
-                  </span>
-                </>
-              ) : (
-                <>
-                  {c.calledAt ? formatTimeAgo(c.calledAt) : "—"}
-                  {c.callScore > 0 && (
-                    <span className="ml-1 text-[var(--cryp-mint)]">sc {c.callScore}</span>
-                  )}
-                  {c.gain1hPct != null && (
-                    <span className={cn("ml-1", gainClass(c.gain1hPct))}>
-                      1H {fmtPct(c.gain1hPct, 0)}
-                    </span>
-                  )}
-                  {hot && c.momentum1h > 0 && (
-                    <span className="ml-1 text-[var(--cryp-mint)]">mom {c.momentum1h}</span>
-                  )}
-                  {c.pumpTags?.[0] && (
-                    <span className="ml-1 opacity-80">{c.pumpTags[0].label}</span>
-                  )}
-                </>
-              )}
+              {c.pumpRecommendation || "—"}
+              {c.walletBuys > 0 && <span className="ml-1">· {c.walletBuys} buys</span>}
+              {c.pumpTags?.[0] && <span className="ml-1 opacity-80">· {c.pumpTags[0].label}</span>}
+              {c.pumpTags?.[1] && <span className="ml-1 opacity-70">· {c.pumpTags[1].label}</span>}
             </div>
           </div>
         </div>
       </td>
       <td className="tok-td tok-td-num font-mono-num">
-        {formatCompactUsd(c.currentMcUsd)}
+        {formatCompactUsd(c.currentMcUsd ?? c.pumpMarketCap)}
       </td>
-      <td className={cn(
-        "tok-td tok-td-num font-mono-num",
-        hot ? (heat > 40 ? "text-[var(--cryp-warn)]" : "text-[var(--cryp-ink)]") : gainClass(currentGainPct),
-      )}>
-        {hot ? (
-          <>
-            <span className="tok-gain-main">{Math.round(heat)}</span>
-            <span className="tok-gain-sub">{fmtPct(c.gain1hPct, 0)} 1H</span>
-          </>
-        ) : (
-          <>
-            <span className="tok-gain-main">{fmtPct(currentGainPct, 0)}</span>
-            <span className="tok-gain-sub">{fmtX(c.nowMultiple)}</span>
-          </>
-        )}
+      <td className={cn("tok-td tok-td-num font-mono-num", gainClass(gain))}>
+        <span className="tok-gain-main">{fmtPct(gain, 0)}</span>
+        <span className="tok-gain-sub">since detect</span>
       </td>
-      <td className={cn("tok-td tok-td-num font-mono-num", gainClass(athGainPct))}>
-        <span className="tok-gain-main">{fmtPct(athGainPct, 0)}</span>
-        <span className="tok-gain-sub">{fmtX(c.athMultiple)}</span>
+      <td className={cn("tok-td tok-td-num font-mono-num", gainClass(c.pumpAthGain))}>
+        <span className="tok-gain-main">{fmtPct(c.pumpAthGain, 0)}</span>
+        <span className="tok-gain-sub">ATH</span>
       </td>
-      <td className={cn(
-        "tok-td tok-td-num font-mono-num",
-        c.walletBuys > 0 ? "text-[var(--cryp-mint)]" : "text-[var(--cryp-mute)]",
-      )}>
-        {c.walletBuys > 0 ? c.walletBuys : "—"}
+      <td className="tok-td tok-td-num font-mono-num text-[var(--cryp-mute)]">
+        {formatCompactUsd(c.pumpVolume24h ?? c.volume24hUsd)}
       </td>
       <td className="tok-td tok-td-link">
         <a
@@ -285,422 +125,166 @@ function TableRow({
           target="_blank"
           rel="noreferrer"
           className="tok-gmgn"
-          title="Open on GMGN"
-          aria-label={`Open ${sym} on GMGN`}
+          title="Open chart"
+          aria-label={`Open ${sym}`}
           onClick={(e) => e.stopPropagation()}
         >
           <ExternalLink className="w-3.5 h-3.5" />
-          <span className="tok-gmgn-label">GMGN</span>
         </a>
       </td>
     </tr>
   );
 }
 
-function FilterSelect({
-  value, onChange, options, ariaLabel,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { id: string; label: string }[];
-  ariaLabel: string;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      aria-label={ariaLabel}
-      className="tok-filter-select"
-    >
-      {options.map(o => (
-        <option key={o.id} value={o.id}>{o.label}</option>
-      ))}
-    </select>
-  );
-}
-
-function NumFilter({
-  value, onChange, placeholder, ariaLabel,
-}: {
-  value: number | undefined;
-  onChange: (v: number | undefined) => void;
-  placeholder: string;
-  ariaLabel: string;
-}) {
-  return (
-    <input
-      type="number"
-      inputMode="numeric"
-      placeholder={placeholder}
-      aria-label={ariaLabel}
-      value={value ?? ""}
-      onChange={e => {
-        const raw = e.target.value;
-        if (raw === "") onChange(undefined);
-        else {
-          const n = Number(raw);
-          onChange(Number.isFinite(n) ? n : undefined);
-        }
-      }}
-      className="tok-filter-input"
-    />
-  );
-}
-
-function readModeFromUrl(): CallMode {
-  if (typeof window === "undefined") return "waiting";
-  const q = new URLSearchParams(window.location.search).get("mode");
-  return q === "waiting" || q === "hot" || q === "latest" || q === "best" ? q : "waiting";
+function readFilterFromUrl(): PumpFilterId {
+  if (typeof window === "undefined") return "all";
+  const q = new URLSearchParams(window.location.search).get("filter")
+    ?? new URLSearchParams(window.location.search).get("mode");
+  const ids = PUMP_FILTER_PRESETS.map((p) => p.id);
+  return ids.includes(q as PumpFilterId) ? (q as PumpFilterId) : "all";
 }
 
 export default function CallsPage() {
   const qc = useQueryClient();
   const { connected } = useLiveSse();
-  const [mode, setMode] = useState<CallMode>(readModeFromUrl);
+  const [filter, setFilter] = useState<PumpFilterId>(readFilterFromUrl);
+  const [sort, setSort] = useState<PumpSortId>("score");
+  const [minScore, setMinScore] = useState(0);
   const [page, setPage] = useState(1);
-  const [period, setPeriod] = useState<StatsPeriod>("7d");
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filters, setFilters] = useState<FeedFilters>(emptyFilters);
-  const [sortKey, setSortKey] = useState<DeskSortKey>("default");
-  const [sortDir, setSortDir] = useState<DeskSortDir>("desc");
 
-  useEffect(() => {
-    const sync = () => {
-      const next = readModeFromUrl();
-      setMode((prev) => {
-        if (prev === next) return prev;
-        setPage(1);
-        setSortKey("default");
-        setSortDir("desc");
-        return next;
-      });
-    };
-    window.addEventListener("popstate", sync);
-    const id = window.setInterval(sync, 800);
-    return () => {
-      window.removeEventListener("popstate", sync);
-      window.clearInterval(id);
-    };
-  }, []);
-
-  // Hot needs fresher poll so heat stays honest if SSE drops
-  const feedPollMs = connected
-    ? (mode === "hot" ? 45_000 : mode === "waiting" ? 60_000 : 90_000)
-    : (mode === "waiting" || mode === "hot" ? 10_000 : 18_000);
+  const feedPollMs = connected ? 60_000 : 15_000;
 
   const {
-    data, isLoading, isFetching, isError, error, refetch, isPlaceholderData,
+    data, isLoading, isFetching, isError, error, refetch,
   } = useQuery({
-    queryKey: CALLS_FEED_KEY(mode, page, filters),
-    queryFn: () => fetchCallsFeed(mode, page, PAGE_SIZE, filters),
+    queryKey: CALLS_FEED_KEY(filter, sort, page, minScore),
+    queryFn: () => fetchCallsFeed(filter, page, PAGE_SIZE, sort, minScore),
     refetchInterval: feedPollMs,
-    staleTime: connected ? (mode === "hot" ? 4_000 : 8_000) : 2_000,
-    // Only keep previous data when it's the SAME mode (avoids blank flash on warm cache)
-    placeholderData: (prev) => (prev && prev.mode === mode ? prev : undefined),
+    staleTime: connected ? 6_000 : 2_000,
+    placeholderData: (prev) => (prev && prev.filter === filter ? prev : undefined),
     retry: 3,
   });
 
-  const modeMismatch = data != null && data.mode !== mode;
-  const rawCards = (!modeMismatch && data?.cards) ? data.cards : [];
-  const cards = useMemo(
-    () => sortDeskCards(rawCards, mode, sortKey, sortDir),
-    [rawCards, mode, sortKey, sortDir],
+  const cards = data?.cards ?? [];
+  const total = data?.total ?? 0;
+  const pages = data?.pages ?? 1;
+  const showLoading = isLoading && cards.length === 0;
+
+  const saCount = useMemo(
+    () => cards.filter((c) => c.pumpGrade === "S" || c.pumpGrade === "A").length,
+    [cards],
   );
-  const total = (!modeMismatch && data) ? data.total : 0;
-  const pages = (!modeMismatch && data) ? data.pages : 1;
-  const showLoading = (isLoading || (isPlaceholderData && modeMismatch) || modeMismatch)
-    && cards.length === 0;
 
-  const { data: stats } = useQuery({
-    queryKey: CALLS_STATS_KEY(period),
-    queryFn: () => fetchCallsStats(period),
-    refetchInterval: connected ? 90_000 : 30_000,
-    staleTime: 15_000,
-    placeholderData: keepPreviousData,
-  });
-
-  const { data: opsSummary } = useQuery({
-    queryKey: OPS_SUMMARY_KEY,
-    queryFn: fetchOpsSummary,
-    refetchInterval: connected ? 90_000 : 25_000,
-    staleTime: 15_000,
-  });
-
-  const pendingN = data?.pendingFirstCalls
-    ?? opsSummary?.telegram?.pendingFirstCalls
-    ?? 0;
-
-  const activeFilterCount = useMemo(() => {
-    let n = 0;
-    if (filters.label && filters.label !== "all") n++;
-    if (filters.quality && filters.quality !== "all") n++;
-    if (filters.minScore != null) n++;
-    if (filters.minVol1h != null) n++;
-    if (filters.minGain1h != null) n++;
-    if (filters.minMom1h != null) n++;
-    if (filters.minMom6h != null) n++;
-    if (filters.pumpGrade && filters.pumpGrade !== "all") n++;
-    if (filters.pumpSignal && filters.pumpSignal !== "all") n++;
-    if (filters.minPumpScore != null) n++;
-    return n;
-  }, [filters]);
-
-  const effectiveSort: DeskSortKey = sortKey === "default"
-    ? (mode === "hot" ? "heat" : mode === "best" ? "score" : "called")
-    : sortKey;
-
-  const switchMode = (next: CallMode) => {
-    if (next === mode) return;
+  const switchFilter = (next: PumpFilterId) => {
+    if (next === filter) return;
     startTransition(() => {
-      setMode(next);
+      setFilter(next);
       setPage(1);
-      setSortKey("default");
-      setSortDir("desc");
     });
     const url = new URL(window.location.href);
-    if (next === "waiting") url.searchParams.delete("mode");
-    else url.searchParams.set("mode", next);
+    if (next === "all") url.searchParams.delete("filter");
+    else url.searchParams.set("filter", next);
+    url.searchParams.delete("mode");
     window.history.replaceState({}, "", url.pathname + url.search);
   };
 
-  const prefetchMode = (m: CallMode) => {
+  const prefetchFilter = (f: PumpFilterId) => {
     void qc.prefetchQuery({
-      queryKey: CALLS_FEED_KEY(m, 1, filters),
-      queryFn: () => fetchCallsFeed(m, 1, PAGE_SIZE, filters),
+      queryKey: CALLS_FEED_KEY(f, sort, 1, minScore),
+      queryFn: () => fetchCallsFeed(f, 1, PAGE_SIZE, sort, minScore),
       staleTime: 8_000,
     });
   };
 
-  const toggleSort = (col: DeskSortKey) => {
-    startTransition(() => {
-      if (effectiveSort === col) {
-        setSortKey(col);
-        setSortDir((d) => (d === "desc" ? "asc" : "desc"));
-      } else {
-        setSortKey(col);
-        setSortDir("desc");
-      }
-    });
-  };
-
-  const patchFilter = <K extends keyof FeedFilters>(key: K, value: FeedFilters[K]) => {
-    startTransition(() => {
-      setPage(1);
-      setFilters(prev => {
-        const next = { ...prev, [key]: value };
-        if (value === undefined || value === "all" || value === "") delete next[key];
-        return next;
-      });
-    });
-  };
-
-  const statsLine = useMemo(() => {
-    if (!stats) return null;
-    return [
-      `${stats.winRate}% WR`,
-      stats.bestX ? `${stats.bestX.toFixed(1)}x` : null,
-      `${stats.signals} ENTRY`,
-    ].filter(Boolean).join(" · ");
-  }, [stats]);
-
   return (
     <div className="px-2 sm:px-3 pt-2.5 pb-8 space-y-2 w-full max-w-full overflow-x-hidden">
-      <div className={cn("call-tabs", `call-tabs-${mode}`)} role="tablist" aria-label="Call modes">
-        {MODES.map(m => {
-          const active = mode === m.id;
+      <div className="pump-filter-bar" role="tablist" aria-label="Pump filters">
+        {PUMP_FILTER_PRESETS.map((p) => {
+          const active = filter === p.id;
           return (
             <button
-              key={m.id}
+              key={p.id}
               type="button"
               role="tab"
               aria-selected={active}
-              onMouseEnter={() => prefetchMode(m.id)}
-              onFocus={() => prefetchMode(m.id)}
-              onClick={() => switchMode(m.id)}
-              className={cn("call-tab", active && "call-tab-active", active && `call-tab-${m.id}`)}
-            >
-              {m.label}
-              {m.id === "waiting" && pendingN > 0 && (
-                <span className="font-mono-num ml-1 opacity-80">{pendingN}</span>
+              onMouseEnter={() => prefetchFilter(p.id)}
+              onFocus={() => prefetchFilter(p.id)}
+              onClick={() => switchFilter(p.id)}
+              className={cn(
+                "pump-filter-chip",
+                active && "pump-filter-chip-on",
+                active && p.id === "buy" && "pump-filter-buy",
+                active && p.id === "watch" && "pump-filter-watch",
+                active && p.id === "intra" && "pump-filter-intra",
+                active && p.id === "top" && "pump-filter-top",
               )}
+            >
+              {p.label}
             </button>
           );
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-2 min-h-[18px]">
+      <div className="flex items-center justify-between gap-2 min-h-[18px] flex-wrap">
         <p className="text-[10px] text-[var(--cryp-mute)] truncate">
           <span className="font-mono-num">
-            {mode === "waiting"
-              ? `${pendingN || total || 0} pending`
-              : (statsLine ?? (isFetching ? "sync…" : "—"))}
-            {total > 0 && ` · ${total}`}
+            {total} tokens
+            {saCount > 0 && ` · ${saCount} S/A on page`}
           </span>
           <span className="mx-1 opacity-40">·</span>
-          <span>{MODE_BLURB[mode]}</span>
+          <span>{FILTER_BLURB[filter]}</span>
           {connected && <span className="text-[var(--cryp-gain)] ml-1">· Live</span>}
-          {sortKey !== "default" && (
-            <button
-              type="button"
-              className="ml-1.5 text-[var(--cryp-mint)] underline-offset-2 hover:underline"
-              onClick={() => startTransition(() => { setSortKey("default"); setSortDir("desc"); })}
-            >
-              reset sort
-            </button>
-          )}
         </p>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => setFiltersOpen(v => !v)}
-            className={cn(
-              "tok-filter-toggle",
-              (filtersOpen || activeFilterCount > 0) && "tok-filter-toggle-on",
-            )}
-            aria-expanded={filtersOpen}
-            aria-label="Toggle filters"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            {activeFilterCount > 0 && (
-              <span className="font-mono-num">{activeFilterCount}</span>
-            )}
-          </button>
-          <label className="relative inline-flex items-center">
-            <span className="sr-only">Stats period</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <label className="flex items-center gap-1.5 text-[10px] text-[var(--cryp-mute)]">
+            <span className="uppercase tracking-wider">Sort</span>
             <select
-              value={period}
-              onChange={(e) => setPeriod(e.target.value as StatsPeriod)}
+              value={sort}
+              onChange={(e) => startTransition(() => {
+                setSort(e.target.value as PumpSortId);
+                setPage(1);
+              })}
               className="tok-filter-select !w-auto !min-w-0 pl-2 pr-5"
-              aria-label="Stats period"
+              aria-label="Sort"
             >
-              {STATS_PERIODS.map(p => (
-                <option key={p.id} value={p.id}>{p.label}</option>
+              {PUMP_SORT_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>
           </label>
+          <label className="flex items-center gap-1.5 text-[10px] text-[var(--cryp-mute)]">
+            <span className="uppercase tracking-wider">Min</span>
+            <input
+              type="range"
+              min={0}
+              max={90}
+              step={5}
+              value={minScore}
+              onChange={(e) => startTransition(() => {
+                setMinScore(Number(e.target.value));
+                setPage(1);
+              })}
+              className="w-16 accent-[var(--cryp-mint)]"
+              aria-label="Minimum pump score"
+            />
+            <span className="font-mono-num text-[var(--cryp-mint)] w-5">{minScore}</span>
+          </label>
         </div>
       </div>
-
-      {filtersOpen && (
-        <div className="tok-filters fade-up">
-          <div className="tok-filters-section">
-            <div className="tok-filters-label">Score · Label</div>
-            <div className="tok-filters-row">
-              <FilterSelect
-                value={filters.label ?? "all"}
-                onChange={v => patchFilter("label", v === "all" ? undefined : v)}
-                options={LABEL_OPTS}
-                ariaLabel="Call label"
-              />
-              <FilterSelect
-                value={filters.quality ?? "all"}
-                onChange={v => patchFilter("quality", v === "all" ? undefined : v)}
-                options={QUALITY_OPTS}
-                ariaLabel="Quality score"
-              />
-              <NumFilter
-                value={filters.minScore}
-                onChange={v => patchFilter("minScore", v)}
-                placeholder="Min score"
-                ariaLabel="Minimum call score"
-              />
-            </div>
-          </div>
-          <div className="tok-filters-section">
-            <div className="tok-filters-label">1H gain % · Vol score · Mom</div>
-            <div className="tok-filters-row">
-              <NumFilter
-                value={filters.minGain1h}
-                onChange={v => patchFilter("minGain1h", v)}
-                placeholder="Min 1H %"
-                ariaLabel="Minimum 1H percent market-cap gain"
-              />
-              <NumFilter
-                value={filters.minVol1h}
-                onChange={v => patchFilter("minVol1h", v)}
-                placeholder="Min vol 0-100"
-                ariaLabel="Minimum volume intensity score from 0 to 100"
-              />
-              <NumFilter
-                value={filters.minMom1h}
-                onChange={v => patchFilter("minMom1h", v)}
-                placeholder="Min mom buys"
-                ariaLabel="Minimum 1H momentum buy count"
-              />
-            </div>
-          </div>
-          <div className="tok-filters-section">
-            <div className="tok-filters-label">Pump grade · Signal · Min pump score</div>
-            <div className="tok-filters-row">
-              <FilterSelect
-                value={filters.pumpGrade ?? "all"}
-                onChange={v => patchFilter("pumpGrade", v === "all" ? undefined : v)}
-                options={PUMP_GRADE_OPTS}
-                ariaLabel="Pump strategy grade"
-              />
-              <FilterSelect
-                value={filters.pumpSignal ?? "all"}
-                onChange={v => patchFilter("pumpSignal", v === "all" ? undefined : v)}
-                options={PUMP_SIGNAL_OPTS}
-                ariaLabel="Pump signal"
-              />
-              <NumFilter
-                value={filters.minPumpScore}
-                onChange={v => patchFilter("minPumpScore", v)}
-                placeholder="Min pump"
-                ariaLabel="Minimum pump strategy score"
-              />
-            </div>
-          </div>
-          <div className="tok-filters-section">
-            <div className="tok-filters-label">6H momentum</div>
-            <div className="tok-filters-row">
-              <NumFilter
-                value={filters.minMom6h}
-                onChange={v => patchFilter("minMom6h", v)}
-                placeholder="Min mom 6H"
-                ariaLabel="Minimum 6H momentum buys"
-              />
-              {activeFilterCount > 0 && (
-                <button
-                  type="button"
-                  className="tok-filter-clear"
-                  onClick={() => startTransition(() => setFilters(emptyFilters))}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="tok-table-wrap">
         <table className="tok-table">
           <thead>
             <tr>
-              <SortHead
-                label="Token"
-                col={mode === "best" ? "score" : "called"}
-                active={effectiveSort}
-                dir={sortDir}
-                onSort={toggleSort}
-                align="left"
-              />
-              <SortHead label="MC" col="mc" active={effectiveSort} dir={sortDir} onSort={toggleSort} />
-              <SortHead
-                label={mode === "hot" ? "Heat" : "Entry"}
-                col={mode === "hot" ? "heat" : "entry"}
-                active={effectiveSort}
-                dir={sortDir}
-                onSort={toggleSort}
-              />
-              <SortHead label="ATH" col="ath" active={effectiveSort} dir={sortDir} onSort={toggleSort} />
-              <SortHead label="Buys" col="buys" active={effectiveSort} dir={sortDir} onSort={toggleSort} />
-              <th className="tok-th tok-th-link">GMGN</th>
+              <th className="tok-th tok-th-token">Token</th>
+              <th className="tok-th tok-th-num">MC</th>
+              <th className="tok-th tok-th-num">Gain</th>
+              <th className="tok-th tok-th-num">ATH</th>
+              <th className="tok-th tok-th-num">Vol 24H</th>
+              <th className="tok-th tok-th-link">Chart</th>
             </tr>
           </thead>
-          <tbody key={mode} className="fade-up">
+          <tbody key={`${filter}-${sort}-${minScore}`} className="fade-up">
             {isError && (
               <tr>
                 <td colSpan={6} className="tok-empty">
@@ -715,7 +299,7 @@ export default function CallsPage() {
               </tr>
             )}
             {!isError && showLoading && (
-              [0, 1, 2, 3, 4].map(i => (
+              [0, 1, 2, 3, 4].map((i) => (
                 <tr key={i} className="tok-row">
                   <td colSpan={6} className="tok-td">
                     <div className="shimmer h-8 rounded-md" />
@@ -726,12 +310,12 @@ export default function CallsPage() {
             {!isError && !showLoading && cards.length === 0 && (
               <tr>
                 <td colSpan={6} className="tok-empty text-[11px] text-[var(--cryp-mute)] uppercase tracking-widest">
-                  {mode === "waiting" ? "Queue clear" : "No matches"}
+                  {isFetching ? "Scanning…" : "No matches · waiting for buys"}
                 </td>
               </tr>
             )}
-            {!isError && cards.map(c => (
-              <TableRow key={c.id} c={c} waiting={mode === "waiting"} hot={mode === "hot"} />
+            {!isError && cards.map((c) => (
+              <TableRow key={c.id} c={c} />
             ))}
           </tbody>
         </table>
@@ -743,7 +327,7 @@ export default function CallsPage() {
             type="button"
             className="tok-pager-btn"
             disabled={page <= 1 || isFetching}
-            onClick={() => startTransition(() => setPage(p => Math.max(1, p - 1)))}
+            onClick={() => startTransition(() => setPage((p) => Math.max(1, p - 1)))}
             aria-label="Previous page"
           >
             <ChevronLeft className="w-4 h-4" />
@@ -756,7 +340,7 @@ export default function CallsPage() {
             type="button"
             className="tok-pager-btn"
             disabled={page >= pages || isFetching}
-            onClick={() => startTransition(() => setPage(p => Math.min(pages, p + 1)))}
+            onClick={() => startTransition(() => setPage((p) => Math.min(pages, p + 1)))}
             aria-label="Next page"
           >
             <ChevronRight className="w-4 h-4" />

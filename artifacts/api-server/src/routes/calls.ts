@@ -1,10 +1,10 @@
 /**
- * Best Calls API — lightweight FOMO-style desk
+ * Desk API — pump-fullend strategy scoring (buy-sourced).
  *
- * GET /api/calls/feed   — ranked call cards (no winrate join — fast)
- * GET /api/calls/waiting — very_good queue held for ENTRY gates (Ops pending)
- * GET /api/calls/stats  — win rate · highest X · signals · avg X
- * GET /api/calls/token/:id — single card (?winrate=1 pulls wallet WR on demand)
+ * GET /api/calls/feed   — pump filter/sort desk (default). ?legacy=1 for old Crypsor modes
+ * GET /api/calls/waiting — LEGACY ENTRY hold queue (Ops)
+ * GET /api/calls/stats  — win rate stats
+ * GET /api/calls/token/:id — buy-sourced detail (+ pump grade)
  */
 
 import { Router } from "express";
@@ -26,11 +26,14 @@ import {
   type CreatorStatsPayload,
 } from "../lib/pump-creator";
 import {
+  applyPumpDeskFilters,
   parsePumpScan,
   type PumpBuyLevel,
+  type PumpFilterId,
   type PumpGrade,
   type PumpIntraLevel,
   type PumpSignalTag,
+  type PumpSortId,
 } from "../lib/pump-sdk-score";
 
 const router = Router();
@@ -42,6 +45,16 @@ export type PumpDeskFields = {
   pumpIntraSignal: PumpIntraLevel | null;
   pumpTags: PumpSignalTag[];
   pumpRecommendation: string | null;
+  pumpMarketCap: number | null;
+  pumpLiquidityUsd: number | null;
+  pumpVolume24h: number | null;
+  pumpPairCreatedAt: number | null;
+  pumpPriceChange24h: number | null;
+  pumpGainSinceDetection: number | null;
+  pumpAthGain: number | null;
+  pumpDetectedAt: number | null;
+  pumpSocialSignal: number | null;
+  pumpFreshness: number | null;
 };
 
 function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
@@ -54,6 +67,16 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
       pumpIntraSignal: null,
       pumpTags: [],
       pumpRecommendation: null,
+      pumpMarketCap: null,
+      pumpLiquidityUsd: null,
+      pumpVolume24h: null,
+      pumpPairCreatedAt: null,
+      pumpPriceChange24h: null,
+      pumpGainSinceDetection: null,
+      pumpAthGain: null,
+      pumpDetectedAt: null,
+      pumpSocialSignal: null,
+      pumpFreshness: null,
     };
   }
   return {
@@ -63,6 +86,16 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
     pumpIntraSignal: scan.intraSignal,
     pumpTags: scan.tags.slice(0, 6),
     pumpRecommendation: scan.recommendation,
+    pumpMarketCap: scan.marketCap,
+    pumpLiquidityUsd: scan.liquidityUsd,
+    pumpVolume24h: scan.volume24h,
+    pumpPairCreatedAt: scan.pairCreatedAt,
+    pumpPriceChange24h: scan.priceChange24h,
+    pumpGainSinceDetection: scan.gainSinceDetection,
+    pumpAthGain: scan.athGain,
+    pumpDetectedAt: scan.detectedAt,
+    pumpSocialSignal: scan.socialSignal,
+    pumpFreshness: scan.freshnessMultiplier,
   };
 }
 
@@ -150,6 +183,16 @@ export type CallCard = {
   pumpIntraSignal: PumpIntraLevel | null;
   pumpTags: PumpSignalTag[];
   pumpRecommendation: string | null;
+  pumpMarketCap?: number | null;
+  pumpLiquidityUsd?: number | null;
+  pumpVolume24h?: number | null;
+  pumpPairCreatedAt?: number | null;
+  pumpPriceChange24h?: number | null;
+  pumpGainSinceDetection?: number | null;
+  pumpAthGain?: number | null;
+  pumpDetectedAt?: number | null;
+  pumpSocialSignal?: number | null;
+  pumpFreshness?: number | null;
 };
 
 /** Shared select extras for momentum + 1h MC gain (snapshot lateral). */
@@ -587,6 +630,107 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
 }
 
 /** Single-token card — avoids loadCallCards(200) on detail. */
+async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
+  const rows = await db.execute(sql`
+    SELECT
+      t.id AS token_id,
+      t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+      t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
+      t.raw_metadata, t.holder_count,
+      t.token_created_at, t.first_detected_at, t.last_buy_at,
+      COALESCE(t.migrated, false) AS migrated,
+      t.creator_username, t.pump_ath_market_cap_usd, t.creator_stats,
+      t.sec_creator_address, t.sec_creator_created_count,
+      t.pump_scan,
+      COALESCE(t.momentum_1h, 0)::int AS momentum_1h,
+      COALESCE(t.momentum_6h, 0)::int AS momentum_6h,
+      t.volume_intensity_score,
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys
+    FROM tracked_tokens t
+    LEFT JOIN LATERAL (
+      SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys
+      FROM token_buys tb
+      WHERE tb.token_id = t.id
+    ) buys ON TRUE
+    WHERE t.id = ${tokenId}
+      AND EXISTS (SELECT 1 FROM token_buys tb WHERE tb.token_id = t.id)
+    LIMIT 1
+  `);
+  const r = (rows.rows[0] ?? null) as Record<string, unknown> | null;
+  if (!r) return null;
+
+  const pump = pumpFieldsFromRow(r);
+  const currentMc = r.market_cap_usd != null
+    ? parseFloat(String(r.market_cap_usd)) || null
+    : (pump.pumpMarketCap ?? null);
+  const pumpAth = r.pump_ath_market_cap_usd != null
+    ? Number(r.pump_ath_market_cap_usd)
+    : null;
+  const creatorStats = (r.creator_stats && typeof r.creator_stats === "object")
+    ? (r.creator_stats as CreatorStatsPayload)
+    : null;
+
+  return {
+    id: Number(r.token_id),
+    address: String(r.address),
+    chain: String(r.chain ?? "solana"),
+    name: (r.name as string | null) ?? null,
+    symbol: (r.symbol as string | null) ?? null,
+    logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+    calledAt: toIsoUtc(r.last_buy_at ?? r.first_detected_at),
+    calledMcUsd: null,
+    currentMcUsd: currentMc,
+    athMcUsd: r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || null : null,
+    gainPct: pump.pumpGainSinceDetection,
+    nowMultiple: 1,
+    athMultiple: 1,
+    walletBuys: Number(r.wallet_buys ?? 0),
+    buyVolumeHintUsd: null,
+    calledKol: 0,
+    calledSmart: 0,
+    liveKol: 0,
+    liveSmart: 0,
+    holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+    avgWalletWinRate: null,
+    holderQualityScore: null,
+    proScore: pump.pumpScore ?? 0,
+    qualityLabel: pump.pumpRecommendation ?? "—",
+    callScore: pump.pumpScore ?? 0,
+    callLabel: "watch",
+    reasons: [
+      pump.pumpRecommendation,
+      ...pump.pumpTags.slice(0, 3).map((t) => t.label),
+    ].filter(Boolean) as string[],
+    hit2x: (pump.pumpAthGain ?? 0) >= 100,
+    hit5x: (pump.pumpAthGain ?? 0) >= 400,
+    hit10x: (pump.pumpAthGain ?? 0) >= 900,
+    volume24hUsd: pump.pumpVolume24h
+      ?? (r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null),
+    volumeIntensityScore: r.volume_intensity_score != null
+      ? Number(r.volume_intensity_score) : null,
+    gain1hPct: null,
+    momentum1h: Number(r.momentum_1h ?? 0) || 0,
+    momentum6h: Number(r.momentum_6h ?? 0) || 0,
+    tokenAgeMin: pump.pumpPairCreatedAt
+      ? Math.max(0, Math.round((Date.now() - pump.pumpPairCreatedAt) / 60_000))
+      : null,
+    ctoFlag: null,
+    creatorClose: null,
+    creatorAddress: r.sec_creator_address != null ? String(r.sec_creator_address) : null,
+    creatorCreatedCount: r.sec_creator_created_count != null
+      ? Number(r.sec_creator_created_count) : null,
+    graduated: Boolean(r.migrated),
+    creatorUsername: r.creator_username != null ? String(r.creator_username) : null,
+    pumpAthMcUsd: pumpAth != null && Number.isFinite(pumpAth) ? pumpAth : null,
+    creatorStats,
+    socials: extractSocials(r.raw_metadata),
+    entryServed: true,
+    properServe: pump.pumpGrade === "S" || pump.pumpGrade === "A",
+    ...pump,
+  };
+}
+
+/** LEGACY — requires pro_calls. Prefer loadPumpBuyTokenCard for the active desk. */
 async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
   const rows = await db.execute(sql`
     SELECT
@@ -1114,20 +1258,164 @@ function paginateCards<T>(cards: T[], page: number, limit: number) {
   };
 }
 
+/**
+ * v2 desk — buy-sourced tokens only, ranked by pump-fullend strategy score.
+ * Crypsor call-quality / pro_calls / GMGN are NOT used here (kept as backup loaders below).
+ */
+async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; universe: number }> {
+  const cacheKey = `calls:feed:v12-pump-buys:${limit}`;
+  const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
+  if (cached?.cards?.length) return cached;
+
+  const universeRow = await db.execute(sql`
+    SELECT COUNT(DISTINCT tb.token_id)::int AS n
+    FROM token_buys tb
+    JOIN tracked_tokens t ON t.id = tb.token_id
+    WHERE t.chain = 'solana'
+      AND COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+  `);
+  const universe = Number((universeRow.rows[0] as { n?: number })?.n ?? 0);
+
+  const rows = await db.execute(sql`
+    SELECT
+      t.id AS token_id,
+      t.address, t.chain, t.name, t.symbol, t.logo_uri, t.image_path,
+      t.market_cap_usd, t.ath_market_cap_usd, t.volume_24h_usd,
+      t.raw_metadata, t.holder_count,
+      t.token_created_at, t.first_detected_at, t.last_buy_at,
+      t.pump_scan,
+      COALESCE(t.momentum_1h, 0)::int AS momentum_1h,
+      COALESCE(t.momentum_6h, 0)::int AS momentum_6h,
+      t.volume_intensity_score,
+      COALESCE(buys.wallet_buys, 0)::int AS wallet_buys
+    FROM tracked_tokens t
+    JOIN LATERAL (
+      SELECT COUNT(DISTINCT tb.wallet_id)::int AS wallet_buys,
+             MAX(tb.bought_at) AS last_bought
+      FROM token_buys tb
+      WHERE tb.token_id = t.id
+    ) buys ON buys.wallet_buys > 0
+    WHERE t.chain = 'solana'
+      AND COALESCE(t.status, '') NOT IN ('ignored', 'archive')
+      AND t.pump_scan IS NOT NULL
+    ORDER BY buys.last_bought DESC NULLS LAST
+    LIMIT ${Math.min(Math.max(limit, 1), 400)}
+  `);
+
+  const cards: CallCard[] = (rows.rows as Array<Record<string, unknown>>).map((r) => {
+    const pump = pumpFieldsFromRow(r);
+    const currentMc = r.market_cap_usd != null
+      ? parseFloat(String(r.market_cap_usd)) || null
+      : (pump.pumpMarketCap ?? null);
+    const calledAt = toIsoUtc(r.last_buy_at ?? r.first_detected_at);
+    return {
+      id: Number(r.token_id),
+      address: String(r.address),
+      chain: String(r.chain ?? "solana"),
+      name: (r.name as string | null) ?? null,
+      symbol: (r.symbol as string | null) ?? null,
+      logoUri: resolveLogoUri(r.image_path, r.logo_uri),
+      calledAt,
+      calledMcUsd: null,
+      currentMcUsd: currentMc,
+      athMcUsd: r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || null : null,
+      gainPct: pump.pumpGainSinceDetection,
+      nowMultiple: 1,
+      athMultiple: 1,
+      walletBuys: Number(r.wallet_buys ?? 0),
+      buyVolumeHintUsd: null,
+      calledKol: 0,
+      calledSmart: 0,
+      liveKol: 0,
+      liveSmart: 0,
+      holderCount: r.holder_count != null ? Number(r.holder_count) : null,
+      avgWalletWinRate: null,
+      holderQualityScore: null,
+      proScore: pump.pumpScore ?? 0,
+      qualityLabel: pump.pumpRecommendation ?? "—",
+      // Backup fields kept for type compat — desk UI ignores Crypsor labels
+      callScore: pump.pumpScore ?? 0,
+      callLabel: "watch",
+      reasons: [
+        pump.pumpRecommendation,
+        ...(pump.pumpTags.slice(0, 3).map((t) => t.label)),
+      ].filter(Boolean) as string[],
+      hit2x: (pump.pumpAthGain ?? 0) >= 100,
+      hit5x: (pump.pumpAthGain ?? 0) >= 400,
+      hit10x: (pump.pumpAthGain ?? 0) >= 900,
+      volume24hUsd: pump.pumpVolume24h
+        ?? (r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null),
+      volumeIntensityScore: r.volume_intensity_score != null
+        ? Number(r.volume_intensity_score) : null,
+      gain1hPct: null,
+      momentum1h: Number(r.momentum_1h ?? 0) || 0,
+      momentum6h: Number(r.momentum_6h ?? 0) || 0,
+      tokenAgeMin: pump.pumpPairCreatedAt
+        ? Math.max(0, Math.round((Date.now() - pump.pumpPairCreatedAt) / 60_000))
+        : null,
+      ctoFlag: null,
+      creatorClose: null,
+      creatorAddress: null,
+      creatorCreatedCount: null,
+      socials: extractSocials(r.raw_metadata),
+      entryServed: true,
+      properServe: (pump.pumpGrade === "S" || pump.pumpGrade === "A"),
+      ...pump,
+    };
+  });
+
+  const payload = { cards, universe };
+  await proCacheSet(cacheKey, payload, 4);
+  return payload;
+}
+
+const PUMP_FILTERS = new Set([
+  "all", "top", "intra", "buy", "watch", "micro", "new", "volume", "dev", "gained",
+]);
+const PUMP_SORTS = new Set([
+  "score", "gain_now", "ath_gain", "volume", "price_change", "newest", "oldest_detect", "txns",
+]);
+
 router.get("/calls/feed", async (req, res) => {
   try {
-    // Max 20 per page — API-side pagination when universe exceeds one page
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 20);
     const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
-    const mode = String(req.query.mode ?? "latest"); // latest | best | hot | waiting
+
+    // Pump-fullend desk is default. Legacy Crypsor modes only if ?legacy=1
+    const useLegacy = String(req.query.legacy ?? "") === "1";
+    if (!useLegacy) {
+      const filterRaw = String(req.query.filter ?? req.query.mode ?? "all").toLowerCase();
+      const filter = (PUMP_FILTERS.has(filterRaw) ? filterRaw : "all") as PumpFilterId;
+      const sortRaw = String(req.query.sort ?? "score").toLowerCase();
+      const sort = (PUMP_SORTS.has(sortRaw) ? sortRaw : "score") as PumpSortId;
+      const minScore = Math.max(0, parseFloat(String(req.query.minScore ?? req.query.minPumpScore ?? "0")) || 0);
+
+      const pack = await loadPumpBuyDeskCards(400);
+      const ranked = applyPumpDeskFilters(pack.cards, filter, sort, minScore);
+      const pagePack = paginateCards(ranked, page, limit);
+      pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+
+      res.setHeader("Cache-Control", "private, no-cache");
+      res.json(apiOk({
+        ...pagePack,
+        universe: pack.universe,
+        mode: filter,
+        filter,
+        sort,
+        minScore,
+        note: "Pump-SDK desk · buy-sourced tokens · pump-fullend scoring (no Crypsor/GMGN rank)",
+      }));
+      return;
+    }
+
+    // ── LEGACY BACKUP PATH (Crypsor scoring / ENTRY modes) — opt-in only ──
+    const mode = String(req.query.mode ?? "latest");
     const filters = parseFeedFilters(req.query as Record<string, unknown>);
 
     if (mode === "waiting") {
       const pack = await loadWaitingCalls(200);
       const filtered = applyFeedFilters(pack.cards, filters);
-      // Waiting always latest-called (already sorted)
       const pagePack = paginateCards(filtered, page, limit);
-      // Live Dex/PumpFun overlay — bypasses stale DB/cache MC on the visible page
       pagePack.cards = refreshGain1hOnCards(await overlayLiveMarketCaps(pagePack.cards));
       res.setHeader("Cache-Control", "private, no-cache");
       res.json(apiOk({
@@ -1135,7 +1423,7 @@ router.get("/calls/feed", async (req, res) => {
         universe: pack.pendingFirstCalls,
         mode: "waiting",
         pendingFirstCalls: pack.pendingFirstCalls,
-        note: "Waiting = latest-called pending ENTRY (not in Best/Hot win-rate)",
+        note: "LEGACY Waiting lane",
       }));
       return;
     }
@@ -1149,10 +1437,8 @@ router.get("/calls/feed", async (req, res) => {
     }
     const { cards, universe } = pack;
 
-    // Feed cards are ENTRY-served only — waiting never mixed in
     let out = cards.filter(c => c.entryServed);
     if (mode === "best") {
-      // Score/label ranked (already ranked in loader)
       out = [...out].sort((a, b) => {
         const tier = (l: CallCard["callLabel"]) =>
           l === "elite" ? 0 : l === "strong" ? 1 : l === "watch" ? 2 : 3;
@@ -1161,7 +1447,6 @@ router.get("/calls/feed", async (req, res) => {
         return b.callScore - a.callScore;
       });
     } else if (mode === "hot") {
-      // Heat = short-window action (1H gain + momentum), not lifetime multiple
       out = [...out].sort((a, b) => {
         const heat = (c: CallCard) => {
           const g1h = c.gain1hPct != null && Number.isFinite(c.gain1hPct) ? c.gain1hPct : 0;
@@ -1174,7 +1459,6 @@ router.get("/calls/feed", async (req, res) => {
         return (b.calledAt ?? "").localeCompare(a.calledAt ?? "");
       });
     } else {
-      // latest — newest called first
       out = [...out].sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
     }
 
@@ -1187,11 +1471,7 @@ router.get("/calls/feed", async (req, res) => {
       ...pagePack,
       universe,
       mode,
-      note: mode === "best"
-        ? "Best = ENTRY-served · elite/strong score rank"
-        : mode === "hot"
-          ? "Hot = ENTRY-served · 1H heat + momentum (live)"
-          : "Latest = ENTRY-served · newest calls first",
+      note: "LEGACY Crypsor desk",
     }));
   } catch (err) {
     console.error("calls feed error", err);
@@ -1378,10 +1658,19 @@ router.get("/calls/token/:tokenId", async (req, res) => {
 
     let card: CallCard | null = null;
     try {
-      card = await loadSingleCallCard(tokenId);
+      card = await loadPumpBuyTokenCard(tokenId);
     } catch (err) {
-      console.warn("calls token single-card failed", err);
+      console.warn("calls token pump card failed", err);
       card = null;
+    }
+    // Legacy backup if token has no buys / pump path miss
+    if (!card) {
+      try {
+        card = await loadSingleCallCard(tokenId);
+      } catch (err) {
+        console.warn("calls token legacy card failed", err);
+        card = null;
+      }
     }
 
     // Enrich pump creator / graduation on detail open (cached 30m on token row)
@@ -1389,8 +1678,8 @@ router.get("/calls/token/:tokenId", async (req, res) => {
       try {
         const enrich = await ensureTokenCreatorStats(tokenId, card.address);
         if (enrich) {
-          // Reload card so UI sees persisted creator_stats / graduated
-          const refreshed = await loadSingleCallCard(tokenId);
+          const refreshed = await loadPumpBuyTokenCard(tokenId)
+            ?? await loadSingleCallCard(tokenId);
           if (refreshed) card = refreshed;
           else {
             card = {
