@@ -10,9 +10,11 @@
  *      lowers `confidence` and blocks the GEM verdict — it never fakes a pass.
  *
  *   2. HARD VETOES BEFORE POINTS. Honeypot, live mint/freeze authority,
- *      extreme insider concentration, bot-swarmed launches and untradable
- *      liquidity are disqualifying no matter how hot the chart looks.
- *      These are the patterns behind most rugs; points can't buy them back.
+ *      extreme insider concentration, sniper-controlled supply and
+ *      untradable liquidity are disqualifying no matter how hot the chart
+ *      looks. Bundler share is deliberately NOT a veto — bundling is
+ *      endemic to good pump.fun launches — it degrades the holders pillar
+ *      instead.
  *
  *   3. DELTAS OVER LEVELS. A 30K MC means nothing; +8%/min MC velocity with
  *      accelerating buys, growing holders and independent wallets does.
@@ -164,10 +166,13 @@ function collectVetoes(i: GemInputs): string[] {
   if ((i.holderTop10Pct ?? 0) > 45) v.push("top10_over_45pct");
   if ((i.largestClusterPct ?? 0) > 30) v.push("wallet_cluster_over_30pct");
   if (i.cabalDetected === true) v.push("cabal_cluster");
-  // Bot-controlled supply: judged by HOLD SHARE of current supply, not raw
-  // participant counts (GMGN counts are cumulative and would flag everything).
-  if ((i.sniperHoldPct ?? 0) > 20) v.push("snipers_hold_over_20pct");
-  if ((i.bundlerHoldPct ?? 0) > 25) v.push("bundlers_hold_over_25pct");
+  // Bot-controlled supply — judged by HOLD SHARE, and only vetoed at the
+  // extreme. Production outcome audit showed bundling is endemic to good
+  // pump.fun launches (MELT dataset: 36.5% of supply bundled on average;
+  // our bundler-vetoed tokens included +136% and +94% runners). Bundler
+  // share is therefore a graded penalty in the holders pillar, NEVER a veto.
+  // Snipers keep a veto only for outright sniper control of supply.
+  if ((i.sniperHoldPct ?? 0) > 35) v.push("snipers_hold_over_35pct");
   // Untradable: real size can't exit — MC pumped far beyond the pool
   if (i.mcUsd > 25_000 && i.liqUsd > 0 && i.liqUsd < 3_000) v.push("exit_liquidity_too_thin");
   return v;
@@ -258,8 +263,10 @@ function scoreHolders(i: GemInputs, notes: string[]): number {
   // participant counts capped by holder base (GMGN counts are cumulative).
   let botScore: number;
   if (i.sniperHoldPct != null || i.bundlerHoldPct != null) {
+    // Graded, bundler-tolerant: ≤8% held is background noise on pump.fun;
+    // pain builds toward 45%+ where bots effectively own the float.
     const botHold = (i.sniperHoldPct ?? 0) + (i.bundlerHoldPct ?? 0);
-    botScore = clamp(100 - ramp(botHold, 3, 25)); // 3% held fine → 25% toxic
+    botScore = clamp(100 - ramp(botHold, 8, 45));
   } else {
     const bots = Math.min(
       (i.sniperCount ?? 0) + (i.bundlerCount ?? 0),
