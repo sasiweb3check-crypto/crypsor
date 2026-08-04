@@ -16,6 +16,7 @@ import { extractSocials } from "../lib/socials";
 import { computeCallQuality, type CallQualityLabel } from "../lib/call-quality";
 import { convictionFieldsFromVerified } from "../lib/pro-confidence";
 import { overlayLiveMarketCaps } from "../pipeline/price-service";
+import { publicApiOrigin } from "../lib/public-url";
 import {
   computeRunnerScore,
   MIN_ENTRY_OBSERVATION_SNAPS,
@@ -187,9 +188,7 @@ function resolveLogoUri(imagePath: unknown, logoUri: unknown): string | null {
     const rel = path.startsWith("/api/assets")
       ? path
       : `/api/assets${path.startsWith("/") ? path : `/${path}`}`;
-    const base = (
-      process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || ""
-    ).replace(/\/$/, "");
+    const base = publicApiOrigin();
     return base ? `${base}${rel}` : rel;
   }
   return external || null;

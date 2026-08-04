@@ -653,7 +653,11 @@ export async function runScan(): Promise<void> {
 
 const CYCLE_MS = 2 * 60 * 1000;
 
+let monitorStarted = false;
+
 export function startMonitor(): void {
+  if (monitorStarted) return;
+  monitorStarted = true;
   monitorStatus.running = true;
 
   // Start all pipeline services

@@ -18,6 +18,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { extractSocials } from "../lib/socials";
+import { publicApiOrigin } from "../lib/public-url";
 import { deriveRunStatus } from "../lib/pro-scoring";
 import { deriveProOutcome, type OutcomeInfo } from "../lib/pro-outcome";
 import {
@@ -42,11 +43,7 @@ function resolveLogoUri(imagePath: unknown, logoUri: unknown): string | null {
     const rel = path.startsWith("/api/assets")
       ? path
       : `/api/assets${path.startsWith("/") ? path : `/${path}`}`;
-    const base = (
-      process.env.PUBLIC_API_URL
-      || process.env.RENDER_EXTERNAL_URL
-      || ""
-    ).replace(/\/$/, "");
+    const base = publicApiOrigin();
     return base ? `${base}${rel}` : rel;
   }
   return external || null;

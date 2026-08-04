@@ -1,0 +1,15 @@
+# Local / OS junk
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.tsbuildinfo
+.DS_Store
+
+# Heavy / unused for the Vercel function bundle
+artifacts/crypsor/dist
+attached_assets
+scripts
+**/*.md
+!replit.md

@@ -1,13 +1,50 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
+  "framework": null,
   "installCommand": "pnpm install --no-frozen-lockfile",
   "buildCommand": "pnpm --filter @workspace/crypsor run build",
   "outputDirectory": "artifacts/crypsor/dist/public",
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "/api"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300,
+      "memory": 1024,
+      "includeFiles": "{artifacts/api-server/src/**,lib/**}"
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/tick",
+      "schedule": "* * * * *"
     }
   ]
 }

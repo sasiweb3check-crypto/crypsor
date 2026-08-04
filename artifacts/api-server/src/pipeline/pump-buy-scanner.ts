@@ -272,7 +272,7 @@ function enqueueScan(tokenId: number, tokenAddress: string, chain: string, delay
   );
 }
 
-async function refreshRecentBuys(): Promise<void> {
+export async function refreshRecentBuys(): Promise<void> {
   const t0 = Date.now();
   try {
     // Young detections (<2h): refresh every ~60s. Older: every 3 minutes.
