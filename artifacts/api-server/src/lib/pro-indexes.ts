@@ -89,6 +89,9 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE dex_agent_state ADD COLUMN IF NOT EXISTS last_tick_at timestamptz`,
   `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS entry_feedback text`,
   `ALTER TABLE dex_positions ADD COLUMN IF NOT EXISTS exit_feedback text`,
+  // Pump-SDK buy scanner payload (grade / tags / buy+intra signals)
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS pump_scan jsonb`,
+  `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS pump_scan_updated_at timestamptz`,
   // Crypsor-owned wallet intel (separate from GMGN KOL/smart)
   `CREATE TABLE IF NOT EXISTS crypsor_wallet_intel (
      wallet_address text PRIMARY KEY,

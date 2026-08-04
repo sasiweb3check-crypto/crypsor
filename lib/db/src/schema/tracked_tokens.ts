@@ -158,6 +158,9 @@ export const tracked_tokens = pgTable(
     lastAlertedAt:          timestamp("last_alerted_at"),
     // Highest ATH-multiple achievement tier (2/3/5/10) already alerted for this token.
     athAlertMultiple:       real("ath_alert_multiple").default(0).notNull(),
+    // ── Pump-SDK scan (buy-sourced; labels from pump-fullend scoring) ────────
+    pumpScan:               jsonb("pump_scan"),
+    pumpScanUpdatedAt:      timestamp("pump_scan_updated_at"),
   },
   (t) => [unique("token_chain_unique").on(t.address, t.chain)],
 );

@@ -200,6 +200,16 @@ function DetailHero({ c }: { c: CallCard }) {
             <span className="uppercase tracking-wider text-[var(--cryp-mint)]">
               {c.callLabel} {c.callScore}
             </span>
+            {c.pumpGrade && (
+              <>
+                {" · "}
+                <span className="uppercase tracking-wider text-[var(--cryp-warn)]">
+                  Pump {c.pumpGrade}
+                  {c.pumpScore != null ? ` ${c.pumpScore}` : ""}
+                  {c.pumpBuySignal === "STRONG_BUY" ? " · BUY" : c.pumpBuySignal === "WATCH" ? " · WATCH" : ""}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -26,7 +26,8 @@ export type QueueName =
   | "price"
   | "migration"
   | "intel"
-  | "pro";
+  | "pro"
+  | "pump";
 
 export interface EnqueueOptions {
   /** Higher number = processed sooner. Default 0. */
@@ -67,6 +68,7 @@ const QUEUE_CONFIG: Record<QueueName, { concurrency: number; maxAttempts: number
   // Fast path for on-time Pro qualification (memecoin windows are minutes)
   intel:     { concurrency: 3, maxAttempts: 2 },
   pro:       { concurrency: 2, maxAttempts: 2 },
+  pump:      { concurrency: 3, maxAttempts: 2 },
 };
 
 // ── PipelineQueue ─────────────────────────────────────────────────────────────

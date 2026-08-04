@@ -25,8 +25,46 @@ import {
   ensureTokenCreatorStats,
   type CreatorStatsPayload,
 } from "../lib/pump-creator";
+import {
+  parsePumpScan,
+  type PumpBuyLevel,
+  type PumpGrade,
+  type PumpIntraLevel,
+  type PumpSignalTag,
+} from "../lib/pump-sdk-score";
 
 const router = Router();
+
+export type PumpDeskFields = {
+  pumpScore: number | null;
+  pumpGrade: PumpGrade | null;
+  pumpBuySignal: PumpBuyLevel | null;
+  pumpIntraSignal: PumpIntraLevel | null;
+  pumpTags: PumpSignalTag[];
+  pumpRecommendation: string | null;
+};
+
+function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
+  const scan = parsePumpScan(r.pump_scan);
+  if (!scan) {
+    return {
+      pumpScore: null,
+      pumpGrade: null,
+      pumpBuySignal: null,
+      pumpIntraSignal: null,
+      pumpTags: [],
+      pumpRecommendation: null,
+    };
+  }
+  return {
+    pumpScore: scan.score,
+    pumpGrade: scan.grade,
+    pumpBuySignal: scan.buySignal,
+    pumpIntraSignal: scan.intraSignal,
+    pumpTags: scan.tags.slice(0, 6),
+    pumpRecommendation: scan.recommendation,
+  };
+}
 
 function resolveLogoUri(imagePath: unknown, logoUri: unknown): string | null {
   const external = logoUri != null ? String(logoUri).trim() : "";
@@ -105,6 +143,13 @@ export type CallCard = {
    * Used to keep Best desk clear of raw `good` flood.
    */
   properServe: boolean;
+  /** Pump-SDK strategy score (buy-sourced scanner). */
+  pumpScore: number | null;
+  pumpGrade: PumpGrade | null;
+  pumpBuySignal: PumpBuyLevel | null;
+  pumpIntraSignal: PumpIntraLevel | null;
+  pumpTags: PumpSignalTag[];
+  pumpRecommendation: string | null;
 };
 
 /** Shared select extras for momentum + 1h MC gain (snapshot lateral). */
@@ -181,7 +226,7 @@ function refreshGain1hOnCards<T extends CallCard & { mc1hUsd?: number | null }>(
 
 async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; universe: number }> {
   // v9: ENTRY-served + momentum/1h gain fields for table filters
-  const cacheKey = `calls:feed:v10-entry:${limit}`;
+  const cacheKey = `calls:feed:v11-pump:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -223,6 +268,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       t.sec_creator_created_count,
       t.token_created_at,
       t.first_detected_at,
+      t.pump_scan,
       ${MOMENTUM_SELECT},
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       NULL::float8 AS buy_notional,
@@ -372,6 +418,7 @@ async function loadCallCards(limit: number): Promise<{ cards: CallCard[]; univer
       socials: extractSocials(r.raw_metadata),
       entryServed,
       properServe,
+      ...pumpFieldsFromRow(r),
     };
   });
 
@@ -416,6 +463,7 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       t.holder_quality_score, t.holder_velocity_score, t.sec_is_honeypot,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      t.pump_scan,
       ${MOMENTUM_SELECT},
       0::int AS wallet_buys, NULL::float8 AS buy_notional, NULL::float8 AS avg_win_rate
     FROM pro_calls pc
@@ -526,6 +574,7 @@ async function loadCallCardsLite(limit: number): Promise<{ cards: CallCard[]; un
       socials: extractSocials(r.raw_metadata),
       entryServed,
       properServe,
+      ...pumpFieldsFromRow(r),
     };
   });
   cards.sort((a, b) => {
@@ -556,6 +605,7 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
       COALESCE(t.migrated, false) AS migrated,
       t.creator_username, t.pump_ath_market_cap_usd, t.creator_stats,
+      t.pump_scan,
       ${MOMENTUM_SELECT},
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       cryp.crypsor_quality_n,
@@ -695,6 +745,7 @@ async function loadSingleCallCard(tokenId: number): Promise<CallCard | null> {
     socials: extractSocials(r.raw_metadata),
     entryServed,
     properServe,
+    ...pumpFieldsFromRow(r),
   };
 }
 
@@ -746,7 +797,7 @@ async function loadWaitingCalls(limit: number): Promise<{
   pendingFirstCalls: number;
 }> {
   // v7: wallet_buys join + momentum/1h for table filters
-  const cacheKey = `calls:waiting:v7:${limit}`;
+  const cacheKey = `calls:waiting:v8-pump:${limit}`;
   const cached = await proCacheGet<{ cards: WaitingCallCard[]; pendingFirstCalls: number }>(cacheKey);
   if (cached?.cards) return cached;
 
@@ -773,6 +824,7 @@ async function loadWaitingCalls(limit: number): Promise<{
       t.sec_is_honeypot, t.sec_mint_renounced, t.sec_freeze_renounced,
       t.sec_cto_flag, t.sec_creator_close, t.sec_creator_address,
       t.sec_creator_created_count, t.token_created_at, t.first_detected_at,
+      t.pump_scan,
       COALESCE(buys.wallet_buys, 0)::int AS wallet_buys,
       ${MOMENTUM_SELECT}
     FROM pro_calls pc
@@ -936,6 +988,7 @@ async function loadWaitingCalls(limit: number): Promise<{
       properServe: snapCount >= 5
         && r.latest_holder_snapshot_id != null
         && (Number(r.called_smart_count ?? 0) + Number(r.called_kol_count ?? 0)) >= 1,
+      ...pumpFieldsFromRow(r),
     };
 
     return {
@@ -973,6 +1026,11 @@ type FeedFilters = {
   minGain1h?: number;   // gain1hPct % (snapshot ~1h / since-call if young)
   minMom1h?: number;
   minMom6h?: number;
+  /** Pump-SDK grade filter: S|A|B|C|D or top (S+A) */
+  pumpGrade?: string;
+  /** Pump signal preset: buy|watch|intra|micro|dev */
+  pumpSignal?: string;
+  minPumpScore?: number;
 };
 
 function parseFeedFilters(q: Record<string, unknown>): FeedFilters {
@@ -982,6 +1040,8 @@ function parseFeedFilters(q: Record<string, unknown>): FeedFilters {
   };
   const label = String(q.label ?? "").trim().toLowerCase();
   const quality = String(q.quality ?? "").trim().toLowerCase();
+  const pumpGrade = String(q.pumpGrade ?? "").trim().toUpperCase();
+  const pumpSignal = String(q.pumpSignal ?? "").trim().toLowerCase();
   return {
     label: label && label !== "all" ? label : undefined,
     quality: quality && quality !== "all" ? quality : undefined,
@@ -990,6 +1050,9 @@ function parseFeedFilters(q: Record<string, unknown>): FeedFilters {
     minGain1h: num("minGain1h"),
     minMom1h: num("minMom1h"),
     minMom6h: num("minMom6h"),
+    pumpGrade: pumpGrade && pumpGrade !== "ALL" ? pumpGrade : undefined,
+    pumpSignal: pumpSignal && pumpSignal !== "all" ? pumpSignal : undefined,
+    minPumpScore: num("minPumpScore"),
   };
 }
 
@@ -1002,6 +1065,37 @@ function applyFeedFilters<T extends CallCard>(cards: T[], f: FeedFilters): T[] {
     if (f.minGain1h != null && (c.gain1hPct ?? -Infinity) < f.minGain1h) return false;
     if (f.minMom1h != null && c.momentum1h < f.minMom1h) return false;
     if (f.minMom6h != null && c.momentum6h < f.minMom6h) return false;
+    if (f.minPumpScore != null && (c.pumpScore ?? -Infinity) < f.minPumpScore) return false;
+    if (f.pumpGrade) {
+      if (f.pumpGrade === "TOP") {
+        if (c.pumpGrade !== "S" && c.pumpGrade !== "A") return false;
+      } else if (c.pumpGrade !== f.pumpGrade) {
+        return false;
+      }
+    }
+    if (f.pumpSignal) {
+      switch (f.pumpSignal) {
+        case "buy":
+          if (c.pumpBuySignal !== "STRONG_BUY") return false;
+          break;
+        case "watch":
+          if (c.pumpBuySignal !== "WATCH") return false;
+          break;
+        case "intra":
+          if (c.pumpIntraSignal !== "INTRA_NOW" && c.pumpIntraSignal !== "INTRA_SOON") return false;
+          break;
+        case "micro":
+          if (!c.pumpTags.some((t) => t.label === "Micro Cap")) return false;
+          break;
+        case "dev":
+          if (!c.pumpTags.some((t) => t.label === "Dev Narrative" || t.label === "Larry Signal")) {
+            return false;
+          }
+          break;
+        default:
+          break;
+      }
+    }
     return true;
   });
 }
