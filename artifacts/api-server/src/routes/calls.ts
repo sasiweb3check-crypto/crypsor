@@ -27,6 +27,8 @@ import {
 } from "../lib/pump-creator";
 import {
   applyPumpDeskFilters,
+  effectivePumpAthGain,
+  effectivePumpGain,
   parsePumpScan,
   type PumpBuyLevel,
   type PumpFilterId,
@@ -54,8 +56,15 @@ export type PumpDeskFields = {
   pumpGainSinceDetection: number | null;
   pumpAthGain: number | null;
   pumpDetectedAt: number | null;
+  pumpPriceAtDetection: number | null;
+  pumpMcAtDetection: number | null;
+  pumpAthMc: number | null;
+  pumpMcGainSinceDetection: number | null;
+  pumpAthMcGain: number | null;
   pumpSocialSignal: number | null;
   pumpFreshness: number | null;
+  pumpBuyPassCount: number | null;
+  pumpIntraPassCount: number | null;
 };
 
 function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
@@ -77,10 +86,19 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
       pumpGainSinceDetection: null,
       pumpAthGain: null,
       pumpDetectedAt: null,
+      pumpPriceAtDetection: null,
+      pumpMcAtDetection: null,
+      pumpAthMc: null,
+      pumpMcGainSinceDetection: null,
+      pumpAthMcGain: null,
       pumpSocialSignal: null,
       pumpFreshness: null,
+      pumpBuyPassCount: null,
+      pumpIntraPassCount: null,
     };
   }
+  const gain = effectivePumpGain(scan);
+  const athGain = effectivePumpAthGain(scan);
   return {
     pumpScore: scan.score,
     pumpGrade: scan.grade,
@@ -94,12 +112,71 @@ function pumpFieldsFromRow(r: Record<string, unknown>): PumpDeskFields {
     pumpTxns24h: scan.txns24h,
     pumpPairCreatedAt: scan.pairCreatedAt,
     pumpPriceChange24h: scan.priceChange24h,
-    pumpGainSinceDetection: scan.gainSinceDetection,
-    pumpAthGain: scan.athGain,
-    pumpDetectedAt: scan.detectedAt,
+    pumpGainSinceDetection: gain,
+    pumpAthGain: athGain,
+    pumpDetectedAt: scan.detectedAt > 0 ? scan.detectedAt : null,
+    pumpPriceAtDetection: scan.priceAtDetection > 0 ? scan.priceAtDetection : null,
+    pumpMcAtDetection: scan.mcAtDetection > 0 ? scan.mcAtDetection : null,
+    pumpAthMc: scan.athMc > 0 ? scan.athMc : null,
+    pumpMcGainSinceDetection: scan.mcGainSinceDetection,
+    pumpAthMcGain: scan.athMcGain,
     pumpSocialSignal: scan.socialSignal,
     pumpFreshness: scan.freshnessMultiplier,
+    pumpBuyPassCount: scan.buyPassCount,
+    pumpIntraPassCount: scan.intraPassCount,
   };
+}
+
+/** Recompute MC gains from live overlay MC vs sticky mcAtDetection. */
+function refreshPumpDetectionGains<T extends {
+  currentMcUsd: number | null;
+  calledMcUsd: number | null;
+  athMcUsd: number | null;
+  gainPct: number | null;
+  nowMultiple: number;
+  athMultiple: number;
+  hit2x: boolean;
+  hit5x: boolean;
+  hit10x: boolean;
+  pumpMarketCap?: number | null;
+  pumpAthMc?: number | null;
+  pumpMcAtDetection?: number | null;
+  pumpMcGainSinceDetection?: number | null;
+  pumpAthMcGain?: number | null;
+  pumpGainSinceDetection?: number | null;
+  pumpAthGain?: number | null;
+}>(cards: T[]): T[] {
+  return cards.map((c) => {
+    const mcAt = c.pumpMcAtDetection ?? 0;
+    const liveMc = c.currentMcUsd ?? c.pumpMarketCap ?? 0;
+    if (!(mcAt > 0) || !(liveMc > 0)) {
+      return {
+        ...c,
+        calledMcUsd: c.calledMcUsd ?? (mcAt > 0 ? mcAt : null),
+      };
+    }
+    const athMc = Math.max(c.pumpAthMc ?? 0, c.athMcUsd ?? 0, liveMc);
+    const mcGain = ((liveMc - mcAt) / mcAt) * 100;
+    const athMcGain = ((athMc - mcAt) / mcAt) * 100;
+    return {
+      ...c,
+      currentMcUsd: liveMc,
+      calledMcUsd: c.calledMcUsd ?? mcAt,
+      athMcUsd: Math.max(c.athMcUsd ?? 0, athMc),
+      pumpMarketCap: liveMc,
+      pumpAthMc: athMc,
+      pumpMcGainSinceDetection: mcGain,
+      pumpAthMcGain: athMcGain,
+      pumpGainSinceDetection: mcGain,
+      pumpAthGain: athMcGain,
+      gainPct: mcGain,
+      nowMultiple: liveMc / mcAt,
+      athMultiple: athMc / mcAt,
+      hit2x: athMcGain >= 100,
+      hit5x: athMcGain >= 400,
+      hit10x: athMcGain >= 900,
+    };
+  });
 }
 
 function resolveLogoUri(imagePath: unknown, logoUri: unknown): string | null {
@@ -195,8 +272,15 @@ export type CallCard = {
   pumpGainSinceDetection?: number | null;
   pumpAthGain?: number | null;
   pumpDetectedAt?: number | null;
+  pumpPriceAtDetection?: number | null;
+  pumpMcAtDetection?: number | null;
+  pumpAthMc?: number | null;
+  pumpMcGainSinceDetection?: number | null;
+  pumpAthMcGain?: number | null;
   pumpSocialSignal?: number | null;
   pumpFreshness?: number | null;
+  pumpBuyPassCount?: number | null;
+  pumpIntraPassCount?: number | null;
 };
 
 /** Shared select extras for momentum + 1h MC gain (snapshot lateral). */
@@ -667,12 +751,20 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
   const currentMc = r.market_cap_usd != null
     ? parseFloat(String(r.market_cap_usd)) || null
     : (pump.pumpMarketCap ?? null);
+  const calledMc = pump.pumpMcAtDetection ?? null;
   const pumpAth = r.pump_ath_market_cap_usd != null
     ? Number(r.pump_ath_market_cap_usd)
     : null;
+  const athMc = Math.max(
+    r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || 0 : 0,
+    pump.pumpAthMc ?? 0,
+    pumpAth != null && Number.isFinite(pumpAth) ? pumpAth : 0,
+  ) || null;
   const creatorStats = (r.creator_stats && typeof r.creator_stats === "object")
     ? (r.creator_stats as CreatorStatsPayload)
     : null;
+  const gain = pump.pumpGainSinceDetection;
+  const athGain = pump.pumpAthGain;
 
   return {
     id: Number(r.token_id),
@@ -681,13 +773,15 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
     name: (r.name as string | null) ?? null,
     symbol: (r.symbol as string | null) ?? null,
     logoUri: resolveLogoUri(r.image_path, r.logo_uri),
-    calledAt: toIsoUtc(r.last_buy_at ?? r.first_detected_at),
-    calledMcUsd: null,
+    calledAt: pump.pumpDetectedAt
+      ? new Date(pump.pumpDetectedAt).toISOString()
+      : toIsoUtc(r.last_buy_at ?? r.first_detected_at),
+    calledMcUsd: calledMc,
     currentMcUsd: currentMc,
-    athMcUsd: r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || null : null,
-    gainPct: pump.pumpGainSinceDetection,
-    nowMultiple: 1,
-    athMultiple: 1,
+    athMcUsd: athMc,
+    gainPct: gain,
+    nowMultiple: calledMc && currentMc && calledMc > 0 ? currentMc / calledMc : 1,
+    athMultiple: calledMc && athMc && calledMc > 0 ? athMc / calledMc : 1,
     walletBuys: Number(r.wallet_buys ?? 0),
     buyVolumeHintUsd: null,
     calledKol: 0,
@@ -705,9 +799,9 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
       pump.pumpRecommendation,
       ...pump.pumpTags.slice(0, 3).map((t) => t.label),
     ].filter(Boolean) as string[],
-    hit2x: (pump.pumpAthGain ?? 0) >= 100,
-    hit5x: (pump.pumpAthGain ?? 0) >= 400,
-    hit10x: (pump.pumpAthGain ?? 0) >= 900,
+    hit2x: (athGain ?? 0) >= 100,
+    hit5x: (athGain ?? 0) >= 400,
+    hit10x: (athGain ?? 0) >= 900,
     volume24hUsd: pump.pumpVolume24h
       ?? (r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null),
     volumeIntensityScore: r.volume_intensity_score != null
@@ -725,7 +819,7 @@ async function loadPumpBuyTokenCard(tokenId: number): Promise<CallCard | null> {
       ? Number(r.sec_creator_created_count) : null,
     graduated: Boolean(r.migrated),
     creatorUsername: r.creator_username != null ? String(r.creator_username) : null,
-    pumpAthMcUsd: pumpAth != null && Number.isFinite(pumpAth) ? pumpAth : null,
+    pumpAthMcUsd: pumpAth != null && Number.isFinite(pumpAth) ? pumpAth : (pump.pumpAthMc ?? null),
     creatorStats,
     socials: extractSocials(r.raw_metadata),
     entryServed: true,
@@ -1267,7 +1361,7 @@ function paginateCards<T>(cards: T[], page: number, limit: number) {
  * Crypsor call-quality / pro_calls / GMGN are NOT used here (kept as backup loaders below).
  */
 async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; universe: number }> {
-  const cacheKey = `calls:feed:v12-pump-buys:${limit}`;
+  const cacheKey = `calls:feed:v13-pump-buys:${limit}`;
   const cached = await proCacheGet<{ cards: CallCard[]; universe: number }>(cacheKey);
   if (cached?.cards?.length) return cached;
 
@@ -1311,7 +1405,16 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
     const currentMc = r.market_cap_usd != null
       ? parseFloat(String(r.market_cap_usd)) || null
       : (pump.pumpMarketCap ?? null);
-    const calledAt = toIsoUtc(r.last_buy_at ?? r.first_detected_at);
+    const calledMc = pump.pumpMcAtDetection ?? null;
+    const athMc = Math.max(
+      r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || 0 : 0,
+      pump.pumpAthMc ?? 0,
+    ) || null;
+    const calledAt = pump.pumpDetectedAt
+      ? new Date(pump.pumpDetectedAt).toISOString()
+      : toIsoUtc(r.last_buy_at ?? r.first_detected_at);
+    const gain = pump.pumpGainSinceDetection;
+    const athGain = pump.pumpAthGain;
     return {
       id: Number(r.token_id),
       address: String(r.address),
@@ -1320,12 +1423,12 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
       symbol: (r.symbol as string | null) ?? null,
       logoUri: resolveLogoUri(r.image_path, r.logo_uri),
       calledAt,
-      calledMcUsd: null,
+      calledMcUsd: calledMc,
       currentMcUsd: currentMc,
-      athMcUsd: r.ath_market_cap_usd != null ? parseFloat(String(r.ath_market_cap_usd)) || null : null,
-      gainPct: pump.pumpGainSinceDetection,
-      nowMultiple: 1,
-      athMultiple: 1,
+      athMcUsd: athMc,
+      gainPct: gain,
+      nowMultiple: calledMc && currentMc && calledMc > 0 ? currentMc / calledMc : 1,
+      athMultiple: calledMc && athMc && calledMc > 0 ? athMc / calledMc : 1,
       walletBuys: Number(r.wallet_buys ?? 0),
       buyVolumeHintUsd: null,
       calledKol: 0,
@@ -1337,16 +1440,15 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
       holderQualityScore: null,
       proScore: pump.pumpScore ?? 0,
       qualityLabel: pump.pumpRecommendation ?? "—",
-      // Backup fields kept for type compat — desk UI ignores Crypsor labels
       callScore: pump.pumpScore ?? 0,
       callLabel: "watch",
       reasons: [
         pump.pumpRecommendation,
         ...(pump.pumpTags.slice(0, 3).map((t) => t.label)),
       ].filter(Boolean) as string[],
-      hit2x: (pump.pumpAthGain ?? 0) >= 100,
-      hit5x: (pump.pumpAthGain ?? 0) >= 400,
-      hit10x: (pump.pumpAthGain ?? 0) >= 900,
+      hit2x: (athGain ?? 0) >= 100,
+      hit5x: (athGain ?? 0) >= 400,
+      hit10x: (athGain ?? 0) >= 900,
       volume24hUsd: pump.pumpVolume24h
         ?? (r.volume_24h_usd != null ? parseFloat(String(r.volume_24h_usd)) || null : null),
       volumeIntensityScore: r.volume_intensity_score != null
@@ -1369,7 +1471,7 @@ async function loadPumpBuyDeskCards(limit = 400): Promise<{ cards: CallCard[]; u
   });
 
   const payload = { cards, universe };
-  await proCacheSet(cacheKey, payload, 4);
+  await proCacheSet(cacheKey, payload, 3);
   return payload;
 }
 
@@ -1395,9 +1497,22 @@ router.get("/calls/feed", async (req, res) => {
       const minScore = Math.max(0, parseFloat(String(req.query.minScore ?? req.query.minPumpScore ?? "0")) || 0);
 
       const pack = await loadPumpBuyDeskCards(400);
-      const ranked = applyPumpDeskFilters(pack.cards, filter, sort, minScore);
+      const needsLiveGains = filter === "gained"
+        || sort === "gain_now"
+        || sort === "ath_gain";
+
+      let working = pack.cards;
+      if (needsLiveGains) {
+        // Rank/filter on live MC vs sticky detect MC
+        working = refreshPumpDetectionGains(await overlayLiveMarketCaps(working));
+      }
+      const ranked = applyPumpDeskFilters(working, filter, sort, minScore);
       const pagePack = paginateCards(ranked, page, limit);
-      pagePack.cards = await overlayLiveMarketCaps(pagePack.cards);
+      if (!needsLiveGains) {
+        pagePack.cards = refreshPumpDetectionGains(
+          await overlayLiveMarketCaps(pagePack.cards),
+        );
+      }
 
       res.setHeader("Cache-Control", "private, no-cache");
       res.json(apiOk({
@@ -1407,7 +1522,7 @@ router.get("/calls/feed", async (req, res) => {
         filter,
         sort,
         minScore,
-        note: "Pump-SDK desk · buy-sourced tokens · pump-fullend scoring (no Crypsor/GMGN rank)",
+        note: "Pump-SDK desk · buy-sourced · MC gain since detection",
       }));
       return;
     }
@@ -1743,24 +1858,59 @@ router.get("/calls/token/:tokenId", async (req, res) => {
 
     let snaps: CallSnap[] = [];
     try {
-      const snapRows = await db.execute(sql`
-        SELECT ps.snapshot_at, ps.mc_usd, ps.ath_multiple, ps.gain_pct,
-               ps.kol_count, ps.smart_count
-        FROM pro_snapshots ps
-        WHERE ps.token_id = ${tokenId}
-        ORDER BY ps.snapshot_at DESC NULLS LAST
-        LIMIT 24
+      const pumpSnapRows = await db.execute(sql`
+        SELECT snapshot_at, market_cap_usd AS mc_usd,
+               CASE
+                 WHEN mc_at_detection IS NOT NULL
+                  AND NULLIF(mc_at_detection, '')::float8 > 0
+                  AND market_cap_usd IS NOT NULL
+                 THEN (NULLIF(market_cap_usd, '')::float8
+                       / NULLIF(mc_at_detection, '')::float8)
+                 ELSE NULL
+               END AS ath_multiple,
+               COALESCE(mc_gain_since_detection, gain_since_detection) AS gain_pct,
+               NULL::int AS kol_count,
+               NULL::int AS smart_count
+        FROM pump_scan_snapshots
+        WHERE token_id = ${tokenId}
+        ORDER BY snapshot_at DESC NULLS LAST
+        LIMIT 48
       `);
-      snaps = (snapRows.rows as Array<Record<string, unknown>>).map(r => ({
-        at: toIsoUtc(r.snapshot_at),
-        mcUsd: r.mc_usd != null ? parseFloat(String(r.mc_usd)) : null,
-        athMultiple: r.ath_multiple != null ? Number(r.ath_multiple) : null,
-        gainPct: r.gain_pct != null ? Number(r.gain_pct) : null,
-        kol: r.kol_count != null ? Number(r.kol_count) : null,
-        smart: r.smart_count != null ? Number(r.smart_count) : null,
-      })).reverse();
+      if (pumpSnapRows.rows.length) {
+        snaps = (pumpSnapRows.rows as Array<Record<string, unknown>>).map(r => ({
+          at: toIsoUtc(r.snapshot_at),
+          mcUsd: r.mc_usd != null ? parseFloat(String(r.mc_usd)) : null,
+          athMultiple: r.ath_multiple != null ? Number(r.ath_multiple) : null,
+          gainPct: r.gain_pct != null ? Number(r.gain_pct) : null,
+          kol: null,
+          smart: null,
+        })).reverse();
+      } else {
+        const snapRows = await db.execute(sql`
+          SELECT ps.snapshot_at, ps.mc_usd, ps.ath_multiple, ps.gain_pct,
+                 ps.kol_count, ps.smart_count
+          FROM pro_snapshots ps
+          WHERE ps.token_id = ${tokenId}
+          ORDER BY ps.snapshot_at DESC NULLS LAST
+          LIMIT 24
+        `);
+        snaps = (snapRows.rows as Array<Record<string, unknown>>).map(r => ({
+          at: toIsoUtc(r.snapshot_at),
+          mcUsd: r.mc_usd != null ? parseFloat(String(r.mc_usd)) : null,
+          athMultiple: r.ath_multiple != null ? Number(r.ath_multiple) : null,
+          gainPct: r.gain_pct != null ? Number(r.gain_pct) : null,
+          kol: r.kol_count != null ? Number(r.kol_count) : null,
+          smart: r.smart_count != null ? Number(r.smart_count) : null,
+        })).reverse();
+      }
     } catch {
       snaps = [];
+    }
+
+    // Live MC + recompute detection gains on detail
+    if (card) {
+      const [refreshed] = refreshPumpDetectionGains(await overlayLiveMarketCaps([card]));
+      card = refreshed ?? card;
     }
 
     if (!card && buyers.length === 0) {

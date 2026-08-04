@@ -97,8 +97,15 @@ export type CallCard = {
   pumpGainSinceDetection?: number | null;
   pumpAthGain?: number | null;
   pumpDetectedAt?: number | null;
+  pumpPriceAtDetection?: number | null;
+  pumpMcAtDetection?: number | null;
+  pumpAthMc?: number | null;
+  pumpMcGainSinceDetection?: number | null;
+  pumpAthMcGain?: number | null;
   pumpSocialSignal?: number | null;
   pumpFreshness?: number | null;
+  pumpBuyPassCount?: number | null;
+  pumpIntraPassCount?: number | null;
 };
 
 export type StatsPeriod = "1d" | "3d" | "5d" | "7d" | "30d";
@@ -154,7 +161,7 @@ export const FILTER_BLURB: Record<PumpFilterId, string> = {
   new: "Pair age under 2 hours",
   volume: "24H volume ≥ $50K",
   dev: "Name/symbol keywords or socialSignal ≥ 4",
-  gained: "≥50% since detection",
+  gained: "≥50% MC since detection",
 };
 
 export type FeedFilters = {

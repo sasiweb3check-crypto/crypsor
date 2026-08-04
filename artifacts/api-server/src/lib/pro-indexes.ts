@@ -92,6 +92,32 @@ const SCHEMA_STATEMENTS = [
   // Pump-SDK buy scanner payload (grade / tags / buy+intra signals)
   `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS pump_scan jsonb`,
   `ALTER TABLE tracked_tokens ADD COLUMN IF NOT EXISTS pump_scan_updated_at timestamptz`,
+  // Pump signal + MC capture tape (gain-since-detection verification)
+  `CREATE TABLE IF NOT EXISTS pump_scan_snapshots (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES tracked_tokens(id) ON DELETE CASCADE,
+     snapshot_at timestamptz NOT NULL DEFAULT NOW(),
+     score real,
+     grade text,
+     buy_signal text,
+     intra_signal text,
+     buy_pass_count integer,
+     intra_pass_count integer,
+     price_usd text,
+     market_cap_usd text,
+     liquidity_usd text,
+     volume_24h_usd text,
+     txns_24h integer,
+     price_at_detection text,
+     mc_at_detection text,
+     gain_since_detection real,
+     ath_gain real,
+     mc_gain_since_detection real,
+     ath_mc_gain real,
+     payload jsonb
+   )`,
+  `CREATE INDEX IF NOT EXISTS pump_scan_snapshots_token_snap_idx
+     ON pump_scan_snapshots (token_id, snapshot_at DESC)`,
   // Crypsor-owned wallet intel (separate from GMGN KOL/smart)
   `CREATE TABLE IF NOT EXISTS crypsor_wallet_intel (
      wallet_address text PRIMARY KEY,

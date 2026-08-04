@@ -53,6 +53,7 @@ export type PumpBuySignal = {
   level: PumpBuyLevel;
   passCount: number;
   firedAt: number;
+  conditions: Array<{ id: string; label: string; pass: boolean }>;
 };
 
 export type PumpIntraSignal = {
@@ -60,6 +61,7 @@ export type PumpIntraSignal = {
   passCount: number;
   urgency: number;
   firedAt: number;
+  conditions: Array<{ id: string; label: string; pass: boolean }>;
 };
 
 export type PumpScanPayload = {
@@ -70,6 +72,12 @@ export type PumpScanPayload = {
   tags: PumpSignalTag[];
   buySignal: PumpBuyLevel | null;
   intraSignal: PumpIntraLevel | null;
+  buyPassCount: number;
+  intraPassCount: number;
+  buyFiredAt: number | null;
+  intraFiredAt: number | null;
+  buyConditions: Array<{ id: string; label: string; pass: boolean }>;
+  intraConditions: Array<{ id: string; label: string; pass: boolean }>;
   pairAddress: string | null;
   dexId: string | null;
   scannedAt: string;
@@ -84,11 +92,21 @@ export type PumpScanPayload = {
   priceUsd: number;
   freshnessMultiplier: number;
   socialSignal: number;
+  /** First successful scan timestamp (sticky) */
   detectedAt: number;
+  /** Sticky entry price from first scan with price > 0 */
   priceAtDetection: number;
   athPrice: number;
+  athAt: number;
+  /** Price % since detection */
   gainSinceDetection: number;
   athGain: number;
+  /** Sticky entry MC from first scan with MC > 0 */
+  mcAtDetection: number;
+  athMc: number;
+  /** MC % since detection (desk primary) */
+  mcGainSinceDetection: number;
+  athMcGain: number;
 };
 
 /** FilterBar.dev keyword list — pump-fullend FilterBar.applyFilters */
@@ -340,19 +358,24 @@ export function getBuySignal(token: DexPairLike, scoreResult: PumpScoreResult): 
   const accel = hourlyAvg > 0 ? vol1h / hourlyAvg : 0;
   const eei = scoreResult.scores.earlyExplosionIndex || 0;
 
-  const passCount = [
-    accel >= 2.0,
-    buyRatio >= 0.65,
-    p5m > 2 && p1h > 0,
-    mcap > 0 && mcap < 150_000,
-    ageMins < 60,
-    liquidity >= 8_000,
-    scoreResult.total >= 62,
-    eei >= 5,
-  ].filter(Boolean).length;
+  const conditions = [
+    { id: "momentum", label: "Vol Surge", pass: accel >= 2.0 },
+    { id: "buywall", label: "Buy Wall", pass: buyRatio >= 0.65 },
+    { id: "breakout", label: "Breakout", pass: p5m > 2 && p1h > 0 },
+    { id: "micro", label: "Micro Cap", pass: mcap > 0 && mcap < 150_000 },
+    { id: "fresh", label: "Fresh", pass: ageMins < 60 },
+    { id: "liquid", label: "Liquid", pass: liquidity >= 8_000 },
+    { id: "score", label: "A-Grade+", pass: scoreResult.total >= 62 },
+    { id: "larry", label: "Larry Signal", pass: eei >= 5 },
+  ];
 
-  if (passCount >= 6) return { level: "STRONG_BUY", passCount, firedAt: Date.now() };
-  if (passCount >= 4) return { level: "WATCH", passCount, firedAt: Date.now() };
+  const passCount = conditions.filter((c) => c.pass).length;
+  if (passCount >= 6) {
+    return { level: "STRONG_BUY", passCount, firedAt: Date.now(), conditions };
+  }
+  if (passCount >= 4) {
+    return { level: "WATCH", passCount, firedAt: Date.now(), conditions };
+  }
   return null;
 }
 
@@ -369,15 +392,20 @@ export function getIntraSignal(token: DexPairLike, scoreResult: PumpScoreResult)
   const hourlyAvg = vol6h > 0 ? vol6h / 6 : 0;
   const accel = hourlyAvg > 0 ? vol1h / hourlyAvg : 0;
 
-  const passCount = [
-    ageMins <= 20,
-    vol5m >= 500,
-    buys5m > sells5m && buys5m + sells5m >= 3,
-    p5m >= 3,
-    mcap > 0 && mcap < 100_000,
-    accel >= 1.8 || (hourlyAvg === 0 && vol1h > 1000),
-  ].filter(Boolean).length;
+  const conditions = [
+    { id: "ultra_fresh", label: "Ultra Fresh", pass: ageMins <= 20 },
+    { id: "vol5m_burst", label: "5m Vol Burst", pass: vol5m >= 500 },
+    { id: "buy_surge", label: "5m Buy Surge", pass: buys5m > sells5m && buys5m + sells5m >= 3 },
+    { id: "price_pumping", label: "Price Pumping", pass: p5m >= 3 },
+    { id: "micro_entry", label: "Micro Cap", pass: mcap > 0 && mcap < 100_000 },
+    {
+      id: "momentum_live",
+      label: "Momentum Live",
+      pass: accel >= 1.8 || (hourlyAvg === 0 && vol1h > 1000),
+    },
+  ];
 
+  const passCount = conditions.filter((c) => c.pass).length;
   let level: PumpIntraLevel | null = null;
   if (passCount >= 5) level = "INTRA_NOW";
   else if (passCount >= 4) level = "INTRA_SOON";
@@ -390,7 +418,12 @@ export function getIntraSignal(token: DexPairLike, scoreResult: PumpScoreResult)
     + Math.min(10, accel > 0 ? Math.min(accel * 2, 10) : 0),
   ));
 
-  return { level, passCount, urgency, firedAt: Date.now() };
+  return { level, passCount, urgency, firedAt: Date.now(), conditions };
+}
+
+function pctGain(from: number, to: number): number {
+  if (!(from > 0) || !Number.isFinite(to)) return 0;
+  return ((to - from) / from) * 100;
 }
 
 export function buildPumpScanPayload(
@@ -401,18 +434,38 @@ export function buildPumpScanPayload(
   const buy = getBuySignal(token, score);
   const intra = getIntraSignal(token, score);
   const priceUsd = parseFloat(String(token.priceUsd ?? 0)) || 0;
+  const mcap = token.marketCap || token.fdv || 0;
   const now = Date.now();
-  const detectedAt = prev?.detectedAt ?? now;
+
+  // Sticky detection anchors — never invent a fresh detectedAt on re-parse
+  const detectedAt = prev?.detectedAt && prev.detectedAt > 0 ? prev.detectedAt : now;
   const priceAtDetection = prev?.priceAtDetection && prev.priceAtDetection > 0
     ? prev.priceAtDetection
     : (priceUsd > 0 ? priceUsd : 0);
-  const athPrice = Math.max(prev?.athPrice ?? 0, priceUsd);
-  const gainSinceDetection = priceAtDetection > 0
-    ? ((priceUsd - priceAtDetection) / priceAtDetection) * 100
-    : 0;
-  const athGain = priceAtDetection > 0
-    ? ((athPrice - priceAtDetection) / priceAtDetection) * 100
-    : 0;
+  const mcAtDetection = prev?.mcAtDetection && prev.mcAtDetection > 0
+    ? prev.mcAtDetection
+    : (mcap > 0 ? mcap : 0);
+
+  const prevAthPrice = prev?.athPrice && prev.athPrice > 0 ? prev.athPrice : 0;
+  const prevAthMc = prev?.athMc && prev.athMc > 0 ? prev.athMc : 0;
+  const athPrice = Math.max(prevAthPrice, priceUsd);
+  const athMc = Math.max(prevAthMc, mcap);
+  const athAt = (priceUsd > prevAthPrice || mcap > prevAthMc)
+    ? now
+    : (prev?.athAt && prev.athAt > 0 ? prev.athAt : detectedAt);
+
+  const gainSinceDetection = pctGain(priceAtDetection, priceUsd);
+  const athGain = pctGain(priceAtDetection, athPrice);
+  const mcGainSinceDetection = pctGain(mcAtDetection, mcap);
+  const athMcGain = pctGain(mcAtDetection, athMc);
+
+  // Sticky signal fire times while level stays active
+  const buyFiredAt = buy
+    ? (prev?.buySignal && prev.buyFiredAt ? prev.buyFiredAt : now)
+    : null;
+  const intraFiredAt = intra
+    ? (prev?.intraSignal && prev.intraFiredAt ? prev.intraFiredAt : now)
+    : null;
 
   const txBuys = token.txns?.h24?.buys || 0;
   const txSells = token.txns?.h24?.sells || 0;
@@ -425,11 +478,17 @@ export function buildPumpScanPayload(
     tags: getSignalTags(token, score),
     buySignal: buy?.level ?? null,
     intraSignal: intra?.level ?? null,
+    buyPassCount: buy?.passCount ?? 0,
+    intraPassCount: intra?.passCount ?? 0,
+    buyFiredAt,
+    intraFiredAt,
+    buyConditions: buy?.conditions ?? [],
+    intraConditions: intra?.conditions ?? [],
     pairAddress: token.pairAddress ?? null,
     dexId: token.dexId ?? null,
     scannedAt: new Date().toISOString(),
     source: "token_buys",
-    marketCap: token.marketCap || token.fdv || 0,
+    marketCap: mcap,
     liquidityUsd: token.liquidity?.usd || 0,
     volume24h: token.volume?.h24 || 0,
     volume1h: token.volume?.h1 || 0,
@@ -442,9 +501,37 @@ export function buildPumpScanPayload(
     detectedAt,
     priceAtDetection,
     athPrice,
+    athAt,
     gainSinceDetection,
     athGain,
+    mcAtDetection,
+    athMc,
+    mcGainSinceDetection,
+    athMcGain,
   };
+}
+
+/** Prefer MC gain (desk + live overlay); fall back to price gain. */
+export function effectivePumpGain(scan: {
+  mcAtDetection?: number | null;
+  mcGainSinceDetection?: number | null;
+  gainSinceDetection?: number | null;
+}): number {
+  if ((scan.mcAtDetection ?? 0) > 0 && scan.mcGainSinceDetection != null) {
+    return scan.mcGainSinceDetection;
+  }
+  return scan.gainSinceDetection ?? 0;
+}
+
+export function effectivePumpAthGain(scan: {
+  mcAtDetection?: number | null;
+  athMcGain?: number | null;
+  athGain?: number | null;
+}): number {
+  if ((scan.mcAtDetection ?? 0) > 0 && scan.athMcGain != null) {
+    return scan.athMcGain;
+  }
+  return scan.athGain ?? 0;
 }
 
 export type PumpFilterId =
@@ -570,6 +657,35 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
     const n = Number(o[k]);
     return Number.isFinite(n) ? n : d;
   };
+  const conds = (k: string) =>
+    Array.isArray(o[k])
+      ? (o[k] as Array<{ id?: string; label?: string; pass?: boolean }>)
+        .filter((c) => c && typeof c.label === "string")
+        .map((c) => ({
+          id: String(c.id ?? ""),
+          label: String(c.label),
+          pass: Boolean(c.pass),
+        }))
+      : [];
+
+  // Never invent detectedAt as Date.now() — that corrupts sticky anchors
+  const detectedAt = num("detectedAt", 0);
+  const priceAtDetection = num("priceAtDetection");
+  const mcAtDetection = num("mcAtDetection");
+  const athPrice = num("athPrice");
+  const athMc = num("athMc");
+  const gainSinceDetection = num("gainSinceDetection");
+  const athGain = num("athGain");
+  let mcGainSinceDetection = num("mcGainSinceDetection");
+  let athMcGain = num("athMcGain");
+  // Backfill MC gains for older payloads that only had price gains
+  if (mcAtDetection > 0 && mcGainSinceDetection === 0 && num("marketCap") > 0) {
+    mcGainSinceDetection = pctGain(mcAtDetection, num("marketCap"));
+  }
+  if (mcAtDetection > 0 && athMcGain === 0 && athMc > 0) {
+    athMcGain = pctGain(mcAtDetection, athMc);
+  }
+
   return {
     score,
     grade: grade as PumpGrade,
@@ -587,6 +703,12 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
     intraSignal: o.intraSignal === "INTRA_NOW" || o.intraSignal === "INTRA_SOON"
       ? o.intraSignal
       : null,
+    buyPassCount: num("buyPassCount"),
+    intraPassCount: num("intraPassCount"),
+    buyFiredAt: num("buyFiredAt") || null,
+    intraFiredAt: num("intraFiredAt") || null,
+    buyConditions: conds("buyConditions"),
+    intraConditions: conds("intraConditions"),
     pairAddress: o.pairAddress != null ? String(o.pairAddress) : null,
     dexId: o.dexId != null ? String(o.dexId) : null,
     scannedAt: o.scannedAt != null ? String(o.scannedAt) : new Date(0).toISOString(),
@@ -603,10 +725,15 @@ export function parsePumpScan(raw: unknown): PumpScanPayload | null {
     priceUsd: num("priceUsd"),
     freshnessMultiplier: num("freshnessMultiplier", 1),
     socialSignal: num("socialSignal"),
-    detectedAt: num("detectedAt", Date.now()),
-    priceAtDetection: num("priceAtDetection"),
-    athPrice: num("athPrice"),
-    gainSinceDetection: num("gainSinceDetection"),
-    athGain: num("athGain"),
+    detectedAt,
+    priceAtDetection,
+    athPrice,
+    athAt: num("athAt", detectedAt),
+    gainSinceDetection,
+    athGain,
+    mcAtDetection,
+    athMc,
+    mcGainSinceDetection,
+    athMcGain,
   };
 }
