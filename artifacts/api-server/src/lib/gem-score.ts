@@ -99,6 +99,13 @@ export type GemInputs = {
   sellTaxPct: number | null;
   lpLocked: boolean | null;
   securityFetched: boolean;
+  /**
+   * pump.fun protocol guarantees apply (mint address ends in "pump"):
+   * mint/freeze authority is burned at creation and pumpswap LP is burned on
+   * graduation — protocol facts, not fetched data. Grants partial security
+   * confidence when an explicit security read is missing.
+   */
+  pumpProtocol: boolean;
 
   /** Conviction: distinct tracked wallets that bought */
   trackedWalletBuys: number;
@@ -382,7 +389,9 @@ function scoreTiming(i: GemInputs): number {
 function computeConfidence(i: GemInputs): number {
   const tapeC = Math.min(1, i.tape.length / GEM_MIN_SNAPSHOTS) * 0.35;
   const holdersC = (i.holdersFresh && i.holderCount != null && i.holderCount > 0) ? 0.25 : 0;
-  const secC = i.securityFetched ? 0.25 : 0;
+  // Explicit security read = full credit; pump.fun protocol guarantees
+  // (mint/freeze burned, pumpswap LP burned) = partial credit.
+  const secC = i.securityFetched ? 0.25 : i.pumpProtocol ? 0.15 : 0;
   const marketC = (i.mcUsd > 0 && i.liqUsd > 0) ? 0.15 : i.mcUsd > 0 ? 0.08 : 0;
   return Math.round((tapeC + holdersC + secC + marketC) * 100) / 100;
 }
