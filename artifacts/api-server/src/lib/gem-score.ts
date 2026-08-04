@@ -79,6 +79,18 @@ export type GemInputs = {
   cabalDetected: boolean | null;
   holdersFresh: boolean;              // holder data updated recently enough to trust
 
+  /**
+   * GMGN hold shares (percent of supply held by tagged wallets, pools
+   * excluded). Trusted-lift inputs: smart/KOL holding real size is the
+   * strongest independent conviction we can observe. Sniper/bundler shares
+   * replace raw counts for vetoes — counts from GMGN stat are cumulative
+   * participants and would false-flag nearly every pump.fun launch.
+   */
+  smartHoldPct: number | null;
+  kolHoldPct: number | null;
+  sniperHoldPct: number | null;
+  bundlerHoldPct: number | null;
+
   /** Security read (null = never fetched) */
   honeypot: boolean | null;
   mintRenounced: boolean | null;
@@ -145,9 +157,10 @@ function collectVetoes(i: GemInputs): string[] {
   if ((i.holderTop10Pct ?? 0) > 45) v.push("top10_over_45pct");
   if ((i.largestClusterPct ?? 0) > 30) v.push("wallet_cluster_over_30pct");
   if (i.cabalDetected === true) v.push("cabal_cluster");
-  // Bot-swarmed launch: swarm of snipers or bundled buyers holding
-  if ((i.sniperCount ?? 0) >= 15) v.push("sniper_swarm");
-  if ((i.bundlerCount ?? 0) >= 12) v.push("bundler_swarm");
+  // Bot-controlled supply: judged by HOLD SHARE of current supply, not raw
+  // participant counts (GMGN counts are cumulative and would flag everything).
+  if ((i.sniperHoldPct ?? 0) > 20) v.push("snipers_hold_over_20pct");
+  if ((i.bundlerHoldPct ?? 0) > 25) v.push("bundlers_hold_over_25pct");
   // Untradable: real size can't exit — MC pumped far beyond the pool
   if (i.mcUsd > 25_000 && i.liqUsd > 0 && i.liqUsd < 3_000) v.push("exit_liquidity_too_thin");
   return v;
@@ -234,10 +247,20 @@ function scoreHolders(i: GemInputs, notes: string[]): number {
   const top10 = i.holderTop10Pct;
   const concScore = top10 == null ? 50 : clamp(100 - ramp(top10, 18, 40));
 
-  // Bot share: snipers + bundlers relative to holder base
-  const bots = (i.sniperCount ?? 0) + (i.bundlerCount ?? 0);
-  const botShare = i.holderCount > 0 ? bots / Math.max(20, i.holderCount) : 0;
-  const botScore = clamp(100 - ramp(botShare, 0.02, 0.25));
+  // Bot pressure: prefer hold shares (current supply control); fall back to
+  // participant counts capped by holder base (GMGN counts are cumulative).
+  let botScore: number;
+  if (i.sniperHoldPct != null || i.bundlerHoldPct != null) {
+    const botHold = (i.sniperHoldPct ?? 0) + (i.bundlerHoldPct ?? 0);
+    botScore = clamp(100 - ramp(botHold, 3, 25)); // 3% held fine → 25% toxic
+  } else {
+    const bots = Math.min(
+      (i.sniperCount ?? 0) + (i.bundlerCount ?? 0),
+      i.holderCount,
+    );
+    const botShare = i.holderCount > 0 ? bots / Math.max(20, i.holderCount) : 0;
+    botScore = clamp(100 - ramp(botShare, 0.05, 0.45));
+  }
 
   // Base breadth: 50 holders early is fine, 250+ is conviction
   const breadth = ramp(i.holderCount, 20, 250);
@@ -248,15 +271,32 @@ function scoreHolders(i: GemInputs, notes: string[]): number {
   return clamp(growthScore * 0.35 + concScore * 0.30 + botScore * 0.20 + breadth * 0.15);
 }
 
-/** Independent conviction: our tracked wallets + smart money + KOLs. */
+/**
+ * Independent conviction: our tracked wallets + smart money + KOLs.
+ * GMGN hold shares are the trusted lift — smart/KOL wallets holding real
+ * supply is worth far more than their mere presence in the holder list.
+ */
 function scoreSmart(i: GemInputs, notes: string[]): number {
   const tracked = i.trackedWalletBuys;
-  const trackedScore = tracked >= 3 ? 90 : tracked === 2 ? 65 : tracked === 1 ? 30 : 0;
-  const smartBonus = Math.min(40, (i.smartCount ?? 0) * 8);
-  const kolBonus = Math.min(30, (i.kolCount ?? 0) * 10);
+  const trackedScore = tracked >= 3 ? 85 : tracked === 2 ? 60 : tracked === 1 ? 28 : 0;
+  const smartBonus = Math.min(30, (i.smartCount ?? 0) * 7);
+  const kolBonus = Math.min(24, (i.kolCount ?? 0) * 8);
+
+  // Hold-share lift: combined smart+KOL supply share.
+  // 1% held ≈ +10 · 3% ≈ +25 · 6%+ ≈ +35 (capped). KOL share weighted heavier.
+  const holdCombined = (i.smartHoldPct ?? 0) + (i.kolHoldPct ?? 0) * 1.5;
+  const holdLift = holdCombined > 0 ? Math.min(35, ramp(holdCombined, 0.3, 6) * 0.35) : 0;
+
   if (tracked >= 2) notes.push(`${tracked} tracked wallets in`);
-  if ((i.smartCount ?? 0) > 0) notes.push(`${i.smartCount} smart money holders`);
-  return clamp(trackedScore + smartBonus + kolBonus);
+  if ((i.smartHoldPct ?? 0) >= 0.5 || (i.kolHoldPct ?? 0) >= 0.3) {
+    notes.push(
+      `smart/KOL hold ${((i.smartHoldPct ?? 0) + (i.kolHoldPct ?? 0)).toFixed(1)}%`,
+    );
+  } else if ((i.smartCount ?? 0) > 0) {
+    notes.push(`${i.smartCount} smart money holders`);
+  }
+
+  return clamp(trackedScore + smartBonus + kolBonus + holdLift);
 }
 
 /** Liquidity depth, liq/MC health band, LP lock, taxes. */
@@ -281,16 +321,45 @@ function scoreStructure(i: GemInputs, notes: string[]): number {
   return clamp(depth * 0.40 + ratioScore * 0.30 + lockScore * 0.15 + taxScore * 0.15);
 }
 
-/** Entry window: young pair + low-cap band is where gems are caught. */
+/**
+ * Entry window: low-cap band + IGNITION-AWARE age.
+ *
+ * The window is about when the MOVE started, not when the pair was born.
+ * A token created 6h ago that ignites at hour 8 is a fresh entry — sleepers
+ * and revivals are some of the best asymmetric plays. So age only matters
+ * when the tape is quiet; live ignition (MC velocity from snapshots)
+ * overrides calendar age entirely.
+ */
 function scoreTiming(i: GemInputs): number {
   const age = i.pairAgeMin;
   const ageScore =
     age == null ? 40
       : age <= 45 ? 100
         : age <= 120 ? 80
-          : age <= 360 ? 55
-            : age <= 1440 ? 30
-              : 10;
+          : age <= 360 ? 60
+            : age <= 1440 ? 40
+              : 25;
+
+  // Ignition: %/min MC velocity over the last ~10 min of tape
+  let velocity = 0;
+  const pts = i.tape.filter((p) => p.mcUsd != null && p.mcUsd > 0);
+  if (pts.length >= 3) {
+    const last = pts[pts.length - 1];
+    const windowStart = last.atMs - 12 * 60_000;
+    const win = pts.filter((p) => p.atMs >= windowStart);
+    if (win.length >= 3 && win[0].mcUsd! > 0) {
+      const mins = Math.max(1, (last.atMs - win[0].atMs) / 60_000);
+      velocity = ((last.mcUsd! - win[0].mcUsd!) / win[0].mcUsd!) * 100 / mins;
+    }
+  }
+  const ignitionScore =
+    velocity >= 2 ? 100
+      : velocity >= 0.8 ? 80
+        : velocity >= 0.3 ? 60
+          : 0;
+
+  // Live ignition IS the entry window — age can only help, never punish it
+  const entryScore = Math.max(ageScore, ignitionScore);
 
   const mc = i.mcUsd;
   const mcScore =
@@ -301,7 +370,7 @@ function scoreTiming(i: GemInputs): number {
             : mc <= 500_000 ? 40
               : 15;
 
-  return clamp(ageScore * 0.5 + mcScore * 0.5);
+  return clamp(entryScore * 0.5 + mcScore * 0.5);
 }
 
 // ── Confidence ──────────────────────────────────────────────────────────────

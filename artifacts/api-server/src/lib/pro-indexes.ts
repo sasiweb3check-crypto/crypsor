@@ -30,6 +30,13 @@ const SCHEMA_STATEMENTS = [
      holder_count integer
    )`,
   `CREATE INDEX IF NOT EXISTS idx_gem_snapshots_token_at ON gem_snapshots (token_id, at DESC)`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS top10_pct real`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS smart_count integer`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS kol_count integer`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS smart_hold_pct real`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS kol_hold_pct real`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS sniper_hold_pct real`,
+  `ALTER TABLE gem_snapshots ADD COLUMN IF NOT EXISTS bundler_hold_pct real`,
   `CREATE TABLE IF NOT EXISTS gem_scores (
      id serial PRIMARY KEY,
      token_id integer NOT NULL UNIQUE,

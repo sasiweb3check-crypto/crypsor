@@ -27,6 +27,7 @@ import {
   type GemResult,
   type GemTapePoint,
 } from "../lib/gem-score";
+import { getGemIntel, type GemIntel } from "../lib/gem-enrich";
 import type { DexPairLike } from "../lib/pump-sdk-score";
 import { eventBus } from "./event-bus";
 import { healthMonitor } from "./health-monitor";
@@ -75,7 +76,12 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-async function writeGemSnapshot(tokenId: number, pair: DexPairLike, holderCount: number | null): Promise<void> {
+async function writeGemSnapshot(
+  tokenId: number,
+  pair: DexPairLike,
+  holderCount: number | null,
+  intel: GemIntel | null,
+): Promise<void> {
   const recent = await db.execute(sql`
     SELECT EXTRACT(EPOCH FROM (NOW() - at)) * 1000 AS age_ms
     FROM gem_snapshots WHERE token_id = ${tokenId}
@@ -84,10 +90,14 @@ async function writeGemSnapshot(tokenId: number, pair: DexPairLike, holderCount:
   const ageMs = Number((recent.rows[0] as { age_ms?: number } | undefined)?.age_ms ?? Infinity);
   if (ageMs < SNAPSHOT_MIN_GAP_MS) return;
 
+  // GMGN liquidity fills the Dex gap (pumpswap pairs often report liq=0)
+  const liq = num(pair.liquidity?.usd) || (intel?.liqUsd ?? 0);
+  const holders = intel?.holderCount ?? holderCount;
+
   await db.insert(gem_snapshots).values({
     tokenId,
     mcUsd: num(pair.marketCap ?? pair.fdv),
-    liqUsd: num(pair.liquidity?.usd),
+    liqUsd: liq,
     priceUsd: num(pair.priceUsd),
     vol5m: num(pair.volume?.m5),
     vol1h: num(pair.volume?.h1),
@@ -98,7 +108,14 @@ async function writeGemSnapshot(tokenId: number, pair: DexPairLike, holderCount:
     sells1h: num(pair.txns?.h1?.sells),
     priceChange5m: num(pair.priceChange?.m5),
     priceChange1h: num(pair.priceChange?.h1),
-    holderCount: holderCount != null && holderCount > 0 ? holderCount : null,
+    holderCount: holders != null && holders > 0 ? holders : null,
+    top10Pct: intel?.top10Pct ?? null,
+    smartCount: intel?.smartCount ?? null,
+    kolCount: intel?.kolCount ?? null,
+    smartHoldPct: intel?.smartHoldPct ?? null,
+    kolHoldPct: intel?.kolHoldPct ?? null,
+    sniperHoldPct: intel?.sniperHoldPct ?? null,
+    bundlerHoldPct: intel?.bundlerHoldPct ?? null,
   });
 }
 
@@ -290,14 +307,23 @@ export async function evaluateGemForScan(tokenId: number, pair: DexPairLike): Pr
     const row = await loadTokenGemRow(tokenId);
     if (!row) return null;
 
-    await writeGemSnapshot(tokenId, pair, row.holder_count);
-    const tape = await loadTape(tokenId);
-
-    const mcUsd = num(pair.marketCap ?? pair.fdv);
-    const liqUsd = num(pair.liquidity?.usd);
     const pairAgeMin = pair.pairCreatedAt
       ? Math.max(0, (Date.now() - Number(pair.pairCreatedAt)) / 60_000)
       : null;
+
+    // Live GMGN intel (holder count, top10, smart/KOL hold shares) — cached,
+    // rate-limited. Hot = young pairs or tokens already on a GEM streak.
+    const hot = (pairAgeMin != null && pairAgeMin < 240) || Number(row.gem_streak ?? 0) > 0;
+    const intel = await getGemIntel(tokenId, row.address, "solana", hot);
+
+    await writeGemSnapshot(tokenId, pair, row.holder_count, intel);
+    const tape = await loadTape(tokenId);
+
+    const mcUsd = num(pair.marketCap ?? pair.fdv);
+    const liqUsd = num(pair.liquidity?.usd) || (intel?.liqUsd ?? 0);
+
+    const holdersFreshDb =
+      row.holders_age_min != null && Number(row.holders_age_min) <= HOLDERS_FRESH_MIN;
 
     const inputs: GemInputs = {
       mcUsd,
@@ -311,15 +337,19 @@ export async function evaluateGemForScan(tokenId: number, pair: DexPairLike): Pr
       sells1h: num(pair.txns?.h1?.sells),
       pairAgeMin,
       tape,
-      holderCount: row.holder_count,
-      holderTop10Pct: top10Pct(row),
-      sniperCount: row.holder_sniper_count,
-      bundlerCount: row.holder_bundler_count,
-      smartCount: row.holder_smart_count,
-      kolCount: row.holder_kol_count,
+      holderCount: intel?.holderCount ?? row.holder_count,
+      holderTop10Pct: intel?.top10Pct ?? top10Pct(row),
+      sniperCount: intel?.sniperCount ?? row.holder_sniper_count,
+      bundlerCount: intel?.bundlerCount ?? row.holder_bundler_count,
+      smartCount: intel?.smartCount ?? row.holder_smart_count,
+      kolCount: intel?.kolCount ?? row.holder_kol_count,
       largestClusterPct: row.holder_largest_cluster_pct,
       cabalDetected: row.holder_cabal_detected,
-      holdersFresh: row.holders_age_min != null && Number(row.holders_age_min) <= HOLDERS_FRESH_MIN,
+      holdersFresh: intel != null || holdersFreshDb,
+      smartHoldPct: intel?.smartHoldPct ?? null,
+      kolHoldPct: intel?.kolHoldPct ?? null,
+      sniperHoldPct: intel?.sniperHoldPct ?? null,
+      bundlerHoldPct: intel?.bundlerHoldPct ?? null,
       honeypot: row.sec_is_honeypot,
       mintRenounced: row.sec_mint_renounced,
       freezeRenounced: row.sec_freeze_renounced,
