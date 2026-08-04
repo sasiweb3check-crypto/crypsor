@@ -8,9 +8,8 @@ node_modules
 
 # Large / unused for the Vercel function + static deploy
 attached_assets
-scripts
 **/*.md
 !replit.md
 
-# Do NOT ignore artifacts/api-server/dist — buildCommand creates
-# dist/vercel.mjs and api/index.js imports it.
+# Keep scripts/ — buildCommand runs scripts/prepare-vercel-api.mjs
+# Keep api/index.js — handler. Generated api/*.mjs are created at build time.

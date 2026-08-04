@@ -53,3 +53,8 @@ Thumbs.db
 
 .vercel
 .env
+
+# Generated Vercel API bundle (created by scripts/prepare-vercel-api.mjs)
+/api/*.mjs
+/api/*.mjs.map
+!/api/index.js
