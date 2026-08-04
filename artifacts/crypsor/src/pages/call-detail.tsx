@@ -228,9 +228,52 @@ function DetailHero({ c }: { c: CallCard }) {
 
       <div className="grid grid-cols-3 gap-1.5">
         {[
-          { l: "Call MC", v: formatCompactUsd(c.calledMcUsd) },
-          { l: "Current", v: formatCompactUsd(c.currentMcUsd) },
-          { l: "ATH", v: formatCompactUsd(c.athMcUsd), accent: "var(--cryp-gain)" },
+          { l: "Detect MC", v: formatCompactUsd(c.calledMcUsd ?? c.pumpMcAtDetection) },
+          { l: "Current", v: formatCompactUsd(c.currentMcUsd ?? c.pumpMarketCap) },
+          { l: "ATH MC", v: formatCompactUsd(c.athMcUsd ?? c.pumpAthMc), accent: "var(--cryp-gain)" },
+        ].map(x => (
+          <div key={x.l} className="call-stat !py-2 !px-2">
+            <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">{x.l}</div>
+            <div
+              className="font-mono-num text-[13px] font-bold mt-0.5"
+              style={{ color: x.accent ?? "var(--cryp-text)" }}
+            >
+              {x.v}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-1.5">
+        {[
+          {
+            l: "Since detect",
+            v: c.pumpGainSinceDetection != null
+              ? `${c.pumpGainSinceDetection >= 0 ? "+" : ""}${c.pumpGainSinceDetection.toFixed(0)}%`
+              : "—",
+            accent: (c.pumpGainSinceDetection ?? 0) > 0
+              ? "var(--cryp-gain)"
+              : (c.pumpGainSinceDetection ?? 0) < 0
+                ? "var(--cryp-loss)"
+                : undefined,
+          },
+          {
+            l: "ATH gain",
+            v: c.pumpAthGain != null
+              ? `${c.pumpAthGain >= 0 ? "+" : ""}${c.pumpAthGain.toFixed(0)}%`
+              : "—",
+            accent: "var(--cryp-gain)",
+          },
+          {
+            l: "Signals",
+            v: [
+              c.pumpBuySignal === "STRONG_BUY" ? `BUY ${c.pumpBuyPassCount ?? ""}`.trim() : null,
+              c.pumpBuySignal === "WATCH" ? `WATCH ${c.pumpBuyPassCount ?? ""}`.trim() : null,
+              c.pumpIntraSignal
+                ? `${c.pumpIntraSignal === "INTRA_NOW" ? "INTRA" : "SOON"} ${c.pumpIntraPassCount ?? ""}`.trim()
+                : null,
+            ].filter(Boolean).join(" · ") || "—",
+          },
         ].map(x => (
           <div key={x.l} className="call-stat !py-2 !px-2">
             <div className="text-[8px] uppercase tracking-widest text-[var(--cryp-mute)]">{x.l}</div>
