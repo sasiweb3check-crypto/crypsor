@@ -1,10 +1,7 @@
 /**
- * Serverless entry — Express app + lazy pipeline boot (no PORT listen).
- * Built by build.mjs → dist/vercel.mjs for the Vercel `api/` handler.
+ * Vercel serverless entry — default-exports the Express app.
+ * Runtime loops boot lazily on the first request (see routes middleware).
  */
 import app from "./app";
-import { ensureVercelRuntime } from "./vercel-runtime";
-
-void ensureVercelRuntime().catch(() => {});
 
 export default app;
