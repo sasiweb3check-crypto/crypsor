@@ -67,13 +67,32 @@ async function runPipelineTick(opts: { fullScan: boolean }) {
   return { jobs, ms: Date.now() - t0 };
 }
 
+/**
+ * Bound the awaited portion of a tick so external pingers get a fast 200
+ * instead of a 504 (a cold full scan can exceed Vercel's 60s maxDuration).
+ * The tick keeps running best-effort on the warm instance; the next ping
+ * lands on the same instance and lets it finish.
+ */
+const TICK_RESPONSE_BUDGET_MS = 35_000;
+
+async function boundedTick(opts: { fullScan: boolean }) {
+  const tick = runPipelineTick(opts).catch((err) => {
+    logger.warn({ err }, "pipeline tick failed");
+    return { jobs: { tick: "error" }, ms: -1 };
+  });
+  const timeout = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), TICK_RESPONSE_BUDGET_MS));
+  const result = await Promise.race([tick, timeout]);
+  return result ?? { jobs: { tick: "running_in_background" }, ms: TICK_RESPONSE_BUDGET_MS };
+}
+
 /** Full tick — for external free cron services (Bearer CRON_SECRET). */
 async function runCronTick(req: Request, res: Response) {
   if (!cronAuthorized(req)) {
     res.status(401).json(apiFail("Unauthorized cron", "cron_unauthorized"));
     return;
   }
-  const result = await runPipelineTick({ fullScan: true });
+  const result = await boundedTick({ fullScan: true });
   res.json(apiOk({
     ok: true,
     ...result,
@@ -101,7 +120,7 @@ async function runKeepalive(_req: Request, res: Response) {
   lastKeepaliveAt = now;
 
   const fullScan = now - lastFullScanAt >= FULL_SCAN_EVERY_MS;
-  const result = await runPipelineTick({ fullScan });
+  const result = await boundedTick({ fullScan });
   res.json(apiOk({
     ok: true,
     ...result,
