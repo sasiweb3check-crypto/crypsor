@@ -1,74 +1,41 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Toaster } from '@/components/ui/toaster';
-import { TooltipProvider } from '@/components/ui/tooltip';
-import { useEffect } from 'react';
-import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
+import { Route, Switch, Link, Router as WouterRouter, useLocation } from "wouter";
+import VaultPage from "./pages/vault";
+import PipelinePage from "./pages/pipeline";
+import TokenPage from "./pages/token";
+import SettingsPage from "./pages/settings";
 
-import { AppShell } from '@/components/layout';
-import CallsPage from '@/pages/calls';
-import GemDetailPage from '@/pages/gem-detail';
-import WalletTrackPage from '@/pages/wallet-track';
-import Settings from '@/pages/settings';
-import OpsPage from '@/pages/ops';
-import AlertsPage from '@/pages/alerts';
-import NotFound from '@/pages/not-found';
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 12_000,
-      gcTime: 5 * 60_000,
-      refetchOnWindowFocus: false,
-      retry: 3,
-      retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 8_000),
-    },
-  },
-});
-
-function RedirectHome() {
-  const [, setLocation] = useLocation();
-  useEffect(() => { setLocation('/'); }, [setLocation]);
-  return null;
-}
-
-function Router() {
+function Nav() {
+  const [loc] = useLocation();
+  const item = (href: string, label: string) => (
+    <Link href={href} className={loc === href ? "v-nav-item is-on" : "v-nav-item"}>
+      {label}
+    </Link>
+  );
   return (
-    <AppShell>
-      <Switch>
-        <Route path="/" component={CallsPage} />
-        <Route path="/calls/:id" component={GemDetailPage} />
-        <Route path="/wallet-track" component={WalletTrackPage} />
-        <Route path="/wallet" component={WalletTrackPage} />
-        <Route path="/ops" component={OpsPage} />
-        <Route path="/alerts" component={AlertsPage} />
-        <Route path="/settings" component={Settings} />
-        {/* Legacy surfaces removed from product — redirect home */}
-        <Route path="/wallet/:address" component={RedirectHome} />
-        <Route path="/trader" component={RedirectHome} />
-        <Route path="/pro" component={RedirectHome} />
-        <Route path="/caller" component={RedirectHome} />
-        <Route path="/tokens/:id" component={GemDetailPage} />
-        <Route path="/dashboard" component={RedirectHome} />
-        <Route path="/tokens" component={RedirectHome} />
-        <Route path="/wallets" component={RedirectHome} />
-        <Route path="/holders" component={RedirectHome} />
-        <Route path="/intel-log" component={RedirectHome} />
-        <Route component={NotFound} />
-      </Switch>
-    </AppShell>
+    <nav className="v-nav">
+      <span className="v-logo">CRYPSOR<span className="v-green">_</span></span>
+      {item("/", "VAULT")}
+      {item("/pipeline", "PIPELINE")}
+      {item("/settings", "SETTINGS")}
+    </nav>
   );
 }
 
-function App() {
+export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+      <div className="v-shell">
+        <Nav />
+        <Switch>
+          <Route path="/" component={VaultPage} />
+          <Route path="/pipeline" component={PipelinePage} />
+          <Route path="/t/:id" component={TokenPage} />
+          <Route path="/settings" component={SettingsPage} />
+          <Route>
+            <div className="v-page"><div className="v-empty">404</div></div>
+          </Route>
+        </Switch>
+      </div>
+    </WouterRouter>
   );
 }
-
-export default App;
