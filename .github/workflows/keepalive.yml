@@ -1,0 +1,48 @@
+# Keepalive safety net — wakes the Vercel API so the scanner pipeline runs
+# even when nobody has the app open.
+#
+# Vercel serverless freezes the function instance between requests, which
+# pauses the monitor/pump/GEM loops. Each ping below triggers a full
+# pipeline tick (wallet scan + pump refresh + desk prices).
+#
+# This workflow is the BASELINE (every 30 min — fits the free 2,000 Actions
+# minutes/month on private repos: ~48 one-minute-billed runs/day ≈ 1,440/mo).
+# For true minute-level 24/7 coverage, ALSO set up a free external pinger —
+# see docs/UPTIME.md (cron-job.org every minute is the recommended primary).
+
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping pipeline tick
+        env:
+          APP_URL: https://crypsor-nine.vercel.app
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -u
+          if [ -n "${CRON_SECRET:-}" ]; then
+            echo "tick (authorized)"
+            curl -sS --max-time 55 -H "Authorization: Bearer ${CRON_SECRET}" \
+              "${APP_URL}/api/cron/tick" | head -c 400 || true
+          else
+            echo "keepalive (public)"
+            curl -sS --max-time 55 "${APP_URL}/api/keepalive" | head -c 400 || true
+          fi
+          echo
+          # Second ping ~50s later keeps the instance warm a little longer
+          sleep 50
+          curl -sS --max-time 40 "${APP_URL}/api/keepalive" | head -c 200 || true
