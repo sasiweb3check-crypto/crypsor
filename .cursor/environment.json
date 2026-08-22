@@ -1,0 +1,21 @@
+{
+  "name": "Crypsor",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "description": "Express API + funnel pipeline on http://localhost:3000 (rebuilds with esbuild, then serves /api/*).",
+      "command": "cd artifacts/api-server && DATABASE_URL='postgres://ubuntu@127.0.0.1:5432/crypsor' PORT=3000 pnpm run dev"
+    },
+    {
+      "name": "web",
+      "description": "Crypsor desk (Vite dev server) on http://localhost:5173, proxying API calls to http://localhost:3000.",
+      "command": "cd artifacts/crypsor && PORT=5173 VITE_API_URL='http://localhost:3000' pnpm run dev"
+    }
+  ],
+  "ports": [
+    { "name": "web", "port": 5173 },
+    { "name": "api", "port": 3000 }
+  ]
+}
