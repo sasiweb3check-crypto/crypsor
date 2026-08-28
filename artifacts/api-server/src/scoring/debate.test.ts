@@ -84,4 +84,16 @@ describe("debateEntry", () => {
   it("vitals vote no in ICU", () => {
     assert.equal(vitalsVote(input({ phase: "icu", tradeOk: false, score: 40 })).vote, "no");
   });
+
+  it("does not treat a missing slope as a flat/ok print", () => {
+    const v = snapshotsVote(input({ pulseMcSlope: null, confirmMcSlope: null }));
+    assert.equal(v.vote, "hold");
+    assert.match(v.reason, /live slopes/i);
+  });
+
+  it("remembered dump blocks a lock even when the live tape looks fine", () => {
+    const d = debateEntry(input({ memoryLevel: "wary", memoryDumps: 1 }));
+    assert.notEqual(d.action, "lock");
+    assert.ok(d.votes.some((v) => v.agent === "snapshots" && v.vote !== "yes"));
+  });
 });

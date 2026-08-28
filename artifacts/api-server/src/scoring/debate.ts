@@ -10,6 +10,8 @@
  * Lock only on agreement AND a satisfying entry (MC + liq zone).
  * Otherwise the mint sits on the watchlist until they agree — or it dies.
  */
+import type { CautionLevel } from "./memory";
+
 export const ENTRY_MC_MIN = 8_000;
 export const ENTRY_MC_MAX = 42_000;
 export const ENTRY_LIQ_MIN = 4_000;
@@ -45,6 +47,11 @@ export type DebateInput = {
   confirmHolderSlope: number | null;
   pulseTape: string | null;
   confirmTape: string | null;
+  memoryLevel?: CautionLevel;
+  memoryDumps?: number;
+  memoryMissingHolders?: number;
+  incompletePulse?: boolean;
+  incompleteConfirm?: boolean;
 };
 
 export type DebateResult = {
@@ -100,12 +107,20 @@ export function vitalsVote(i: DebateInput): AgentVote {
 
 export function qualityVote(i: DebateInput): AgentVote {
   const flags = i.flags ?? [];
-  if (flags.includes("missing_mc")) return { agent: "quality", vote: "no", reason: "no MC from any source" };
+  if (flags.includes("missing_mc") || flags.includes("stale_mc")) {
+    return { agent: "quality", vote: "no", reason: "no live market-cap this print — missing is not a pass" };
+  }
   if (flags.includes("mc_disagree") || flags.includes("liq_disagree")) {
     return { agent: "quality", vote: "no", reason: "Dex / pump / GMGN disagree >25% — do not lock" };
   }
+  if ((i.memoryLevel ?? "clear") === "blocked") {
+    return { agent: "quality", vote: "no", reason: "memory is blocked from earlier thin or disagreeing prints" };
+  }
   if ((i.quality ?? 0) < 35) return { agent: "quality", vote: "hold", reason: `quality ${i.quality ?? 0}/100 — sources too thin` };
-  if ((i.quality ?? 100) >= 55 && !flags.includes("missing_liq")) {
+  if ((i.memoryLevel ?? "clear") === "wary") {
+    return { agent: "quality", vote: "hold", reason: "quality remembers a thin or disagreeing print — wait for two clean confirms" };
+  }
+  if ((i.quality ?? 100) >= 55 && !flags.includes("missing_liq") && !flags.includes("stale_liq")) {
     return { agent: "quality", vote: "yes", reason: `quality ${i.quality}/100, feeds agree` };
   }
   if ((i.quality ?? 0) >= 40) return { agent: "quality", vote: "hold", reason: `quality ${i.quality}/100 — usable, not clean` };
@@ -113,8 +128,14 @@ export function qualityVote(i: DebateInput): AgentVote {
 }
 
 export function holdersVote(i: DebateInput): AgentVote {
+  if ((i.memoryMissingHolders ?? 0) >= 3) {
+    return { agent: "holders", vote: "no", reason: `holders unread ${i.memoryMissingHolders} prints in a row — missing is not a pass` };
+  }
   if (i.unknowns.includes("holders_unread") || i.holders == null) {
     return { agent: "holders", vote: "hold", reason: "holder intel missing — GMGN did not land" };
+  }
+  if ((i.memoryMissingHolders ?? 0) >= 2) {
+    return { agent: "holders", vote: "hold", reason: "holders were missing on recent snapshots — wait for a live GMGN print" };
   }
   if (i.holders < 20) return { agent: "holders", vote: "no", reason: `only ${i.holders} holders` };
   if ((i.top10Pct ?? 0) > 55) return { agent: "holders", vote: "no", reason: `top 10 hold ${(i.top10Pct ?? 0).toFixed(0)}%` };
@@ -125,22 +146,36 @@ export function holdersVote(i: DebateInput): AgentVote {
 }
 
 export function snapshotsVote(i: DebateInput): AgentVote {
-  const dump = (i.pulseMcSlope ?? 0) < -0.12 || (i.confirmMcSlope ?? 0) < -0.18;
-  const exodus = (i.pulseHolderSlope ?? 0) < -0.08 || (i.confirmHolderSlope ?? 0) < -0.1;
-  if (dump && exodus) {
-    return { agent: "snapshots", vote: "no", reason: "pulse and confirm both show MC bleed + holder exit" };
+  const pulseDump = i.pulseMcSlope != null && i.pulseMcSlope < -0.12;
+  const confirmDump = i.confirmMcSlope != null && i.confirmMcSlope < -0.18;
+  const dump = pulseDump || confirmDump;
+  const pulseExodus = i.pulseHolderSlope != null && i.pulseHolderSlope < -0.08;
+  const confirmExodus = i.confirmHolderSlope != null && i.confirmHolderSlope < -0.1;
+  const exodus = pulseExodus || confirmExodus;
+
+  if ((i.memoryLevel ?? "clear") === "blocked" || (i.memoryDumps ?? 0) >= 2) {
+    return { agent: "snapshots", vote: "no", reason: "snapshot memory is blocked — earlier dumps or missing prints still stand" };
   }
-  if (dump) return { agent: "snapshots", vote: "no", reason: "snapshot slope is dumping — wait for a flat print" };
+  if (dump && exodus) {
+    return { agent: "snapshots", vote: "no", reason: "live slope is dumping and holders are leaving" };
+  }
+  if (dump) return { agent: "snapshots", vote: "no", reason: "live snapshot slope is dumping — wait for a flat print" };
+  if ((i.memoryDumps ?? 0) >= 1) {
+    return { agent: "snapshots", vote: "hold", reason: "remembered a dump — need two clean confirms" };
+  }
+  if (i.incompletePulse || i.incompleteConfirm) {
+    return { agent: "snapshots", vote: "hold", reason: "a snapshot print is incomplete — we will not slope a carried number" };
+  }
   if (exodus) return { agent: "snapshots", vote: "hold", reason: "holders leaving between snapshots" };
   if (i.pulseTape === "sellers" || i.confirmTape === "sellers") {
     return { agent: "snapshots", vote: "hold", reason: "a snapshot tape is sell-led" };
   }
-  const climb = (i.pulseMcSlope ?? 0) > 0.04 && (i.confirmMcSlope ?? 0) > -0.04;
-  if (climb && i.pulseTape === "buyers") {
-    return { agent: "snapshots", vote: "yes", reason: "pulse climbing, confirm not dumping, buyers on tape" };
+  if (i.pulseMcSlope == null || i.confirmMcSlope == null) {
+    return { agent: "snapshots", vote: "hold", reason: "need live slopes on both pulse and confirm before lock" };
   }
-  if (i.pulseMcSlope == null && i.confirmMcSlope == null) {
-    return { agent: "snapshots", vote: "hold", reason: "need a pulse and a confirm snapshot before lock" };
+  const climb = i.pulseMcSlope > 0.04 && i.confirmMcSlope > -0.04;
+  if (climb && i.pulseTape === "buyers" && (i.memoryLevel ?? "clear") === "clear") {
+    return { agent: "snapshots", vote: "yes", reason: "pulse climbing, confirm not dumping, buyers on tape" };
   }
   return { agent: "snapshots", vote: "hold", reason: "snapshots are quiet — not a dump, not a confirm" };
 }
@@ -151,7 +186,8 @@ export function debateEntry(i: DebateInput): DebateResult {
   const entry = entrySatisfying(i.mcUsd, i.liqUsd);
   const veto = no > 0 || i.dead || i.chase;
   const agreed = yes >= 3 && !veto;
-  const lockReady = agreed && entry.ok && i.tradeOk;
+  const level = i.memoryLevel ?? "clear";
+  const lockReady = agreed && entry.ok && i.tradeOk && level === "clear";
 
   let action: DebateResult["action"] = "pass";
   if (i.dead) action = "pass";

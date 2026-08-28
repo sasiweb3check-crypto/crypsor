@@ -497,11 +497,60 @@ input:focus { border-color: rgba(228, 196, 138, 0.5); }
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
+.story {
+  background: linear-gradient(180deg, rgba(228, 196, 138, 0.08), transparent 48%), var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 16px 16px;
+  box-shadow: var(--shadow);
+}
+.story .k {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 8px;
+}
+.story p {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.memory-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.memory-notes li {
+  list-style: none;
+  font-size: 12px;
+  color: var(--mute);
+  padding-left: 12px;
+  position: relative;
+}
+.memory-notes li::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0.55em;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--gold);
+}
 .snap-box {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px 12px;
+}
+.snap-box.incomplete { border-color: rgba(228, 196, 138, 0.35); }
+.snap-box .gap {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
 }
 .snap-box b {
   display: block;

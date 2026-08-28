@@ -127,15 +127,7 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       );
       const c = cached.rows[0] as { holders: number | null; top10_pct: number | null } | undefined;
       if (c && (c.holders != null || c.top10_pct != null)) {
-        gmgnRead = {
-          source: "gmgn",
-          ok: true,
-          mcUsd: null,
-          liqUsd: null,
-          holders: c.holders,
-          top10Pct: c.top10_pct,
-        };
-        extra = { ...extra, cached: true };
+        extra = { ...extra, cached: true, stale: true, lastHolders: c.holders, lastTop10: c.top10_pct };
       }
     }
 

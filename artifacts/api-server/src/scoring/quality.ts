@@ -172,9 +172,9 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
   if (s.tradeOk) {
     out.push({
       id: "trade",
-      severity: "act",
-      title: "TRADE gate is open",
-      body: `Score ${s.score ?? "—"} with ${s.walletBuys} tracked wallet${s.walletBuys === 1 ? "" : "s"}. Size small; this is a ward call not a guarantee.`,
+      severity: "watch",
+      title: "Vitals gate is open",
+      body: `Score ${s.score ?? "—"}. That is not a lock — quality, holders, and both snapshot series still have to agree, and a missing print still vetoes.`,
     });
   }
   if (s.chase) {
@@ -203,7 +203,24 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
       body: "A tracked wallet bought a dead mint. Need two more clean scans before treating this as alive.",
     });
   }
-  if ((hS ?? 0) < -0.08) {
+  const liveMc = !s.flags.some((f) => f === "stale_mc" || f === "missing_mc");
+  const liveLiq = !s.flags.some((f) => f === "stale_liq" || f === "missing_liq");
+  const liveHold = !s.flags.some((f) => f === "stale_holders" || f === "missing_holders");
+
+  if (!liveMc || !liveLiq || !liveHold) {
+    const bits = [
+      !liveMc ? "market cap" : null,
+      !liveLiq ? "liquidity" : null,
+      !liveHold ? "holders" : null,
+    ].filter(Boolean);
+    out.push({
+      id: "incomplete",
+      severity: "watch",
+      title: "This print is incomplete",
+      body: `${bits.join(", ")} ${bits.length === 1 ? "is" : "are"} missing or carried from an earlier snapshot. We will not slope a number we did not just read.`,
+    });
+  }
+  if ((hS ?? 0) < -0.08 && liveHold) {
     out.push({
       id: "holder_exodus",
       severity: "act",
@@ -211,7 +228,7 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
       body: `Holder count dropped ${Math.abs((hS ?? 0) * 100).toFixed(0)}% between snapshots. That is exit, not a dip.`,
     });
   }
-  if ((liqS ?? 0) < -0.25) {
+  if ((liqS ?? 0) < -0.25 && liveLiq) {
     out.push({
       id: "liq_drain",
       severity: "act",
@@ -219,7 +236,7 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
       body: `Liq fell ${Math.abs((liqS ?? 0) * 100).toFixed(0)}% vs the last snapshot. Watch for LP pull.`,
     });
   }
-  if ((mcS ?? 0) < -0.2) {
+  if ((mcS ?? 0) < -0.2 && liveMc) {
     out.push({
       id: "mc_bleed",
       severity: "watch",
@@ -227,7 +244,7 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
       body: `${s.band === "low" ? "Low cap" : "Mid cap"} MC down ${Math.abs((mcS ?? 0) * 100).toFixed(0)}% since last snapshot.`,
     });
   }
-  if ((mcS ?? 0) > 0.12 && s.tapeLead === "buyers" && !s.chase) {
+  if ((mcS ?? 0) > 0.12 && s.tapeLead === "buyers" && !s.chase && liveMc) {
     out.push({
       id: "mc_climb",
       severity: "info",
@@ -270,7 +287,7 @@ export function snapshotSuggestions(s: SnapshotInput): Suggestion[] {
   if (s.unknowns.includes("holders_unread") || s.flags.includes("missing_holders")) {
     out.push({
       id: "need_holders",
-      severity: "info",
+      severity: "watch",
       title: "Holder intel missing",
       body: "GMGN did not land. Survival score is incomplete — missing data is not a pass.",
     });

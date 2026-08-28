@@ -115,7 +115,7 @@ describe("relDisagree / slope", () => {
 describe("snapshotSuggestions", () => {
   it("opens TRADE and refuses chase", () => {
     const trade = snapshotSuggestions(snap({ tradeOk: true }));
-    assert.ok(trade.some((s) => s.id === "trade" && s.severity === "act"));
+    assert.ok(trade.some((s) => s.id === "trade" && s.severity === "watch"));
     const chase = snapshotSuggestions(snap({ chase: true, tradeOk: false }));
     assert.ok(chase.some((s) => s.id === "chase"));
   });
@@ -139,5 +139,15 @@ describe("snapshotSuggestions", () => {
   it("tags low-cap heat when MC climbs on a buy tape", () => {
     const v = snapshotSuggestions(snap({ band: "low", mc: 48_000, prevMc: 30_000, tapeLead: "buyers" }));
     assert.ok(v.some((s) => s.id === "mc_climb" && s.title.includes("Low-cap")));
+  });
+
+  it("does not slope a stale or missing print", () => {
+    const v = snapshotSuggestions(snap({
+      flags: ["stale_mc", "stale_holders"],
+      mc: 48_000, prevMc: 30_000, holders: 100, prevHolders: 140, tapeLead: "buyers",
+    }));
+    assert.ok(v.some((s) => s.id === "incomplete"));
+    assert.ok(!v.some((s) => s.id === "mc_climb"));
+    assert.ok(!v.some((s) => s.id === "holder_exodus"));
   });
 });

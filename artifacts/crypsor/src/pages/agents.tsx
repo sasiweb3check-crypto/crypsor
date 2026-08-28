@@ -6,7 +6,7 @@ const DESK = [
   { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
   { id: "quality", title: "Quality", copy: "Cross-checks Dex, pump.fun coin, and GMGN. Fills gaps. Flags >25% disagreement." },
   { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "snapshots", title: "Snapshots", copy: "Two series: pulse every ~2 minutes and confirm every ~5. A lock needs both not dumping." },
+  { id: "snapshots", title: "Snapshots", copy: "Two series: pulse every ~2 minutes and confirm every ~5. Missing prints are flagged, never sloped. Each series keeps memory so a dump or unread field still counts on the next tick." },
   { id: "watch", title: "Watch / debate", copy: "Vitals, quality, holders, and snapshots vote. Unsatisfying entries stay on the watchlist — they are not locked." },
   { id: "book", title: "Book", copy: "Locks TRADE at entry MC only after agreement. Tracks gain, ATH, and tells you when to trim or flatten." },
   { id: "reporter", title: "Reporter", copy: "Census + prune. Not shown on the desk." },
