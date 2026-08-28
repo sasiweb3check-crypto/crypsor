@@ -1,36 +1,35 @@
 /**
- * Scheduler — runs the funnel loops while the instance is warm.
+ * Ward runtime — dedicated in-process agents (free-tier: one Node process).
  *
- * Render Starter: this process stays up, so the intervals below are the
- * real scheduler. Vercel Hobby / Render free freeze without traffic, so
- * /keepalive + an external pinger (see docs/UPTIME.md) keep those hot.
- * Every loop is also runnable as a single bounded tick via runFullTick().
+ *   intake   wallet buys only (Helius)
+ *   vitals   DexScreener/pump tape + scoring + phase
+ *   holders  GMGN quality (rate-limited)
+ *   reporter census
+ *   backtest self-improving weights from TRADE outcomes
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
-import { discoveryTick } from "./discovery";
-import { trackerTick } from "./tracker";
-import { journalTick, pruneOld } from "./journal";
+import { intakeTick } from "../agents/intake";
+import { vitalsTick } from "../agents/vitals";
+import { holdersTick } from "../agents/holders";
+import { reporterTick } from "../agents/reporter";
+import { backtestTick, loadWeights } from "../agents/backtest";
 
 const log = logger.child({ module: "runtime" });
 
 let started = false;
 let bootPromise: Promise<void> | null = null;
-let lastDiscovery = 0;
-let lastTracker = 0;
-let lastJournal = 0;
-let lastPrune = 0;
 
-const DISCOVERY_MS = 30_000;
-const TRACKER_MS = 20_000;
-const JOURNAL_MS = 30_000;
-const PRUNE_MS = 30 * 60_000;
+const INTAKE_MS = 40_000;
+const VITALS_MS = 22_000;
+const HOLDERS_MS = 90_000;
+const REPORT_MS = 120_000;
+const BACKTEST_MS = 10 * 60_000;
 
-let discoveryRunning = false;
-let trackerRunning = false;
-let journalRunning = false;
+let last = { intake: 0, vitals: 0, holders: 0, reporter: 0, backtest: 0 };
+let running = { intake: false, vitals: false, holders: false, reporter: false, backtest: false };
 
-async function guarded(name: string, fn: () => Promise<unknown>): Promise<void> {
+async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn();
   } catch (err) {
@@ -43,31 +42,39 @@ export async function ensureRuntime(): Promise<void> {
   if (!bootPromise) {
     bootPromise = (async () => {
       await ensureSchema();
+      await loadWeights();
       setInterval(() => {
-        if (discoveryRunning || Date.now() - lastDiscovery < DISCOVERY_MS) return;
-        discoveryRunning = true;
-        lastDiscovery = Date.now();
-        void guarded("discovery", discoveryTick).finally(() => { discoveryRunning = false; });
+        if (running.intake || Date.now() - last.intake < INTAKE_MS) return;
+        running.intake = true;
+        last.intake = Date.now();
+        void guarded("intake", intakeTick).finally(() => { running.intake = false; });
       }, 5_000);
       setInterval(() => {
-        if (trackerRunning || Date.now() - lastTracker < TRACKER_MS) return;
-        trackerRunning = true;
-        lastTracker = Date.now();
-        void guarded("tracker", trackerTick).finally(() => { trackerRunning = false; });
+        if (running.vitals || Date.now() - last.vitals < VITALS_MS) return;
+        running.vitals = true;
+        last.vitals = Date.now();
+        void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 5_000);
       setInterval(() => {
-        if (journalRunning || Date.now() - lastJournal < JOURNAL_MS) return;
-        journalRunning = true;
-        lastJournal = Date.now();
-        void guarded("journal", journalTick).finally(() => { journalRunning = false; });
-      }, 5_000);
+        if (running.holders || Date.now() - last.holders < HOLDERS_MS) return;
+        running.holders = true;
+        last.holders = Date.now();
+        void guarded("holders", holdersTick).finally(() => { running.holders = false; });
+      }, 8_000);
       setInterval(() => {
-        if (Date.now() - lastPrune < PRUNE_MS) return;
-        lastPrune = Date.now();
-        void guarded("prune", pruneOld);
-      }, 60_000);
+        if (running.reporter || Date.now() - last.reporter < REPORT_MS) return;
+        running.reporter = true;
+        last.reporter = Date.now();
+        void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
+      }, 15_000);
+      setInterval(() => {
+        if (running.backtest || Date.now() - last.backtest < BACKTEST_MS) return;
+        running.backtest = true;
+        last.backtest = Date.now();
+        void guarded("backtest", backtestTick).finally(() => { running.backtest = false; });
+      }, 30_000);
       started = true;
-      log.info("funnel runtime started (discovery 30s · tracker 20s · journal 30s)");
+      log.info("ward agents started (intake · vitals · holders · reporter · backtest)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -76,12 +83,32 @@ export async function ensureRuntime(): Promise<void> {
   return bootPromise;
 }
 
-/** One bounded pass of every stage — used by /cron/tick and /keepalive. */
+export function agentStatus(): {
+  started: boolean;
+  last: typeof last;
+  running: typeof running;
+  intervalsMs: Record<string, number>;
+} {
+  return {
+    started,
+    last: { ...last },
+    running: { ...running },
+    intervalsMs: {
+      intake: INTAKE_MS,
+      vitals: VITALS_MS,
+      holders: HOLDERS_MS,
+      reporter: REPORT_MS,
+      backtest: BACKTEST_MS,
+    },
+  };
+}
+
 export async function runFullTick(): Promise<Record<string, unknown>> {
   await ensureRuntime();
   const out: Record<string, unknown> = {};
-  await guarded("discovery", async () => { out.discovery = await discoveryTick(); });
-  await guarded("tracker", async () => { out.tracker = await trackerTick(); });
-  await guarded("journal", async () => { out.journal = await journalTick(); });
+  await guarded("intake", async () => { out.intake = await intakeTick(); });
+  await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
+  await guarded("holders", async () => { out.holders = await holdersTick(); });
+  await guarded("reporter", async () => { out.reporter = await reporterTick(); });
   return out;
 }

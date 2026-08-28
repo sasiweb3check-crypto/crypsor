@@ -12,12 +12,14 @@ export type DexPair = {
   marketCap?: number;
   fdv?: number;
   liquidity?: { usd?: number };
-  volume?: { m5?: number; h1?: number; h24?: number };
+  volume?: { m5?: number; h1?: number; h6?: number; h24?: number };
   txns?: {
     m5?: { buys?: number; sells?: number };
     h1?: { buys?: number; sells?: number };
+    h6?: { buys?: number; sells?: number };
+    h24?: { buys?: number; sells?: number };
   };
-  priceChange?: { m5?: number; h1?: number };
+  priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number };
   baseToken?: { address?: string; symbol?: string; name?: string };
 };
 
