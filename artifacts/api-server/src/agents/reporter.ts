@@ -5,7 +5,9 @@ import { agentNote } from "./log";
 export async function reporterTick(): Promise<Record<string, number>> {
   const census = await pool.query(
     `SELECT COALESCE(phase,'intake') AS phase, COUNT(*)::int AS n
-     FROM f2_tokens GROUP BY 1`,
+     FROM f2_tokens
+     WHERE source = 'wallet_buy' OR wallet_buys > 0
+     GROUP BY 1`,
   );
   const counts: Record<string, number> = {};
   for (const r of census.rows as Array<{ phase: string; n: number }>) counts[r.phase] = r.n;

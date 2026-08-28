@@ -125,6 +125,14 @@ const SCHEMA: string[] = [
       ELSE COALESCE(phase, 'intake')
     END
     WHERE phase IS NULL`,
+  `UPDATE f2_tokens
+     SET phase = 'deceased',
+         stage = 'killed',
+         kill_reason = COALESCE(kill_reason, 'not_wallet_buy'),
+         deceased_at = COALESCE(deceased_at, NOW())
+   WHERE source <> 'wallet_buy'
+     AND COALESCE(wallet_buys, 0) = 0
+     AND COALESCE(phase, 'intake') <> 'deceased'`,
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS tape jsonb`,
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS score integer`,
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS phase text`,

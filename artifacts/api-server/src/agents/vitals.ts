@@ -48,8 +48,11 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
     `SELECT id, mint, symbol, name, phase, wallet_buys, scans_total,
             admission_mc, mc_at_discovery, peak_mc, last_mc, last_liq, last_holders, graduated
      FROM f2_tokens
-     WHERE COALESCE(phase, 'intake') NOT IN ('deceased')
-        OR (phase = 'deceased' AND deceased_at > NOW() - INTERVAL '6 hours')
+     WHERE (source = 'wallet_buy' OR wallet_buys > 0)
+       AND (
+         COALESCE(phase, 'intake') NOT IN ('deceased')
+         OR (phase = 'deceased' AND deceased_at > NOW() - INTERVAL '6 hours')
+       )
      ORDER BY CASE COALESCE(phase,'intake')
                 WHEN 'icu' THEN 0 WHEN 'intake' THEN 1 WHEN 'recovery' THEN 2
                 WHEN 'revived' THEN 3 ELSE 4 END,

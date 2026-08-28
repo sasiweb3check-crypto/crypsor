@@ -31,7 +31,9 @@ router.get("/healthz", async (_req, res) => {
     try {
       const counts = await pool.query(
         `SELECT COALESCE(phase, 'intake') AS phase, COUNT(*)::int AS n
-         FROM f2_tokens GROUP BY 1`,
+         FROM f2_tokens
+         WHERE source = 'wallet_buy' OR wallet_buys > 0
+         GROUP BY 1`,
       );
       const lastScan = await pool.query("SELECT MAX(at) AS at FROM f2_scans");
       census = Object.fromEntries(
@@ -101,7 +103,10 @@ router.get("/ward", async (req, res) => {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
 
     const census = await pool.query(
-      `SELECT COALESCE(phase,'intake') AS phase, COUNT(*)::int AS n FROM f2_tokens GROUP BY 1`,
+      `SELECT COALESCE(phase,'intake') AS phase, COUNT(*)::int AS n
+       FROM f2_tokens
+       WHERE source = 'wallet_buy' OR wallet_buys > 0
+       GROUP BY 1`,
     );
     const counts: Record<string, number> = {};
     for (const r of census.rows as Array<{ phase: string; n: number }>) counts[r.phase] = r.n;
@@ -117,10 +122,12 @@ router.get("/ward", async (req, res) => {
     );
     const avgScore = await pool.query(
       `SELECT AVG(survival_score) AS avg
-       FROM f2_tokens WHERE COALESCE(phase,'intake') NOT IN ('deceased') AND survival_score IS NOT NULL`,
+       FROM f2_tokens
+       WHERE (source = 'wallet_buy' OR wallet_buys > 0)
+         AND COALESCE(phase,'intake') NOT IN ('deceased') AND survival_score IS NOT NULL`,
     );
 
-    const where: string[] = [];
+    const where: string[] = ["(t.source = 'wallet_buy' OR t.wallet_buys > 0)"];
     const params: unknown[] = [];
     if (phase === "live") {
       where.push(`COALESCE(t.phase,'intake') <> 'deceased'`);
@@ -244,10 +251,10 @@ router.get("/alerts", async (req, res) => {
     const kind = String(req.query.kind ?? "").trim();
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
     const params: unknown[] = [];
-    let where = "";
+    let where = "WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)";
     if (kind) {
       params.push(kind);
-      where = `WHERE a.kind = $${params.length}`;
+      where += ` AND a.kind = $${params.length}`;
     }
     params.push(limit);
     const r = await pool.query(

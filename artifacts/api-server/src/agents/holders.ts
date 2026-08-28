@@ -9,7 +9,8 @@ export async function holdersTick(): Promise<{ refreshed: number }> {
   const due = await pool.query(
     `SELECT id, mint, symbol, last_scan_at
      FROM f2_tokens
-     WHERE COALESCE(phase, 'intake') IN ('intake','ward','icu','recovery','revived')
+     WHERE (source = 'wallet_buy' OR wallet_buys > 0)
+       AND COALESCE(phase, 'intake') IN ('intake','ward','icu','recovery','revived')
      ORDER BY CASE COALESCE(phase,'intake') WHEN 'icu' THEN 0 WHEN 'intake' THEN 1 ELSE 2 END,
               last_scan_at ASC NULLS FIRST
      LIMIT ${BUDGET}`,
