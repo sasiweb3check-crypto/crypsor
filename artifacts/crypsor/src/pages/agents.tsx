@@ -6,8 +6,9 @@ const DESK = [
   { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
   { id: "quality", title: "Quality", copy: "Cross-checks Dex, pump.fun coin, and GMGN. Fills gaps. Flags >25% disagreement." },
   { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "snapshots", title: "Snapshots", copy: "Low-cap and mid-cap time-series. Slopes become suggestions for you and the other agents." },
-  { id: "reporter", title: "Reporter", copy: "Writes the ward census + snapshot report and prunes old scans so the free instance stays light." },
+  { id: "snapshots", title: "Snapshots", copy: "Low/mid cap time-series in the background. Feeds the exit plan." },
+  { id: "book", title: "Book", copy: "Locks TRADE at entry MC. Tracks gain, ATH, and tells you when to trim or flatten." },
+  { id: "reporter", title: "Reporter", copy: "Census + prune. Not shown on the desk." },
   { id: "backtest", title: "Backtest", copy: "Paper 2× after TRADE. Nudges factor weights toward what survived." },
   { id: "alerts", title: "Alerts", copy: "Telegram + live desk for admit, trade, ICU, death, revival." },
 ];
@@ -26,7 +27,7 @@ export default function AgentsPage() {
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        One Node process. Dedicated agents rotate on timers — no extra workers, no Redis.
+        Scoring, quality, and phases run here. The desk only shows locked trades.
       </p>
 
       <div className="stats">

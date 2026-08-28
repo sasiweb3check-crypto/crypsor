@@ -72,6 +72,41 @@ export type PatientCard = {
   prognosis?: Prognosis;
 };
 
+export type TradeCard = {
+  id: number;
+  token_id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  wallet_buys: number;
+  phase: Phase;
+  entry_mc: number;
+  entry_liq: number | null;
+  entry_holders: number | null;
+  entry_score: number | null;
+  called_at: string;
+  peak_mc: number | null;
+  last_mc: number | null;
+  last_liq: number | null;
+  last_holders: number | null;
+  status: "open" | "trim" | "exit" | "dead";
+  exit_action: "hold" | "trim" | "exit" | null;
+  exit_take_pct: number | null;
+  exit_title: string | null;
+  exit_body: string | null;
+  gain_x: number | null;
+  ath_x: number | null;
+  closed_at: string | null;
+  close_mc: number | null;
+};
+
+export type DeskState = {
+  open: TradeCard[];
+  performers: TradeCard[];
+  paper: { n: number; wins: number; open: number; avgAth: number | null; avgGain: number | null };
+};
+
 export type WardBoard = {
   census: Record<string, number>;
   stats: {
@@ -181,6 +216,7 @@ export type PatientChart = {
   snapshots?: SnapshotRow[];
   sources?: SourceReadRow[];
   suggestions?: Suggestion[];
+  trade?: TradeCard | null;
   weights: Record<string, number>;
 };
 
@@ -251,7 +287,13 @@ export function fmtUsd(v: number | null | undefined): string {
 
 export function fmtX(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
-  return `${v.toFixed(1)}×`;
+  return `${v.toFixed(2)}×`;
+}
+
+export function fmtSignedX(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const sign = v >= 1 ? "+" : "";
+  return `${sign}${v.toFixed(2)}×`;
 }
 
 export function fmtPct(v: number | null | undefined, digits = 0): string {

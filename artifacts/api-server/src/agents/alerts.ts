@@ -4,7 +4,7 @@ import { esc, sendTelegram } from "../core/telegram";
 import { agentNote } from "./log";
 import type { Factor, TapeWindow } from "../scoring/ward";
 
-export type AlertKind = "admit" | "trade" | "critical" | "deceased" | "revived" | "report";
+export type AlertKind = "admit" | "trade" | "critical" | "deceased" | "revived" | "report" | "exit" | "trim";
 
 const DEDUPE_MS: Record<string, number> = {
   admit: 0,
@@ -13,6 +13,8 @@ const DEDUPE_MS: Record<string, number> = {
   deceased: 12 * 3600_000,
   revived: 6 * 3600_000,
   report: 0,
+  exit: 20 * 60_000,
+  trim: 20 * 60_000,
 };
 
 export async function raiseAlert(opts: {

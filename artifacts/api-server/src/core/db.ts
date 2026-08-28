@@ -235,6 +235,34 @@ const SCHEMA: string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_token ON ward_snapshots (token_id, at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_band ON ward_snapshots (band, at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_trades (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL UNIQUE REFERENCES f2_tokens(id),
+     alert_id integer REFERENCES ward_alerts(id),
+     entry_mc real NOT NULL,
+     entry_liq real,
+     entry_holders integer,
+     entry_score integer,
+     called_at timestamptz NOT NULL DEFAULT NOW(),
+     peak_mc real NOT NULL,
+     peak_at timestamptz,
+     last_mc real,
+     last_liq real,
+     last_holders integer,
+     status text NOT NULL DEFAULT 'open',
+     exit_action text,
+     exit_take_pct real,
+     exit_title text,
+     exit_body text,
+     closed_at timestamptz,
+     close_mc real,
+     judged boolean NOT NULL DEFAULT false,
+     ath_x real,
+     gain_x real,
+     extra jsonb
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_trades_status ON ward_trades (status, called_at DESC)`,
 ];
 
 let ensured = false;

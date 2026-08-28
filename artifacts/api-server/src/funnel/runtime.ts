@@ -6,6 +6,7 @@
  *   quality    Dex vs pump vs GMGN — fill gaps, flag disagreement
  *   holders    GMGN quality (rate-limited)
  *   snapshots  low/mid cap time-series + suggestions
+ *   book       locked TRADE entries, ATH/gain, exit plan
  *   reporter   census + snapshot report
  *   backtest   self-improving weights from TRADE outcomes
  *
@@ -21,6 +22,7 @@ import { vitalsTick } from "../agents/vitals";
 import { qualityTick } from "../agents/quality";
 import { holdersTick } from "../agents/holders";
 import { snapshotsTick } from "../agents/snapshots";
+import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
 import { backtestTick, loadWeights } from "../agents/backtest";
 
@@ -34,15 +36,16 @@ const VITALS_MS = 22_000;
 const QUALITY_MS = 55_000;
 const HOLDERS_MS = 90_000;
 const SNAPSHOT_MS = 50_000;
+const BOOK_MS = 40_000;
 const REPORT_MS = 120_000;
 const BACKTEST_MS = 10 * 60_000;
 
 let last = {
-  intake: 0, vitals: 0, quality: 0, holders: 0, snapshots: 0, reporter: 0, backtest: 0,
+  intake: 0, vitals: 0, quality: 0, holders: 0, snapshots: 0, book: 0, reporter: 0, backtest: 0,
 };
 let running = {
   intake: false, vitals: false, quality: false, holders: false,
-  snapshots: false, reporter: false, backtest: false,
+  snapshots: false, book: false, reporter: false, backtest: false,
 };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
@@ -90,6 +93,12 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("snapshots", snapshotsTick).finally(() => { running.snapshots = false; });
       }, 10_000);
       setInterval(() => {
+        if (running.book || Date.now() - last.book < BOOK_MS) return;
+        running.book = true;
+        last.book = Date.now();
+        void guarded("book", bookTick).finally(() => { running.book = false; });
+      }, 8_000);
+      setInterval(() => {
         if (running.reporter || Date.now() - last.reporter < REPORT_MS) return;
         running.reporter = true;
         last.reporter = Date.now();
@@ -102,7 +111,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("backtest", backtestTick).finally(() => { running.backtest = false; });
       }, 30_000);
       started = true;
-      log.info("ward agents started (intake · vitals · quality · holders · snapshots · reporter · backtest)");
+      log.info("ward agents started (intake · vitals · quality · holders · snapshots · book · reporter · backtest)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -127,6 +136,7 @@ export function agentStatus(): {
       quality: QUALITY_MS,
       holders: HOLDERS_MS,
       snapshots: SNAPSHOT_MS,
+      book: BOOK_MS,
       reporter: REPORT_MS,
       backtest: BACKTEST_MS,
     },
@@ -141,6 +151,7 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   await guarded("quality", async () => { out.quality = await qualityTick(); });
   await guarded("holders", async () => { out.holders = await holdersTick(); });
   await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
+  await guarded("book", async () => { out.book = await bookTick(); });
   await guarded("reporter", async () => { out.reporter = await reporterTick(); });
   return out;
 }

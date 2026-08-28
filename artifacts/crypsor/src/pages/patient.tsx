@@ -1,12 +1,12 @@
 import { useRoute, useLocation } from "wouter";
 import {
-  api, fmtPct, fmtUsd, fmtX, timeAgo, shortMint, shortWallet, PHASE_META,
-  type PatientChart, type Factor, type Phase, type TapeWindow, type Suggestion,
+  api, fmtUsd, fmtSignedX, timeAgo, shortMint, shortWallet,
+  type PatientChart, type TapeWindow, type TradeCard,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
 function Spark({ points, admit }: { points: Array<{ t: number; v: number }>; admit: number | null }) {
-  if (points.length < 2) return <div className="empty">Chart warming — waiting for vitals.</div>;
+  if (points.length < 2) return <div className="empty">Chart warming.</div>;
   const W = 640;
   const H = 140;
   const P = 10;
@@ -31,60 +31,10 @@ function Spark({ points, admit }: { points: Array<{ t: number; v: number }>; adm
 function TapeBlock({ label, w }: { label: string; w?: TapeWindow | null }) {
   const ch = w?.changePct;
   return (
-    <div className="factor">
-      <div className="factor-top">
-        <span>{label}</span>
-        <em>{w?.buys ?? "—"} buy / {w?.sells ?? "—"} sell</em>
-      </div>
-      <p>
-        Vol {fmtUsd(w?.volUsd ?? null)}
-        {ch != null ? ` · ${ch >= 0 ? "+" : ""}${ch.toFixed(0)}%` : ""}
-      </p>
+    <div className="vit">
+      <b>{w?.buys ?? "—"}/{w?.sells ?? "—"}</b>
+      <span>{label}{ch != null ? ` ${ch >= 0 ? "+" : ""}${ch.toFixed(0)}%` : ""}</span>
     </div>
-  );
-}
-
-function Factors({ factors }: { factors: Factor[] }) {
-  if (!factors.length) return <div className="empty">Factors appear after the first vitals scan.</div>;
-  return (
-    <>
-      {factors.map((f) => {
-        const cls = f.hold === false ? "fail" : f.hold == null ? "unk" : "";
-        return (
-          <div key={f.id} className="factor">
-            <div className="factor-top">
-              <span>{f.label}</span>
-              <em>{Math.round(f.points)}/{f.max}</em>
-            </div>
-            <div className={`bar ${cls}`}><i style={{ width: `${Math.max(4, (f.points / f.max) * 100)}%` }} /></div>
-            <p>{f.reason}</p>
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-function fmtSlope(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const pct = v * 100;
-  const sign = pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(0)}%`;
-}
-
-function Suggestions({ items }: { items: Suggestion[] }) {
-  if (!items.length) return null;
-  return (
-    <>
-      <div className="section-h">Suggestions</div>
-      {items.map((s) => (
-        <div key={s.id} className={`alert kind-${s.severity}`}>
-          <div className="k">{s.severity}</div>
-          <h3>{s.title}</h3>
-          <p>{s.body}</p>
-        </div>
-      ))}
-    </>
   );
 }
 
@@ -92,7 +42,7 @@ export default function PatientPage() {
   const [, params] = useRoute("/p/:id");
   const [, nav] = useLocation();
   const id = parseInt(params?.id ?? "0", 10);
-  const { connected, tick } = useSse(["vitals:tick", "alert:new", "agent:note"]);
+  const { connected, tick } = useSse(["vitals:tick", "alert:new"]);
   const q = usePoll<PatientChart>(
     () => api(`api/patient/${id}`),
     connected ? 18_000 : 10_000,
@@ -104,32 +54,27 @@ export default function PatientPage() {
     return (
       <div className="page">
         <header className="topbar">
-          <button type="button" className="back" onClick={() => nav("/")}>← Ward</button>
+          <button type="button" className="back" onClick={() => nav("/")}>← Trades</button>
         </header>
-        <div className="empty">{q.error ?? "Opening chart…"}</div>
+        <div className="empty">{q.error ?? "Opening…"}</div>
       </div>
     );
   }
 
   const t = d.token;
-  const phase = (t.phase ?? "intake") as Phase;
-  const factors: Factor[] = d.lastScan?.tape?.factors ?? [];
+  const trade: TradeCard | null = d.trade ?? null;
+  const last = d.lastScan;
   const spark = d.scans
     .filter((s) => s.mc_usd != null && s.mc_usd > 0)
     .map((s) => ({ t: new Date(s.at).getTime(), v: s.mc_usd! }));
-  const last = d.lastScan;
-  const tape = last?.tape?.lead ?? t.tape_lead ?? "unknown";
-  const suggestions: Suggestion[] = Array.isArray(d.suggestions) ? d.suggestions : [];
-  const snapSpark = (d.snapshots ?? [])
-    .filter((s) => s.mc_usd != null && s.mc_usd > 0)
-    .map((s) => ({ t: new Date(s.at).getTime(), v: s.mc_usd! }));
-  const latestSnap = (d.snapshots ?? [])[(d.snapshots?.length ?? 0) - 1];
-  const latestReads = (d.sources ?? []).slice(0, 6);
+  const entry = trade?.entry_mc ?? t.admission_mc;
+  const gain = trade?.gain_x ?? t.xFromAdmit;
+  const ath = trade?.ath_x ?? t.peakX;
 
   return (
     <div className="page">
       <header className="topbar">
-        <button type="button" className="back" onClick={() => nav("/")}>← Ward</button>
+        <button type="button" className="back" onClick={() => nav("/")}>← Trades</button>
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
 
@@ -140,103 +85,46 @@ export default function PatientPage() {
         <div className="hero-copy">
           <h1>${t.symbol || t.name || shortMint(t.mint)}</h1>
           <div className="mint">{t.mint}</div>
-          <div style={{ marginTop: 8 }}>
-            <span className={`badge phase-${phase}`}>{PHASE_META[phase]?.label ?? phase}</span>
-            {" "}
-            {t.prognosis && <span className={`badge phase-${phase}`}>{t.prognosis.label}</span>}
-            {" "}
-            <span className={`badge phase-ward tape-${tape}`}>{tape.replace("_", " ")}</span>
-            {t.cap_band ? <>{" "}<span className="badge phase-ward">{t.cap_band} cap</span></> : null}
-          </div>
-          <p className="blurb" style={{ marginTop: 8 }}>{PHASE_META[phase]?.hint}</p>
         </div>
       </div>
 
       <div className="stat">
-        <div className="big-score">
-          {t.survival_score ?? "—"}
-          <small>Survival score · {t.wallet_buys} tracked wallet{t.wallet_buys === 1 ? "" : "s"}</small>
+        <div className={`big-score ${(gain ?? 1) >= 1 ? "" : "down"}`}>
+          {fmtSignedX(gain)}
+          <small>
+            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : "watching — not locked"}
+          </small>
         </div>
       </div>
 
+      {trade?.exit_title && (
+        <div className={`alert kind-${trade.exit_action === "exit" ? "act" : trade.exit_action === "trim" ? "watch" : "info"}`}>
+          <div className="k">{trade.exit_action ?? "hold"}{trade.exit_take_pct ? ` · ${trade.exit_take_pct}%` : ""}</div>
+          <h3>{trade.exit_title}</h3>
+          {trade.exit_body && <p>{trade.exit_body}</p>}
+        </div>
+      )}
+
       <div className="grid3">
-        <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Market cap</span></div>
+        <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Now</span></div>
+        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "Lock" : "Admit"}</span></div>
+        <div className="vit"><b>{fmtUsd(trade?.peak_mc ?? t.peak_mc)}</b><span>ATH</span></div>
         <div className="vit"><b>{fmtUsd(t.last_liq)}</b><span>Liquidity</span></div>
         <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
-        <div className="vit"><b>{fmtUsd(t.admission_mc)}</b><span>Admit MC</span></div>
-        <div className="vit"><b>{fmtX(t.xFromAdmit)}</b><span>Since admit</span></div>
-        <div className="vit"><b>{t.peakX != null ? fmtX(t.peakX) : "—"}</b><span>Peak</span></div>
-        <div className="vit"><b>{t.last_quality ?? last?.quality ?? "—"}</b><span>Data quality</span></div>
-        <div className="vit"><b>{t.cap_band ?? "—"}</b><span>Cap band</span></div>
+        <div className="vit"><b>{t.wallet_buys}</b><span>Wallets</span></div>
       </div>
 
-      <Suggestions items={suggestions} />
-
-      <div className="section-h">Course</div>
-      <div className="course">
-        {(d.course ?? []).length === 0 && <span className="blurb">Waiting for the first vitals pass.</span>}
-        {(d.course ?? []).map((c) => (
-          <span key={`${c.phase}-${c.at}`} className={`badge phase-${c.phase as Phase}`}>
-            {PHASE_META[c.phase as Phase]?.label ?? c.phase}
-            {c.score != null ? ` ${c.score}` : ""}
-          </span>
-        ))}
-      </div>
-
-      <div className="section-h">How it decided</div>
-      <Factors factors={factors} />
-
-      <div className="section-h">Holder quality</div>
+      <div className="section-h">Tape</div>
       <div className="grid3">
-        <div className="vit"><b>{fmtPct(last?.top10_pct)}</b><span>Top 10</span></div>
-        <div className="vit"><b>{fmtPct(last?.bundler_pct)}</b><span>Bundlers</span></div>
-        <div className="vit"><b>{fmtPct(last?.bot_pct)}</b><span>Bot hold</span></div>
-        <div className="vit"><b>{fmtPct(last?.sniper_pct)}</b><span>Snipers</span></div>
-        <div className="vit"><b>{last?.smart_count ?? "—"}</b><span>Smart</span></div>
-        <div className="vit"><b>{last?.kol_count ?? "—"}</b><span>KOL</span></div>
-        <div className="vit"><b>{fmtPct(last?.whale_pct)}</b><span>Whales</span></div>
+        <TapeBlock label="5m" w={last?.tape?.m5 ?? { buys: last?.buys_5m ?? null, sells: last?.sells_5m ?? null, volUsd: last?.vol_5m ?? null, changePct: null }} />
+        <TapeBlock label="1h" w={last?.tape?.h1} />
+        <TapeBlock label="6h" w={last?.tape?.h6} />
       </div>
 
-      <div className="section-h">Tape (omo 5m / 1h / 6h)</div>
-      <TapeBlock label="5 minutes" w={last?.tape?.m5 ?? { buys: last?.buys_5m ?? null, sells: last?.sells_5m ?? null, volUsd: last?.vol_5m ?? null, changePct: null }} />
-      <TapeBlock label="1 hour" w={last?.tape?.h1} />
-      <TapeBlock label="6 hours" w={last?.tape?.h6} />
+      <div className="section-h">{trade ? "Since lock" : "Market cap"}</div>
+      <Spark points={spark} admit={entry ?? null} />
 
-      <div className="section-h">Market cap since admit</div>
-      <Spark points={spark} admit={t.admission_mc} />
-
-      {snapSpark.length >= 2 && (
-        <>
-          <div className="section-h">Snapshots ({latestSnap?.band ?? t.cap_band ?? "cap"})</div>
-          <Spark points={snapSpark} admit={t.admission_mc} />
-          {latestSnap && (
-            <div className="grid3">
-              <div className="vit"><b>{fmtSlope(latestSnap.mc_slope)}</b><span>MC slope</span></div>
-              <div className="vit"><b>{fmtSlope(latestSnap.liq_slope)}</b><span>Liq slope</span></div>
-              <div className="vit"><b>{fmtSlope(latestSnap.holder_slope)}</b><span>Holder slope</span></div>
-            </div>
-          )}
-        </>
-      )}
-
-      {latestReads.length > 0 && (
-        <>
-          <div className="section-h">Source reads</div>
-          <div className="list">
-            {latestReads.map((r, i) => (
-              <div key={`${r.source}-${r.at}-${i}`} className="row">
-                <span>{r.source} {r.ok ? "ok" : "down"}</span>
-                <span className="blurb">
-                  {fmtUsd(r.mc_usd)} · liq {fmtUsd(r.liq_usd)} · h {r.holders ?? "—"}
-                  {r.latency_ms != null ? ` · ${r.latency_ms}ms` : ""} · {timeAgo(r.at)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      <div className="section-h">Admitting wallets</div>
+      <div className="section-h">Wallets</div>
       <div className="list">
         {d.admissions.length === 0 && <div className="row"><span className="blurb">No wallet rows yet</span></div>}
         {d.admissions.map((a) => (
@@ -245,27 +133,6 @@ export default function PatientPage() {
             <span className="blurb">{timeAgo(a.at)}</span>
           </div>
         ))}
-      </div>
-
-      <div className="section-h">Alerts</div>
-      {d.alerts.length === 0 && <div className="empty">No alerts for this patient.</div>}
-      {d.alerts.slice(0, 8).map((a) => (
-        <div key={a.id} className={`alert kind-${a.kind}`}>
-          <div className="k">{a.kind} · {timeAgo(a.at)}</div>
-          <h3>{a.title}</h3>
-          {a.body && <p>{a.body}</p>}
-        </div>
-      ))}
-
-      <div className="section-h">Agent notes</div>
-      <div className="list">
-        {d.notes.slice(0, 12).map((n, i) => (
-          <div key={`${n.at}-${i}`} className="agent-row">
-            <b>{n.agent}<br /><small>{timeAgo(n.at)}</small></b>
-            <p>{n.detail}</p>
-          </div>
-        ))}
-        {d.notes.length === 0 && <div className="row"><span className="blurb">Agents have not written yet.</span></div>}
       </div>
 
       <div className="links">

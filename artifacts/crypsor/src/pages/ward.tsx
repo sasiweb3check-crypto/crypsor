@@ -1,152 +1,106 @@
-import { useMemo, useState, type CSSProperties } from "react";
 import { useLocation } from "wouter";
 import {
-  api, fmtPct, fmtUsd, timeAgo, type Phase, type PatientCard, type WardBoard, PHASE_META,
+  api, fmtUsd, fmtSignedX, timeAgo,
+  type DeskState, type TradeCard,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
-const FILTERS: Array<{ id: string; label: string }> = [
-  { id: "live", label: "Live" },
-  { id: "icu", label: "ICU" },
-  { id: "intake", label: "Intake" },
-  { id: "ward", label: "Ward" },
-  { id: "recovery", label: "Recovery" },
-  { id: "revived", label: "Revived" },
-  { id: "deceased", label: "Deceased" },
-];
-
-function Score({ n, phase }: { n: number | null; phase: Phase }) {
-  const p = Math.max(0, Math.min(100, n ?? 0));
-  const ring = phase === "icu" || phase === "deceased" ? "var(--coral)"
-    : phase === "revived" ? "var(--violet)"
-      : phase === "intake" ? "var(--gold)"
-        : "var(--sage)";
-  return (
-    <div className="score-ring" style={{ "--p": p, "--ring": ring } as CSSProperties}>
-      <span>{n ?? "—"}</span>
-    </div>
-  );
+function Mult({ x }: { x: number | null }) {
+  const up = x != null && x >= 1;
+  return <span className={`mult ${x == null ? "" : up ? "up" : "down"}`}>{fmtSignedX(x)}</span>;
 }
 
-function Card({ p, onOpen }: { p: PatientCard; onOpen: () => void }) {
-  const x = p.admission_mc && p.last_mc && p.admission_mc > 0 ? p.last_mc / p.admission_mc : null;
-  const reason = p.last_reasons?.fails?.[0] || p.last_reasons?.holds?.[0] || p.last_verdict || "awaiting vitals";
+function TradeCardRow({ t, onOpen }: { t: TradeCard; onOpen: () => void }) {
+  const status = t.status === "trim" ? "trim" : t.status === "exit" || t.status === "dead" ? "exit" : "open";
   return (
-    <button type="button" className="card" onClick={onOpen}>
-      {p.image
-        ? <img src={p.image} alt="" className="thumb" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+    <button type="button" className="trade" onClick={onOpen}>
+      {t.image
+        ? <img src={t.image} alt="" className="thumb" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
         : <span className="thumb blank" />}
       <div className="card-main">
         <div className="sym">
-          ${p.symbol || p.name || p.mint.slice(0, 6)}{" "}
-          <span className={`badge phase-${p.phase}`}>{PHASE_META[p.phase]?.label ?? p.phase}</span>
+          ${t.symbol || t.name || t.mint.slice(0, 6)}
+          <span className={`st ${status}`}>{status}</span>
         </div>
         <div className="meta">
-          {p.prognosis?.label ?? PHASE_META[p.phase]?.hint} · {fmtUsd(p.last_mc)}
+          {fmtUsd(t.last_mc)} now · in {fmtUsd(t.entry_mc)} · ATH {fmtSignedX(t.ath_x)}
         </div>
-        <div className="meta">
-          {p.wallet_buys} wallet{p.wallet_buys === 1 ? "" : "s"}
-          {p.cap_band ? ` · ${p.cap_band}` : ""}
-          {x != null ? ` · ${x.toFixed(1)}×` : ""} · {timeAgo(p.last_scan_at || p.discovered_at)}
-          {p.last_suggestion ? ` · ${p.last_suggestion}` : reason ? ` · ${reason}` : ""}
-        </div>
+        <div className="plan">{t.exit_title || "Watch the lock"}</div>
       </div>
-      <Score n={p.survival_score} phase={p.phase} />
+      <Mult x={t.gain_x} />
+    </button>
+  );
+}
+
+function Performer({ t, onOpen }: { t: TradeCard; onOpen: () => void }) {
+  return (
+    <button type="button" className="performer" onClick={onOpen}>
+      {t.image ? <img src={t.image} alt="" className="thumb sm" /> : <span className="thumb sm blank" />}
+      <span className="p-sym">${t.symbol || t.mint.slice(0, 4)}</span>
+      <span className="p-ath">ATH {fmtSignedX(t.ath_x)}</span>
+      <span className={`p-now ${(t.gain_x ?? 0) >= 1 ? "up" : "down"}`}>{fmtSignedX(t.gain_x)}</span>
     </button>
   );
 }
 
 export default function WardPage() {
   const [, nav] = useLocation();
-  const [phase, setPhase] = useState("live");
-  const [q, setQ] = useState("");
-  const { connected, tick } = useSse(["patient:admit", "vitals:tick", "alert:new"]);
-  const board = usePoll<WardBoard>(
-    () => api(`api/ward?phase=${phase}&q=${encodeURIComponent(q)}`),
-    connected ? 20_000 : 10_000,
-    [phase, q, tick],
+  const { connected, tick } = useSse(["alert:new", "vitals:tick"]);
+  const board = usePoll<DeskState>(
+    () => api("api/desk"),
+    connected ? 18_000 : 10_000,
+    [tick],
   );
-
   const d = board.data;
-  const survival = useMemo(
-    () => d?.stats.survival != null ? fmtPct(d.stats.survival * 100, 0) : "—",
-    [d],
-  );
+  const wr = d && d.paper.n > 0 ? Math.round((d.paper.wins / d.paper.n) * 100) : null;
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">Crypsor <span>Ward</span></div>
-        <div className={`live-dot ${connected ? "on" : ""}`} title={connected ? "live" : "polling"} />
+        <div className="brand">Crypsor <span>Trades</span></div>
+        <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
-
-      <p className="blurb">
-        Tokens bought by your wallets are patients. Survival is scored from tape leadership,
-        liquidity, holder behaviour, and quality — not from public pump feeds.
-      </p>
 
       <div className="stats">
         <div className="stat">
-          <div className="stat-val">{d?.stats.live ?? 0}</div>
-          <div className="stat-label">Live patients</div>
+          <div className="stat-val">{d?.paper.open ?? 0}</div>
+          <div className="stat-label">Open locks</div>
         </div>
         <div className="stat">
-          <div className="stat-val" style={{ color: "var(--sage)" }}>{survival}</div>
-          <div className="stat-label">Survival</div>
+          <div className="stat-val" style={{ color: "var(--sage)" }}>{d?.paper.wins ?? 0}/{d?.paper.n ?? 0}</div>
+          <div className="stat-label">Hit 2×</div>
         </div>
         <div className="stat">
-          <div className="stat-val">{d?.stats.avgScore != null ? Math.round(d.stats.avgScore) : "—"}</div>
-          <div className="stat-label">Avg score</div>
+          <div className="stat-val">{d?.paper.avgAth != null ? fmtSignedX(d.paper.avgAth) : "—"}</div>
+          <div className="stat-label">Avg ATH</div>
         </div>
         <div className="stat">
-          <div className="stat-val" style={{ color: "var(--gold)" }}>{d?.stats.trades24h ?? 0}</div>
-          <div className="stat-label">Trades 24h</div>
+          <div className="stat-val" style={{ color: "var(--gold)" }}>{wr != null ? `${wr}%` : "—"}</div>
+          <div className="stat-label">Paper rate</div>
         </div>
       </div>
 
-      <div className="chips" role="tablist">
-        {FILTERS.map((f) => {
-          const n = f.id === "live" ? d?.stats.live : d?.census[f.id];
-          return (
-            <button
-              key={f.id}
-              type="button"
-              className={phase === f.id ? "chip on" : "chip"}
-              onClick={() => setPhase(f.id)}
-            >
-              {f.label}{n != null ? <span className="n">{n}</span> : null}
-            </button>
-          );
-        })}
-      </div>
+      {(d?.performers ?? []).length > 0 && (
+        <>
+          <div className="section-h">Performers</div>
+          <div className="performers">
+            {d!.performers.map((t) => (
+              <Performer key={t.id} t={t} onOpen={() => nav(`/p/${t.token_id}`)} />
+            ))}
+          </div>
+        </>
+      )}
 
-      <div className="search">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search ticker or mint"
-          autoCapitalize="off"
-          autoCorrect="off"
-        />
-      </div>
-
-      {(d?.suggestions ?? []).slice(0, 3).map((s) => (
-        <div key={s.id} className={`alert kind-${s.severity}`}>
-          <div className="k">{s.severity} · ward</div>
-          <h3>{s.title}</h3>
-          <p>{s.body}</p>
-        </div>
-      ))}
-
-      {board.loading && !d && <div className="empty">Reading the ward…</div>}
+      <div className="section-h">Open</div>
+      {board.loading && !d && <div className="empty">Opening the book…</div>}
       {board.error && <div className="empty err">{board.error}</div>}
-      {!board.loading && (d?.patients.length ?? 0) === 0 && !board.error && (
+      {!board.loading && (d?.open.length ?? 0) === 0 && !board.error && (
         <div className="empty">
-          No patients yet. Add wallets in Settings — every buy is an admission.
+          No locked trades yet. When a wallet buy clears the gate, it locks here at that MC.
         </div>
       )}
-      {(d?.patients ?? []).map((p) => (
-        <Card key={p.id} p={p} onOpen={() => nav(`/p/${p.id}`)} />
+      {(d?.open ?? []).map((t) => (
+        <TradeCardRow key={t.id} t={t} onOpen={() => nav(`/p/${t.token_id}`)} />
       ))}
     </div>
   );
