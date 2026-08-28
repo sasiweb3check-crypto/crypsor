@@ -299,6 +299,24 @@ const SCHEMA: string[] = [
      extra jsonb
    )`,
   `CREATE INDEX IF NOT EXISTS idx_ward_trades_status ON ward_trades (status, called_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_trades_called_at ON ward_trades (called_at DESC)`,
+  `ALTER TABLE ward_trades ADD COLUMN IF NOT EXISTS gain_pct real`,
+  `ALTER TABLE ward_trades ADD COLUMN IF NOT EXISTS ath_pct real`,
+  `ALTER TABLE ward_trades ADD COLUMN IF NOT EXISTS archived_at timestamptz`,
+  `UPDATE ward_trades SET gain_pct = (gain_x - 1) * 100 WHERE gain_pct IS NULL AND gain_x IS NOT NULL`,
+  `UPDATE ward_trades SET ath_pct = (ath_x - 1) * 100 WHERE ath_pct IS NULL AND ath_x IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS ward_day_stats (
+     day date PRIMARY KEY,
+     passed_n integer NOT NULL DEFAULT 0,
+     live_n integer NOT NULL DEFAULT 0,
+     archived_n integer NOT NULL DEFAULT 0,
+     dead_n integer NOT NULL DEFAULT 0,
+     avg_gain_pct real,
+     avg_ath_pct real,
+     hit_2x_n integer NOT NULL DEFAULT 0,
+     best_ath_pct real,
+     updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
 ];
 
 let ensured = false;

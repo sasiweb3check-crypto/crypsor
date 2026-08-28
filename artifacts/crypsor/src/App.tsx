@@ -16,7 +16,7 @@ function Icon({ d }: { d: string }) {
 function Nav() {
   const [loc] = useLocation();
   const item = (href: string, label: string, d: string) => (
-    <Link href={href} className={loc === href || (href === "/" && loc.startsWith("/p/")) ? "on" : ""}>
+    <Link href={href} className={loc === href || (href === "/" && loc.startsWith("/p/")) || (href !== "/" && loc.startsWith(href)) ? "on" : ""}>
       <Icon d={d} />
       {label}
     </Link>
@@ -24,8 +24,8 @@ function Nav() {
   return (
     <nav className="nav">
       {item("/", "Desk", "M3 10.5 12 4l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z")}
-      {item("/alerts", "Book", "M12 4a7 7 0 0 1 7 7v4l1.5 2.5H3.5L5 15v-4a7 7 0 0 1 7-7zm0 16a2.5 2.5 0 0 0 2.5-2.5h-5A2.5 2.5 0 0 0 12 20z")}
-      {item("/agents", "Stream", "M12 3 4 7v5c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V7l-8-4zm0 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z")}
+      {item("/alerts", "Days", "M7 4h10v2H7zM5 8h14v12H5zM8 12h3v3H8z")}
+      {item("/agents", "Logs", "M6 5h12v2H6zm0 6h12v2H6zm0 6h8v2H6z")}
       {item("/settings", "Settings", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM4 12l1.2-2.2L4 8.2 6.2 7l.6-2.2L9.2 5 12 3.8 14.8 5l2.4-.2.6 2.2L20 8.2l-1.2 1.6L20 12l-1.2 2.2 1.2 1.6-2.2 1.2-.6 2.2-2.4.2L12 20.2 9.2 19l-2.4.2L6.2 17 4 15.8l1.2-1.6z")}
     </nav>
   );

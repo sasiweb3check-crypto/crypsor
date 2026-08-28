@@ -9,6 +9,7 @@ import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { getWeights, prognosis, failsOf, callOf, type Phase } from "../scoring/ward";
 import { seedTradesFromAlerts } from "../agents/book";
+import { buildLiveBoard, passesOnDay } from "../agents/stats";
 
 const router: IRouter = Router();
 
@@ -231,94 +232,57 @@ router.get("/ward", async (req, res) => {
 const TRADE_SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.entry_liq, tr.entry_holders, tr.entry_score,
             tr.called_at, tr.peak_mc, tr.peak_at, tr.last_mc, tr.last_liq, tr.last_holders,
             tr.status, tr.exit_action, tr.exit_take_pct, tr.exit_title, tr.exit_body,
-            tr.gain_x, tr.ath_x, tr.closed_at, tr.close_mc,
+            tr.gain_x, tr.ath_x, tr.gain_pct, tr.ath_pct, tr.closed_at, tr.close_mc,
             t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id`;
 
 // ── desk (locked trades + performers) ────────────────────────────────────────
 
+router.get("/stats", async (req, res) => {
+  try {
+    const day = String(req.query.day ?? "").slice(0, 10);
+    res.setHeader("Cache-Control", "no-store");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      const passes = await cached(`stats:day:${day}`, 1_500, () => passesOnDay(day));
+      res.json(ok({ day, passes, at: new Date().toISOString() }));
+      return;
+    }
+    const payload = await cached("stats:live", 800, async () => {
+      await seedTradesFromAlerts();
+      return buildLiveBoard();
+    });
+    res.json(ok(payload));
+  } catch (err) {
+    console.error("stats failed", err);
+    res.status(500).json(fail("stats failed"));
+  }
+});
+
 router.get("/desk", async (req, res) => {
   try {
     const { page, limit, offset } = pageParams(req, 8, 40);
-    const payload = await cached(`desk:${page}:${limit}`, 4_000, async () => {
+    const payload = await cached(`desk:${page}:${limit}`, 800, async () => {
       await seedTradesFromAlerts();
+      const board = await buildLiveBoard();
       const open = await pool.query(
         `${TRADE_SELECT} WHERE tr.status IN ('open','trim') ORDER BY tr.called_at DESC LIMIT $1 OFFSET $2`,
         [limit, offset],
       );
-      const total = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM ward_trades WHERE status IN ('open','trim')`,
-      );
-      const performers = await pool.query(
-        `${TRADE_SELECT} ORDER BY COALESCE(tr.ath_x,0) DESC, tr.called_at DESC LIMIT 8`,
-      );
-      const paper = await pool.query(
-        `SELECT
-           COUNT(*)::int AS n,
-           COUNT(*) FILTER (WHERE COALESCE(ath_x,0) >= 2)::int AS wins,
-           AVG(ath_x) AS avg_ath,
-           AVG(gain_x) AS avg_gain,
-           COUNT(*) FILTER (WHERE status IN ('open','trim'))::int AS open
-         FROM ward_trades`,
-      );
-      let watch: unknown[] = [];
-      try {
-        const w = await pool.query(
-          `SELECT w.token_id, w.status, w.yes_votes, w.no_votes, w.hold_votes, w.agreed, w.entry_ok,
-                  w.headline, w.votes, w.last_mc, w.last_liq, w.last_score, w.seen_at, w.updated_at,
-                  t.mint, t.symbol, t.name, t.image, t.phase, t.wallet_buys, t.last_holders,
-                  t.last_verdict, t.last_reasons, t.last_quality
-           FROM ward_watch w
-           JOIN f2_tokens t ON t.id = w.token_id
-           WHERE w.status = 'watching'
-             AND NOT EXISTS (SELECT 1 FROM ward_trades tr WHERE tr.token_id = w.token_id)
-           ORDER BY w.updated_at DESC
-           LIMIT 12`,
-        );
-        watch = w.rows;
-      } catch {
-        watch = [];
-      }
-      let verdicts: unknown[] = [];
-      let stream: unknown[] = [];
-      try {
-        const v = await pool.query(
-          `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.last_verdict, t.last_reasons,
-                  t.last_mc, t.last_liq, t.wallet_buys, t.last_quality, t.last_scan_at, t.tape_lead
-           FROM f2_tokens t
-           WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)
-             AND t.last_reasons IS NOT NULL
-             AND t.last_scan_at > NOW() - INTERVAL '6 hours'
-           ORDER BY t.last_scan_at DESC
-           LIMIT 8`,
-        );
-        verdicts = v.rows;
-        const s = await pool.query(
-          `SELECT id, agent, action, token_id, mint, detail, at
-           FROM ward_agent_log
-           WHERE action IN ('READ','DID','REFUSED')
-           ORDER BY at DESC
-           LIMIT 40`,
-        );
-        stream = s.rows;
-      } catch {
-        verdicts = [];
-        stream = [];
-      }
-      const n = Number(total.rows[0]?.n ?? 0);
+      const n = board.totals.live;
       return {
+        ...board,
         open: open.rows,
-        watch,
-        verdicts,
-        stream,
-        performers: performers.rows,
+        watch: [],
+        verdicts: [],
+        stream: [],
+        performers: board.live.slice(0, 8).sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999)),
         paper: {
-          n: Number(paper.rows[0]?.n ?? 0),
-          wins: Number(paper.rows[0]?.wins ?? 0),
-          open: Number(paper.rows[0]?.open ?? 0),
-          avgAth: paper.rows[0]?.avg_ath != null ? Number(paper.rows[0].avg_ath) : null,
-          avgGain: paper.rows[0]?.avg_gain != null ? Number(paper.rows[0].avg_gain) : null,
+          n: board.totals.passed,
+          wins: board.totals.hit2x,
+          open: board.totals.live,
+          avgAth: board.totals.avgAthPct != null ? 1 + board.totals.avgAthPct / 100 : null,
+          avgGain: board.totals.avgGainPct != null ? 1 + board.totals.avgGainPct / 100 : null,
         },
         page,
         limit,
@@ -327,7 +291,7 @@ router.get("/desk", async (req, res) => {
         cache: cacheBackend(),
       };
     });
-    res.setHeader("Cache-Control", "private, max-age=3");
+    res.setHeader("Cache-Control", "no-store");
     res.json(ok(payload));
   } catch (err) {
     console.error("desk failed", err);
@@ -553,11 +517,17 @@ router.get("/alerts", async (req, res) => {
 
 // ── agents ───────────────────────────────────────────────────────────────────
 
-router.get("/agents", async (_req, res) => {
+router.get("/agents", async (req, res) => {
   try {
+    const lane = String(req.query.lane ?? "all").toLowerCase();
+    const noteWhere = lane === "pass"
+      ? `WHERE action IN ('DID','PASS','LOCK')`
+      : lane === "book"
+        ? `WHERE action IN ('EXIT','TRIM','HOLD')`
+        : "";
     const notes = await pool.query(
       `SELECT id, agent, action, token_id, mint, detail, at
-       FROM ward_agent_log ORDER BY at DESC LIMIT 80`,
+       FROM ward_agent_log ${noteWhere} ORDER BY at DESC LIMIT 120`,
     );
     const byAgent = await pool.query(
       `SELECT agent, MAX(at) AS last_at, COUNT(*)::int AS n

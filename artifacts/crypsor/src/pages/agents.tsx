@@ -1,59 +1,58 @@
+import { useState } from "react";
+import { useLocation } from "wouter";
 import { api, timeAgo, type AgentsState } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
-const DESK = [
-  { id: "intake", title: "Intake", copy: "The only discovery source: Helius buys from wallets you added." },
-  { id: "vitals", title: "Read + gate", copy: "DexScreener public tape, pump.fun callback if Dex is blank, then the omo rule set. Missing data is a fail, not a pass." },
-  { id: "book", title: "Book", copy: "Locks only on a buying call. Exits use omo's stop, trail, liquidity break, invalidation, take-profit, stale thesis." },
-  { id: "reporter", title: "Reporter", copy: "Census + prune. Not shown on the desk." },
-  { id: "alerts", title: "Alerts", copy: "Telegram + live desk for buys, stalks, refusals, exits." },
+const LANES = [
+  { id: "all", label: "All logs" },
+  { id: "pass", label: "Passes" },
+  { id: "book", label: "Book" },
+] as const;
+
+const LOOP = [
+  { id: "intake", title: "Intake", copy: "Tracked-wallet buys. The only discovery source." },
+  { id: "vitals", title: "Live gate", copy: "Fresh Dex / pump.fun prints on live passes first." },
+  { id: "archive", title: "Archive sample", copy: "Random dead/exited passes — three at a time — watching for momentum." },
+  { id: "book", title: "Book", copy: "Exit rules on live passes. Stats roll up by day." },
 ];
 
 export default function AgentsPage() {
-  const { connected, tick } = useSse(["agent:note"]);
-  const q = usePoll<AgentsState>(() => api("api/agents"), connected ? 45_000 : 10_000, [tick]);
+  const [, nav] = useLocation();
+  const [lane, setLane] = useState<(typeof LANES)[number]["id"]>("all");
+  const { connected, tick } = useSse();
+  const q = usePoll<AgentsState>(
+    () => api(`api/agents?lane=${lane}`),
+    connected ? 30_000 : 12_000,
+    [tick, lane],
+  );
   const d = q.data;
-  const paper = d?.paper;
-  const wr = paper && paper.judged > 0 ? Math.round((paper.wins / paper.judged) * 100) : null;
   const notes = d?.notes ?? [];
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">Stream</div>
+        <div className="brand">Logs</div>
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        READ / DID / REFUSED. Same decision loop as omotrades, except names come from our tracked wallets.
+        Full archive. The desk stays quiet — refusals and tape reads land here, not in the live stream.
       </p>
 
-      <div className="stats">
-        <div className="stat">
-          <div className="stat-val">{paper?.wins ?? 0}/{paper?.judged ?? 0}</div>
-          <div className="stat-label">Paper 2×</div>
-        </div>
-        <div className="stat">
-          <div className="stat-val">{wr != null ? `${wr}%` : "—"}</div>
-          <div className="stat-label">Hit rate</div>
-        </div>
+      <div className="chips">
+        {LANES.map((k) => (
+          <button
+            key={k.id}
+            type="button"
+            className={lane === k.id ? "chip on" : "chip"}
+            onClick={() => setLane(k.id)}
+          >
+            {k.label}
+          </button>
+        ))}
       </div>
 
-      {d?.quality?.sources && d.quality.sources.length > 0 && (
-        <>
-          <div className="section-h">Source health (6h)</div>
-          <div className="grid3">
-            {d.quality.sources.map((s) => (
-              <div key={s.source} className="vit">
-                <b>{s.ok}/{s.n}</b>
-                <span>{s.source}{s.avg_ms != null ? ` · ${Math.round(s.avg_ms)}ms` : ""}</span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
       <div className="section-h">Loop</div>
-      {DESK.map((a) => {
+      {LOOP.map((a) => {
         const live = d?.status.running[a.id];
         const last = d?.status.last[a.id];
         return (
@@ -67,17 +66,19 @@ export default function AgentsPage() {
         );
       })}
 
-      <div className="section-h">Recent</div>
+      <div className="section-h">Archive</div>
       <ol className="stream">
-        {notes.slice(0, 24).map((n) => (
+        {notes.map((n) => (
           <li key={n.id}>
             <span className="t">{timeAgo(n.at)}</span>
             <b className={`k-${n.action.toLowerCase()}`}>{n.action}</b>
-            <span>{n.detail}</span>
+            {n.token_id
+              ? <button type="button" className="log-link" onClick={() => nav(`/p/${n.token_id}`)}>{n.detail}</button>
+              : <span>{n.detail}</span>}
           </li>
         ))}
       </ol>
-      {!notes.length && <div className="empty">No stream yet — add wallets and wait for a buy.</div>}
+      {!notes.length && <div className="empty">No logs yet — add wallets and wait for a buy.</div>}
     </div>
   );
 }

@@ -14,14 +14,16 @@ import {
 } from "../sources/dexscreener";
 import { pumpVitals } from "../sources/pumpfun";
 import {
-  decide, describeCandidate, describeResearch, isFakeChart, money, newbornFaded,
+  decide, isFakeChart, money, newbornFaded,
   nextPhase, tapeOf, type OmoCandidate, type Phase, type TokenResearch,
 } from "../scoring/omo";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
 import { considerEntry } from "./watch";
+import { emitLiveStats, syncPassPrint } from "./stats";
 
-const BATCH = 12;
+const HOT = 10;
+const ARCHIVE = 3;
 
 type Row = {
   id: number;
@@ -38,6 +40,7 @@ type Row = {
   last_liq: number | null;
   last_holders: number | null;
   graduated: boolean;
+  archive?: boolean;
 };
 
 function n(v: number | null | undefined): number {
@@ -152,21 +155,39 @@ async function recordSource(
 
 export async function vitalsTick(): Promise<{ scanned: number; trades: number; deaths: number; refused: number }> {
   const due = await pool.query(
-    `SELECT id, mint, symbol, name, phase, wallet_buys, scans_total,
-            admission_mc, mc_at_discovery, peak_mc, last_mc, last_liq, last_holders, graduated
-     FROM f2_tokens
-     WHERE (source = 'wallet_buy' OR wallet_buys > 0)
-       AND (
-         COALESCE(phase, 'intake') NOT IN ('deceased')
-         OR (phase = 'deceased' AND deceased_at > NOW() - INTERVAL '6 hours')
-       )
-     ORDER BY CASE COALESCE(phase,'intake')
-                WHEN 'icu' THEN 0 WHEN 'intake' THEN 1 WHEN 'recovery' THEN 2
-                WHEN 'revived' THEN 3 ELSE 4 END,
-              last_scan_at ASC NULLS FIRST
-     LIMIT ${BATCH}`,
+    `SELECT t.id, t.mint, t.symbol, t.name, t.phase, t.wallet_buys, t.scans_total,
+            t.admission_mc, t.mc_at_discovery, t.peak_mc, t.last_mc, t.last_liq, t.last_holders, t.graduated
+     FROM f2_tokens t
+     LEFT JOIN ward_trades tr ON tr.token_id = t.id AND tr.status IN ('open','trim')
+     WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)
+       AND COALESCE(t.phase, 'intake') <> 'deceased'
+     ORDER BY CASE WHEN tr.id IS NOT NULL THEN 0 ELSE 1 END,
+              t.last_scan_at ASC NULLS FIRST
+     LIMIT ${HOT}`,
   );
-  const rows = due.rows as Row[];
+  return scanRows(due.rows as Row[], false);
+}
+
+/** Random archived/dead passes — check if momentum came back. Not a full rescan. */
+export async function archiveTick(): Promise<{ scanned: number; revived: number }> {
+  const due = await pool.query(
+    `SELECT t.id, t.mint, t.symbol, t.name, t.phase, t.wallet_buys, t.scans_total,
+            t.admission_mc, t.mc_at_discovery, t.peak_mc, t.last_mc, t.last_liq, t.last_holders, t.graduated
+     FROM f2_tokens t
+     JOIN ward_trades tr ON tr.token_id = t.id
+     WHERE tr.status IN ('dead','exit') OR t.phase = 'deceased'
+     ORDER BY random()
+     LIMIT ${ARCHIVE}`,
+  );
+  const rows = (due.rows as Row[]).map((r) => ({ ...r, archive: true }));
+  const out = await scanRows(rows, true);
+  return { scanned: out.scanned, revived: out.trades };
+}
+
+async function scanRows(
+  rows: Row[],
+  archive: boolean,
+): Promise<{ scanned: number; trades: number; deaths: number; refused: number }> {
   if (!rows.length) return { scanned: 0, trades: 0, deaths: 0, refused: 0 };
 
   const pairs = await pairsForMints(rows.map((r) => r.mint));
@@ -195,8 +216,8 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
         { fallback: true },
       );
       if (candidate) {
-        await agentNote("omo", "READ", `checked fomo/dex for $${candidate.symbol}; Dex blank, so the pump.fun callback is in. data quality is less`, {
-          tokenId: row.id, mint: row.mint,
+        await agentNote("omo", "READ", `Dex blank for $${candidate.symbol} — pump.fun callback, data quality is less`, {
+          tokenId: row.id, mint: row.mint, quiet: true,
         });
       }
     } else if ((!candidate.socials.length && !candidate.hasSite) || candidate.mcUsd <= 0) {
@@ -218,7 +239,7 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
 
     if (!candidate) {
       await agentNote("omo", "READ", `Dex and pump.fun both blank for ${row.mint.slice(0, 6)}… — no outside story gets added`, {
-        tokenId: row.id, mint: row.mint,
+        tokenId: row.id, mint: row.mint, quiet: true,
       });
       await pool.query(
         `UPDATE f2_tokens SET last_scan_at = NOW(), last_verdict = 'unread',
@@ -238,18 +259,14 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
 
     if (pair) {
       research = await researchToken(row.mint, candidate.symbol);
-      if (research) {
-        await agentNote(
-          "omo",
-          "READ",
-          `pulled second pass on ${candidate.symbol} — ${describeResearch(research)}`,
-          { tokenId: row.id, mint: row.mint },
-        );
-      } else {
-        await agentNote("omo", "READ", `second pass on ${candidate.symbol} came back empty — Dex had no extra pools`, {
-          tokenId: row.id, mint: row.mint,
-        });
-      }
+      await agentNote(
+        "omo",
+        "READ",
+        research
+          ? `second pass $${candidate.symbol} 6h vol ${money(research.vol6h)}`
+          : `second pass $${candidate.symbol} empty`,
+        { tokenId: row.id, mint: row.mint, quiet: true },
+      );
     }
 
     const d = decide(candidate, research ?? undefined);
@@ -357,59 +374,52 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
 
     const prev = row.phase || "intake";
     if (d.call === "pass" || d.call === "stalking") {
-      const kind = d.call === "pass" ? "REFUSED" : "READ";
       await agentNote(
         "omo",
-        kind,
+        d.call === "pass" ? "REFUSED" : "READ",
         d.call === "pass"
           ? `refused ${ticker} — ${d.refusedOn.slice(0, 2).join(", ") || d.thesis}`
-          : `dug into $${ticker} — ${describeCandidate(candidate).slice(0, 280)}`,
-        { tokenId: row.id, mint: row.mint },
+          : `stalk $${ticker}`,
+        { tokenId: row.id, mint: row.mint, quiet: true },
       );
       if (d.call === "pass") refused += 1;
     }
 
     if (phase !== prev) {
       await agentNote("ward", "PHASE", `$${ticker} ${prev} → ${phase} (${d.call})`, {
-        tokenId: row.id, mint: row.mint,
+        tokenId: row.id, mint: row.mint, quiet: true,
       });
-      if (phase === "icu") {
-        await raiseAlert({
-          tokenId: row.id, kind: "critical",
-          title: `PASS $${ticker}`,
-          body: d.thesis,
-          payload: { mint: row.mint, call: d.call, refusedOn: d.refusedOn },
-          telegram: true,
-        });
-      }
-      if (phase === "deceased") {
+      const isPassBook = archive || held;
+      if (phase === "deceased" && isPassBook) {
         deaths += 1;
         await raiseAlert({
           tokenId: row.id, kind: "deceased",
           title: `DEAD $${ticker}`,
           body: `${d.thesis} Peak ${money(row.peak_mc ?? mc ?? 0)}.`,
           payload: { mint: row.mint, call: d.call },
-          telegram: true,
+          telegram: false,
         });
+      } else if (phase === "deceased") {
+        deaths += 1;
       }
     }
 
-    if (prev !== "deceased" && mc != null && mc > 0 && (d.call === "buying" || d.call === "stalking") && !d.dead) {
+    if (mc != null && mc > 0) {
+      await syncPassPrint(row.id, mc, liq);
+    }
+
+    if (mc != null && mc > 0 && d.call === "buying" && !d.dead) {
       const outcome = await considerEntry({
         tokenId: row.id, mint: row.mint, symbol: ticker, phase,
         call: d.call, thesis: d.thesis, checks: d.checks, refusedOn: d.refusedOn,
         quality: d.quality, qualityNote: d.qualityNote, score: d.score,
         tapeLead: d.tapeLead, mc, liq, walletBuys: candidate.walletBuys,
       });
-      if (outcome === "lock") {
-        trades += 1;
-        await agentNote("omo", "DID", `opened $${ticker} — ${d.thesis}`, {
-          tokenId: row.id, mint: row.mint,
-        });
-      }
+      if (outcome === "lock") trades += 1;
     }
   }
 
-  emitSse("vitals:tick", { scanned: rows.length, trades, deaths, refused });
+  emitSse(archive ? "archive:tick" : "vitals:tick", { scanned: rows.length, trades, deaths, refused });
+  await emitLiveStats();
   return { scanned: rows.length, trades, deaths, refused };
 }

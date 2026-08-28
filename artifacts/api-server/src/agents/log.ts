@@ -8,7 +8,7 @@ export async function agentNote(
   agent: string,
   action: string,
   detail: string,
-  opts: { tokenId?: number; mint?: string } = {},
+  opts: { tokenId?: number; mint?: string; quiet?: boolean } = {},
 ): Promise<void> {
   try {
     await pool.query(
@@ -16,7 +16,9 @@ export async function agentNote(
        VALUES ($1,$2,$3,$4,$5)`,
       [agent, action, opts.tokenId ?? null, opts.mint ?? null, detail.slice(0, 800)],
     );
-    emitSse("agent:note", { agent, action, detail, mint: opts.mint, at: new Date().toISOString() });
+    if (!opts.quiet) {
+      emitSse("agent:note", { agent, action, detail, mint: opts.mint, at: new Date().toISOString() });
+    }
   } catch (err) {
     log.debug({ err }, "agent log insert failed");
   }

@@ -1,92 +1,114 @@
-import { useState } from "react";
-import { useLocation } from "wouter";
-import { api, timeAgo, gmgnUrl, type AlertPage } from "../lib/api";
-import { usePoll, useSse } from "../hooks/use-data";
+import { useMemo, useState } from "react";
+import { useLocation, useSearch } from "wouter";
+import {
+  api, fmtGainPct, fmtDay, type LiveBoard, type DayPasses, type PassCard,
+} from "../lib/api";
+import { useLiveBoard, usePoll } from "../hooks/use-data";
+import { PassRow } from "../components/pass-card";
 
-const KINDS = [
-  { id: "book", label: "Book" },
-  { id: "watch", label: "Watch" },
-  { id: "trade", label: "Lock" },
-  { id: "trim", label: "Trim" },
-  { id: "exit", label: "Exit" },
-  { id: "all", label: "All" },
-];
+function dayFromSearch(search: string): string {
+  const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const day = q.get("day") ?? "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "";
+}
 
 export default function AlertsPage() {
   const [, nav] = useLocation();
-  const [kind, setKind] = useState("book");
-  const [page, setPage] = useState(1);
-  const { connected, tick } = useSse();
-  const q = usePoll<AlertPage>(
-    () => api(`api/alerts?kind=${kind}&page=${page}&limit=12`),
-    connected ? 45_000 : 8_000,
-    [kind, page, tick],
+  const search = useSearch();
+  const picked = dayFromSearch(search);
+  const [lane, setLane] = useState<"all" | "archived" | "dead">("all");
+  const board = useLiveBoard<LiveBoard>(() => api("api/stats"));
+  const dayQ = usePoll<DayPasses>(
+    () => picked
+      ? api(`api/stats?day=${picked}`)
+      : Promise.resolve({ day: "", passes: [], at: "" }),
+    picked ? 12_000 : 86_400_000,
+    [picked],
   );
-  const items = q.data?.items ?? [];
-  const pages = q.data?.pages ?? 1;
+  const d = board.data;
+  const days = d?.days ?? [];
+
+  const cards: PassCard[] = useMemo(() => {
+    if (picked && dayQ.data?.day === picked) return dayQ.data.passes;
+    return [...(d?.live ?? []), ...(d?.archived ?? [])];
+  }, [picked, dayQ.data, d]);
+
+  const shown = cards.filter((p) => {
+    if (lane === "all") return true;
+    return p.lane === lane;
+  });
+  const heading = picked ? fmtDay(picked) : "All recent passes";
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">Book</div>
-        <div className={`live-dot ${connected ? "on" : ""}`} />
+        <div className="brand">Days</div>
+        <div className={`live-dot ${board.connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        Locks, trims, exits, and the watchlist. A TRADE only prints after the four desks agree and the entry is in zone.
+        Every pass, by day. Frozen MC at the pass, then gain and ATH after that. Archived and dead names are sampled at random for momentum.
       </p>
-      <div className="chips">
-        {KINDS.map((k) => (
+
+      <div className="days-strip" role="list">
+        <button
+          type="button"
+          className={`day-chip${!picked ? " on" : ""}`}
+          onClick={() => nav("/alerts")}
+        >
+          <b>{d?.totals.passed ?? 0}</b>
+          <span>all</span>
+          <em>{fmtGainPct(d?.totals.avgAthPct ?? null)}</em>
+        </button>
+        {days.map((day) => (
           <button
-            key={k.id}
+            key={day.day}
             type="button"
-            className={kind === k.id ? "chip on" : "chip"}
-            onClick={() => { setKind(k.id); setPage(1); }}
+            className={`day-chip${picked === day.day ? " on" : ""}`}
+            onClick={() => nav(`/alerts?day=${day.day}`)}
           >
-            {k.label}
+            <b>{day.passed}</b>
+            <span>{day.day.slice(5)}</span>
+            <em>{fmtGainPct(day.avgAthPct)}</em>
           </button>
         ))}
       </div>
-      {q.loading && !q.data && (
-        <>
-          <div className="skel" /><div className="skel" />
-        </>
+
+      {picked && days.find((x) => x.day === picked) && (
+        <div className="stats">
+          {(["passed", "live", "archived", "dead"] as const).map((k) => {
+            const row = days.find((x) => x.day === picked)!;
+            return (
+              <div key={k} className="stat">
+                <div className="stat-val">{row[k]}</div>
+                <div className="stat-label">{k}</div>
+              </div>
+            );
+          })}
+        </div>
       )}
-      {q.error && <div className="empty err">{q.error}</div>}
-      {items.length === 0 && !q.loading && !q.error && (
-        <div className="empty">Nothing in this book yet.</div>
-      )}
-      {items.map((a) => (
-        <div key={a.id} className={`alert kind-${a.kind}`}>
-          <button type="button" className="alert-top" onClick={() => nav(`/p/${a.token_id}`)} style={{ width: "100%", display: "flex", background: "none", border: 0, padding: 0, textAlign: "left" }}>
-            {a.image
-              ? <img src={a.image} alt="" className="thumb sm" />
-              : <span className="thumb sm blank" />}
-            <div className="card-main">
-              <div className="k">{a.kind} · {timeAgo(a.at)}</div>
-              <h3>{a.title}</h3>
-              {a.body && <p>{a.body}</p>}
-            </div>
+
+      <div className="chips">
+        {(["all", "archived", "dead"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            className={lane === k ? "chip on" : "chip"}
+            onClick={() => setLane(k)}
+          >
+            {k}
           </button>
-          {a.mint && (
-            <a
-              className="link"
-              href={gmgnUrl(a.mint)}
-              target="_blank"
-              rel="noreferrer"
-              style={{ display: "inline-block", marginTop: 10 }}
-            >
-              GMGN
-            </a>
-          )}
-        </div>
-      ))}
-      {pages > 1 && (
-        <div className="pager">
-          <button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)}>Prev</button>
-          <b>{page} / {pages} · {q.data?.total ?? 0}</b>
-          <button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</button>
-        </div>
+        ))}
+      </div>
+
+      <div className="section-h">{heading}</div>
+      {board.loading && !d && <div className="skel" />}
+      {board.error && <div className="empty err">{board.error}</div>}
+      {shown.length === 0 && !board.loading && !board.error && (
+        <div className="empty">No passes in this slice yet.</div>
       )}
+      {shown.map((p) => (
+        <PassRow key={p.id} p={p} onOpen={() => nav(`/p/${p.token_id}`)} />
+      ))}
     </div>
   );
 }
