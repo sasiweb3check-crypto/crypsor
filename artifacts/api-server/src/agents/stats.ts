@@ -5,6 +5,9 @@
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { athPct, gainPct, laneOf, rollDays, type DayRoll } from "../scoring/stats";
+import { capBand, type CapBand } from "../scoring/quality";
+import { isNoiseToken } from "../scoring/noise";
+import type { Momentum } from "../scoring/survival";
 
 export type PassCard = {
   id: number;
@@ -27,27 +30,36 @@ export type PassCard = {
   last_liq: number | null;
   wallet_buys: number;
   tape_lead: string | null;
+  survival: number | null;
+  momentum: Momentum | null;
+  band: CapBand | null;
+  story: string | null;
 };
 
 export type LiveBoard = {
   at: string;
   live: PassCard[];
   archived: PassCard[];
+  performers: PassCard[];
   days: DayRoll[];
+  census: { tokens: number; passed: number };
   totals: {
     live: number;
     archived: number;
     dead: number;
     passed: number;
+    tokens: number;
     avgGainPct: number | null;
     avgAthPct: number | null;
+    avgSurvival: number | null;
     hit2x: number;
   };
 };
 
 const SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.called_at, tr.peak_mc, tr.last_mc,
             tr.gain_x, tr.ath_x, tr.gain_pct, tr.ath_pct, tr.status, tr.last_liq,
-            t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase, t.tape_lead
+            t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase, t.tape_lead,
+            t.survival_score, t.last_momentum, t.last_narrative, t.cap_band
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id`;
 
@@ -80,7 +92,23 @@ function card(row: Record<string, unknown>): PassCard {
     last_liq: row.last_liq != null ? Number(row.last_liq) : null,
     wallet_buys: Number(row.wallet_buys ?? 0),
     tape_lead: (row.tape_lead as string | null) ?? null,
+    survival: row.survival_score != null ? Number(row.survival_score) : null,
+    momentum: (row.last_momentum as Momentum | null) ?? null,
+    band: (row.cap_band as CapBand | null) ?? capBand(last),
+    story: (row.last_narrative as string | null) ?? null,
   };
+}
+
+function uniqueByToken(cards: PassCard[]): PassCard[] {
+  const seen = new Set<number>();
+  const out: PassCard[] = [];
+  for (const c of cards) {
+    if (isNoiseToken(c.mint, c.symbol)) continue;
+    if (seen.has(c.token_id)) continue;
+    seen.add(c.token_id);
+    out.push(c);
+  }
+  return out;
 }
 
 export async function rollupDays(): Promise<void> {
@@ -125,13 +153,13 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     `${SELECT}
      WHERE tr.status IN ('open','trim') AND COALESCE(t.phase,'ward') <> 'deceased'
      ORDER BY tr.called_at DESC
-     LIMIT 40`,
+     LIMIT 80`,
   );
   const archived = await pool.query(
     `${SELECT}
      WHERE tr.status IN ('dead','exit') OR t.phase = 'deceased'
      ORDER BY COALESCE(tr.closed_at, tr.called_at) DESC
-     LIMIT 40`,
+     LIMIT 80`,
   );
   const dayRows = await pool.query(
     `SELECT (tr.called_at AT TIME ZONE 'UTC')::date::text AS day,
@@ -171,24 +199,46 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     // use rolled days
   }
 
-  const liveCards = live.rows.map((r) => card(r as Record<string, unknown>));
-  const archCards = archived.rows.map((r) => card(r as Record<string, unknown>));
+  const liveCards = uniqueByToken(live.rows.map((r) => card(r as Record<string, unknown>)));
+  const archCards = uniqueByToken(archived.rows.map((r) => card(r as Record<string, unknown>)));
   const allPct = [...liveCards, ...archCards];
   const gains = allPct.map((c) => c.gain_pct).filter((n): n is number => n != null);
   const aths = allPct.map((c) => c.ath_pct).filter((n): n is number => n != null);
+  const survs = allPct.map((c) => c.survival).filter((n): n is number => n != null);
+  const performers = [...liveCards]
+    .sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999))
+    .slice(0, 8);
+
+  let tokens = 0;
+  let passedN = liveCards.length + archCards.length;
+  try {
+    const cen = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM f2_tokens WHERE source = 'wallet_buy' OR wallet_buys > 0) AS tokens,
+         (SELECT COUNT(*)::int FROM ward_trades) AS passed`,
+    );
+    tokens = Number(cen.rows[0]?.tokens ?? 0);
+    passedN = Number(cen.rows[0]?.passed ?? passedN);
+  } catch {
+    // first boot
+  }
 
   return {
     at: new Date().toISOString(),
     live: liveCards,
     archived: archCards,
+    performers,
     days,
+    census: { tokens, passed: passedN },
     totals: {
       live: liveCards.length,
       archived: archCards.filter((c) => c.lane === "archived").length,
       dead: archCards.filter((c) => c.lane === "dead").length,
-      passed: liveCards.length + archCards.length,
+      passed: passedN,
+      tokens,
       avgGainPct: gains.length ? gains.reduce((s, n) => s + n, 0) / gains.length : null,
       avgAthPct: aths.length ? aths.reduce((s, n) => s + n, 0) / aths.length : null,
+      avgSurvival: survs.length ? survs.reduce((s, n) => s + n, 0) / survs.length : null,
       hit2x: aths.filter((n) => n >= 100).length,
     },
   };
@@ -234,5 +284,5 @@ export async function passesOnDay(day: string): Promise<PassCard[]> {
      LIMIT 80`,
     [day],
   );
-  return r.rows.map((row) => card(row as Record<string, unknown>));
+  return uniqueByToken(r.rows.map((row) => card(row as Record<string, unknown>)));
 }

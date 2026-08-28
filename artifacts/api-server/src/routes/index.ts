@@ -276,7 +276,7 @@ router.get("/desk", async (req, res) => {
         watch: [],
         verdicts: [],
         stream: [],
-        performers: board.live.slice(0, 8).sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999)),
+        performers: board.performers,
         paper: {
           n: board.totals.passed,
           wins: board.totals.hit2x,

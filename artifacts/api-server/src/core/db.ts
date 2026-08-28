@@ -251,6 +251,8 @@ const SCHEMA: string[] = [
      narrative text,
      updated_at timestamptz NOT NULL DEFAULT NOW()
    )`,
+  `ALTER TABLE ward_memory ADD COLUMN IF NOT EXISTS hour jsonb NOT NULL DEFAULT '{}'::jsonb`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_momentum text`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,

@@ -1,11 +1,12 @@
 /**
- * Token story — a short natural read of pulse vs confirm, with memory.
- * Written for the patient page, not for logs.
+ * Token story — a short natural read of the snapshot series, with memory.
+ * Research copy for the detail page. Not an order ticket.
  */
 import { cautionLevel, type AgentMemory, type Fill } from "./memory";
+import type { Momentum } from "./survival";
 
 export type OtherSnap = {
-  kind: "pulse" | "confirm";
+  kind: "pulse" | "confirm" | "hour";
   mc: number | null;
   mcSlope: number | null;
   tapeLead: string | null;
@@ -13,7 +14,7 @@ export type OtherSnap = {
 
 export type NarrativeInput = {
   symbol: string;
-  kind: "pulse" | "confirm";
+  kind: "pulse" | "confirm" | "hour";
   phase: string;
   tapeLead: string | null;
   mc: number | null;
@@ -28,6 +29,9 @@ export type NarrativeInput = {
   memory: AgentMemory;
   walletBuys: number;
   locked: boolean;
+  survival?: number | null;
+  momentum?: Momentum | null;
+  prevStory?: string | null;
 };
 
 function usd(n: number | null): string {
@@ -44,13 +48,10 @@ function pct(slope: number | null): string | null {
   return `${p >= 0 ? "+" : ""}${n}%`;
 }
 
-function phaseLine(phase: string): string {
-  if (phase === "icu") return "This one is in ICU — sellers have the live hour, so we stand aside.";
-  if (phase === "revived") return "A tracked wallet bought a mint we had called dead. That is a revival, not a clean bill.";
-  if (phase === "recovery") return "Coming back from ICU. We want two quiet confirms before we trust it.";
-  if (phase === "intake") return "Just admitted from a wallet buy. The first prints are still proving the tape.";
-  if (phase === "deceased") return "Flatlined. A bounce on an empty book is not a trade.";
-  return "On the ward — stable enough to watch, not assumed healthy.";
+function kindLabel(kind: string): string {
+  if (kind === "pulse") return "10m";
+  if (kind === "hour") return "1h";
+  return "15m";
 }
 
 function fillLine(kind: string, fill: NarrativeInput["fill"], mem: AgentMemory): string | null {
@@ -64,42 +65,40 @@ function fillLine(kind: string, fill: NarrativeInput["fill"], mem: AgentMemory):
     bits.push(`holders are carried (${mem.caution.missingHolders} incomplete ${kind}s in a row)`);
   }
   if (!bits.length) return null;
-  return `This ${kind} is incomplete: ${bits.join("; ")}. Missing data is not a pass.`;
+  return `This ${kindLabel(kind)} print is incomplete: ${bits.join("; ")}. Missing data is not a clean read.`;
 }
 
 function tapeLine(lead: string | null, mcSlope: number | null, kind: string): string {
+  const label = kindLabel(kind);
   const move = pct(mcSlope);
-  if (lead === "buyers" && move) return `On the ${kind}, buyers still lead and MC is ${move} vs the last ${kind}.`;
-  if (lead === "buyers") return `On the ${kind}, buyers lead, but we do not have a live slope yet.`;
-  if (lead === "sellers" && move) return `Sellers have the ${kind} and MC is ${move}. That is not a dip to buy.`;
-  if (lead === "sellers") return `Sellers have the ${kind}.`;
-  if (lead === "two_sided") return `The ${kind} tape is two-sided — nobody is in control.`;
-  if (move) return `MC on the ${kind} is ${move}; the tape itself is unread.`;
-  return `The ${kind} tape is quiet.`;
+  if (lead === "buyers" && move) return `On the ${label}, buyers still lead and MC is ${move} vs the last ${label}.`;
+  if (lead === "buyers") return `On the ${label}, buyers lead, but we do not have a live slope yet.`;
+  if (lead === "sellers" && move) return `Sellers have the ${label} and MC is ${move}.`;
+  if (lead === "sellers") return `Sellers have the ${label}.`;
+  if (lead === "two_sided") return `The ${label} tape is two-sided — nobody is in control.`;
+  if (move) return `MC on the ${label} is ${move}; the tape itself is unread.`;
+  return `The ${label} tape is quiet.`;
 }
 
-function otherLine(kind: "pulse" | "confirm", other: OtherSnap | null): string | null {
-  if (!other) {
-    return kind === "pulse"
-      ? "We do not have a confirm yet, so this is only the fast print."
-      : "We do not have a pulse yet to check the last two minutes.";
-  }
-  const label = other.kind;
+function otherLine(other: OtherSnap | null): string | null {
+  if (!other) return null;
+  const label = kindLabel(other.kind);
   const move = pct(other.mcSlope);
   const mc = usd(other.mc);
-  if (other.tapeLead === "sellers") return `${label[0].toUpperCase()}${label.slice(1)} (${mc}) is sell-led${move ? ` and ${move}` : ""}.`;
-  if (move) return `${label[0].toUpperCase()}${label.slice(1)} last showed ${mc}, ${move}.`;
-  return `${label[0].toUpperCase()}${label.slice(1)} last showed ${mc}.`;
+  if (other.tapeLead === "sellers") return `The last ${label} (${mc}) was sell-led${move ? ` and ${move}` : ""}.`;
+  if (move) return `The last ${label} showed ${mc}, ${move}.`;
+  return `The last ${label} showed ${mc}.`;
 }
 
 function memoryLine(mem: AgentMemory): string | null {
   const level = cautionLevel(mem);
   const c = mem.caution;
+  const lastNote = c.notes[c.notes.length - 1];
   if (level === "blocked") {
-    if (c.dumps >= 2) return "Memory is blocked: two dump prints in a row. We will not lock until confirms go quiet.";
+    if (c.dumps >= 2) return `Memory is blocked after two dump prints. Last note: ${lastNote ?? "stay out until confirms go quiet"}.`;
     if (c.missingMc >= 3) return "Memory is blocked: three prints without a live market-cap.";
     if (c.disagree >= 3) return "Memory is blocked: Dex and pump have disagreed too many times to trust the number.";
-    return "Memory is blocked. Agents stay out until the next clean confirm.";
+    return lastNote ? `Memory is blocked. ${lastNote}` : "Memory is blocked until the next clean hour print.";
   }
   if (level === "wary") {
     const why: string[] = [];
@@ -108,23 +107,24 @@ function memoryLine(mem: AgentMemory): string | null {
     if (c.thinQuality >= 2) why.push("thin sources");
     if (c.disagree >= 1) why.push("feeds still disagree");
     if (c.missingMc >= 1) why.push("an incomplete MC print");
-    return `Agents are wary from ${why.join(", ") || "earlier prints"}. That caution holds until two clean confirms.`;
+    return `Still wary from ${why.join(", ") || "earlier prints"}. ${lastNote ?? "That caution holds until two clean confirms."}`;
   }
-  return null;
+  return lastNote ? `Earlier: ${lastNote}` : null;
 }
 
 export function tellStory(i: NarrativeInput): string {
   const ticker = i.symbol.startsWith("$") ? i.symbol : `$${i.symbol}`;
-  const kind = i.kind;
   const sentences: string[] = [];
+  const surv = i.survival != null ? ` Survival ${i.survival}.` : "";
+  const mom = i.momentum && i.momentum !== "unread" ? ` Momentum ${i.momentum}.` : "";
 
-  sentences.push(`${ticker} is ${usd(i.mc)} on this ${kind}. ${phaseLine(i.phase)}`);
-  sentences.push(tapeLine(i.tapeLead, i.mcSlope, kind));
+  sentences.push(`${ticker} is ${usd(i.mc)} on this ${kindLabel(i.kind)} snapshot.${surv}${mom}`);
+  sentences.push(tapeLine(i.tapeLead, i.mcSlope, i.kind));
 
-  const fill = fillLine(kind, i.fill, i.memory);
+  const fill = fillLine(i.kind, i.fill, i.memory);
   if (fill) sentences.push(fill);
 
-  const other = otherLine(kind, i.other);
+  const other = otherLine(i.other);
   if (other) sentences.push(other);
 
   if (i.liq != null && i.mc != null && i.mc > 0 && i.fill.liq === "live") {
@@ -138,11 +138,11 @@ export function tellStory(i: NarrativeInput): string {
   if (mem) sentences.push(mem);
 
   if (i.locked) {
-    sentences.push("This mint is already locked. The story now is about the exit, not a new entry.");
+    sentences.push("Already on the pass book. This is a read of how it is surviving — not a new entry call.");
   } else if (i.walletBuys >= 2 && cautionLevel(i.memory) === "clear" && i.fill.mc === "live") {
-    sentences.push(`${i.walletBuys} tracked wallets are in. The book still waits for the four desks to agree before a lock.`);
+    sentences.push(`${i.walletBuys} tracked wallets are in. The gate still has to pass before it is a pass.`);
   } else {
-    sentences.push("Nothing here is a lock by itself — watch the next confirm.");
+    sentences.push("Use this as context. The next 15m / 1h print is the one that confirms or fades it.");
   }
 
   return sentences.filter(Boolean).join(" ");

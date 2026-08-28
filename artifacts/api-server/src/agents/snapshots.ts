@@ -1,13 +1,15 @@
 /**
- * SNAPSHOTS agent — two independent series:
- *   pulse   every ~2 minutes (fast tape / MC / holders)
- *   confirm every ~5 minutes (same vitals, used to agree or veto a lock)
+ * SNAPSHOTS — judgment after a pass, not a lock bot.
  *
- * Missing prints are flagged, never sloped. Last-known values may be shown
- * as stale. Agent memory ratchets on dumps and unread fields so the next
- * tick cannot pretend the last miss did not happen.
+ *   pulse    every 10 minutes
+ *   confirm  every 15 minutes
+ *   hour     every 1 hour
+ *
+ * Each print reads previous memory, writes a story, and updates survival /
+ * momentum from the continued series. Missing prints are never sloped.
  */
 import { pool } from "../core/db";
+import { emitSse } from "../core/bus";
 import {
   capBand, snapshotCadenceMs, snapshotSuggestions, slope,
   type Suggestion,
@@ -17,10 +19,12 @@ import {
   type AgentMemory, type Fill,
 } from "../scoring/memory";
 import { tellStory } from "../scoring/narrative";
+import { judgeSeries, type Momentum } from "../scoring/survival";
 import { agentNote } from "./log";
+import { emitLiveStats } from "./stats";
 
-const BATCH = 24;
-const KINDS = ["pulse", "confirm"] as const;
+const BATCH = 16;
+const KINDS = ["pulse", "confirm", "hour"] as const;
 type Kind = (typeof KINDS)[number];
 
 type Row = {
@@ -36,6 +40,7 @@ type Row = {
   survival_score: number | null;
   tape_lead: string | null;
   last_reasons: unknown;
+  last_narrative: string | null;
 };
 
 type PrevSnap = {
@@ -80,7 +85,7 @@ async function lastOfKind(tokenId: number, kind: Kind): Promise<PrevSnap | null>
 async function loadMemory(tokenId: number): Promise<AgentMemory> {
   try {
     const r = await pool.query(
-      `SELECT caution, pulse, confirm FROM ward_memory WHERE token_id = $1`,
+      `SELECT caution, pulse, confirm, hour FROM ward_memory WHERE token_id = $1`,
       [tokenId],
     );
     if (!r.rows[0]) return emptyMemory();
@@ -92,23 +97,46 @@ async function loadMemory(tokenId: number): Promise<AgentMemory> {
 
 async function saveMemory(tokenId: number, mem: AgentMemory, narrative: string): Promise<void> {
   await pool.query(
-    `INSERT INTO ward_memory (token_id, caution, pulse, confirm, narrative, updated_at)
-     VALUES ($1,$2,$3,$4,$5, NOW())
+    `INSERT INTO ward_memory (token_id, caution, pulse, confirm, hour, narrative, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6, NOW())
      ON CONFLICT (token_id) DO UPDATE SET
        caution = EXCLUDED.caution,
        pulse = EXCLUDED.pulse,
        confirm = EXCLUDED.confirm,
+       hour = EXCLUDED.hour,
        narrative = EXCLUDED.narrative,
        updated_at = NOW()`,
-    [tokenId, JSON.stringify(mem.caution), JSON.stringify(mem.pulse), JSON.stringify(mem.confirm), narrative],
+    [
+      tokenId,
+      JSON.stringify(mem.caution),
+      JSON.stringify(mem.pulse),
+      JSON.stringify(mem.confirm),
+      JSON.stringify(mem.hour),
+      narrative,
+    ],
   );
   await pool.query(`UPDATE f2_tokens SET last_narrative = $2 WHERE id = $1`, [tokenId, narrative]);
 }
 
+async function writeSurvival(tokenId: number): Promise<{ survival: number; momentum: Momentum } | null> {
+  const r = await pool.query(
+    `SELECT kind, mc_usd, mc_slope, liq_slope, holder_slope, incomplete, score
+     FROM ward_snapshots WHERE token_id = $1 ORDER BY at DESC LIMIT 12`,
+    [tokenId],
+  );
+  const judged = judgeSeries(r.rows as Array<{
+    kind: string; mc_usd: number | null; mc_slope: number | null;
+    liq_slope: number | null; holder_slope: number | null; incomplete: boolean | null; score: number | null;
+  }>);
+  await pool.query(
+    `UPDATE f2_tokens SET survival_score = $2, last_momentum = $3 WHERE id = $1`,
+    [tokenId, judged.survival, judged.momentum],
+  );
+  return judged;
+}
+
 async function writeKind(row: Row, kind: Kind): Promise<boolean> {
   const band = capBand(row.last_mc) ?? "low";
-  if (capBand(row.last_mc) === "mega" && row.phase !== "icu" && kind === "pulse") return false;
-
   const prev = await lastOfKind(row.id, kind);
   const cadence = snapshotCadenceMs(band, row.phase || "ward", kind);
   if (prev && Date.now() - prev.at < cadence) return false;
@@ -186,10 +214,22 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
     quality: s.quality ?? row.last_quality,
   });
 
-  const locked = (await pool.query("SELECT 1 FROM ward_trades WHERE token_id = $1 LIMIT 1", [row.id])).rows.length > 0;
-  const otherKind: Kind = kind === "pulse" ? "confirm" : "pulse";
+  const locked = (await pool.query(
+    "SELECT 1 FROM ward_trades WHERE token_id = $1 AND status IN ('open','trim') LIMIT 1",
+    [row.id],
+  )).rows.length > 0;
+  const otherKind: Kind = kind === "pulse" ? "confirm" : kind === "confirm" ? "hour" : "pulse";
   const other = await lastOfKind(row.id, otherKind);
   const ticker = row.symbol || row.mint.slice(0, 6);
+  const series = await pool.query(
+    `SELECT kind, mc_usd, mc_slope, liq_slope, holder_slope, incomplete, score
+     FROM ward_snapshots WHERE token_id = $1 ORDER BY at DESC LIMIT 12`,
+    [row.id],
+  );
+  const judged = judgeSeries(series.rows as Array<{
+    kind: string; mc_usd: number | null; mc_slope: number | null;
+    liq_slope: number | null; holder_slope: number | null; incomplete: boolean | null; score: number | null;
+  }>);
   const narrative = tellStory({
     symbol: ticker,
     kind,
@@ -209,6 +249,9 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
     memory: mem,
     walletBuys: row.wallet_buys,
     locked,
+    survival: judged.survival,
+    momentum: judged.momentum,
+    prevStory: row.last_narrative,
   });
   const headline = suggestions[0]?.title ?? (fill.mc === "live" ? "observed" : "incomplete print");
   const incomplete = fill.mc !== "live" || fill.liq !== "live" || fill.holders !== "live";
@@ -222,7 +265,7 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
     [
       row.id, band, kind,
       displayMc, displayLiq, displayHolders, s.top10_pct,
-      s.score ?? row.survival_score, s.phase || row.phase,
+      judged.survival, s.phase || row.phase,
       s.quality ?? row.last_quality,
       (tape.lead as string | undefined) ?? row.tape_lead,
       mcSlope, liqSlope, holderSlope,
@@ -238,27 +281,29 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
   );
   try {
     await saveMemory(row.id, mem, narrative);
+    await writeSurvival(row.id);
   } catch {
     // ward_memory lands on first schema pass
   }
   await agentNote(
     "snapshots",
-    suggestions[0]?.severity === "act" ? "ALERT" : incomplete ? "GAP" : kind === "pulse" ? "PULSE" : "CONFIRM",
-    `$${ticker} ${kind} ${incomplete ? "incomplete" : band} · ${headline}`,
-    { tokenId: row.id, mint: row.mint },
+    kind === "hour" ? "HOUR" : kind === "pulse" ? "PULSE" : "CONFIRM",
+    `$${ticker} ${kind} ${incomplete ? "incomplete" : band} · survival ${judged.survival} · ${headline}`,
+    { tokenId: row.id, mint: row.mint, quiet: true },
   );
   return true;
 }
 
 export async function snapshotsTick(): Promise<{ wrote: number; skipped: number }> {
   const due = await pool.query(
-    `SELECT id, mint, symbol, phase, last_mc, last_liq, last_holders, last_quality,
-            wallet_buys, survival_score, tape_lead, last_reasons
-     FROM f2_tokens
-     WHERE (source = 'wallet_buy' OR wallet_buys > 0)
-       AND COALESCE(phase, 'intake') IN ('intake','ward','icu','recovery','revived')
-     ORDER BY CASE COALESCE(phase,'intake') WHEN 'icu' THEN 0 WHEN 'intake' THEN 1 ELSE 2 END,
-              last_snapshot_at ASC NULLS FIRST
+    `SELECT t.id, t.mint, t.symbol, t.phase, t.last_mc, t.last_liq, t.last_holders, t.last_quality,
+            t.wallet_buys, t.survival_score, t.tape_lead, t.last_reasons, t.last_narrative
+     FROM f2_tokens t
+     LEFT JOIN ward_trades tr ON tr.token_id = t.id AND tr.status IN ('open','trim')
+     WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)
+       AND COALESCE(t.phase, 'intake') IN ('intake','ward','icu','recovery','revived')
+     ORDER BY CASE WHEN tr.id IS NOT NULL THEN 0 ELSE 1 END,
+              t.last_snapshot_at ASC NULLS FIRST
      LIMIT ${BATCH}`,
   );
   let wrote = 0;
@@ -276,5 +321,9 @@ export async function snapshotsTick(): Promise<{ wrote: number; skipped: number 
     }
   }
 
+  if (wrote) {
+    emitSse("snapshot:tick", { wrote, skipped });
+    await emitLiveStats();
+  }
   return { wrote, skipped };
 }

@@ -74,7 +74,7 @@ function acquire(
       s.connected = false;
       for (const fn of s.connListeners) fn(false);
     };
-    for (const ev of ["alert:new", "vitals:tick", "watch:update", "desk:update", "agent:note", "stats:live", "pass:new", "archive:tick"]) {
+    for (const ev of ["alert:new", "vitals:tick", "watch:update", "desk:update", "agent:note", "stats:live", "pass:new", "archive:tick", "snapshot:tick"]) {
       es.addEventListener(ev, (e) => {
         if (ev === "stats:live" && e instanceof MessageEvent) {
           try {
