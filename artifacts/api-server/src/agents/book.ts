@@ -119,11 +119,11 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
     const athX = plan.athX;
     const gPct = gainPct(lastMc, row.entry_mc);
     const aPct = athPct(peak, row.entry_mc);
+    const rug = (lastMc != null && lastMc < 5_000) || row.phase === "deceased";
     let status = row.status;
-    if (plan.action === "exit" && dead) status = "dead";
-    else if (plan.action === "exit") status = "exit";
-    else if (plan.action === "trim") status = "trim";
-    else status = "open";
+    if (rug) status = "dead";
+    else if (status === "exit" || status === "dead") status = row.status;
+    else status = plan.action === "trim" ? "trim" : "open";
 
     const flipped = plan.action !== (row.exit_action ?? "hold") || plan.title !== (row.exit_title ?? "");
     await pool.query(
@@ -152,18 +152,18 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
     if (plan.action !== "hold") {
       await raiseAlert({
         tokenId: row.token_id,
-        kind: plan.action === "trim" ? "trim" : "exit",
-        title: `${plan.action === "trim" ? "TRIM" : "EXIT"} $${ticker}`,
+        kind: "watch",
+        title: `NOTE $${ticker}`,
         body: `${plan.title}. ${plan.body} Now ${gainX?.toFixed(2) ?? "—"}× · ATH ${athX?.toFixed(2) ?? "—"}×.`,
         payload: {
           mint: row.mint, symbol: ticker, entry: row.entry_mc, last: lastMc, peak,
           gainX, athX, action: plan.action, takePct: plan.takePct,
         },
-        telegram: true,
+        telegram: false,
       });
     }
-    await agentNote("book", plan.action.toUpperCase(), `$${ticker} ${plan.title} · ${gainX?.toFixed(2) ?? "—"}×`, {
-      tokenId: row.token_id, mint: row.mint, quiet: plan.action === "hold",
+    await agentNote("book", "NOTE", `$${ticker} ${plan.title} · ${gainX?.toFixed(2) ?? "—"}×`, {
+      tokenId: row.token_id, mint: row.mint, quiet: true,
     });
   }
 

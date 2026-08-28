@@ -1,7 +1,7 @@
 import { useRoute, useLocation } from "wouter";
 import {
   api, fmtUsd, fmtGainPct, fmtPassAt, fmtSignedX, timeAgo, shortMint, shortWallet, gmgnUrl,
-  type PatientChart, type TapeWindow, type TradeCard, type Check, type DecisionReasons,
+  type PatientChart, type TapeWindow, type TradeCard, type Check, type DecisionReasons, type SnapshotRow,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
@@ -38,16 +38,28 @@ function TapeBlock({ label, w }: { label: string; w?: TapeWindow | null }) {
   );
 }
 
-function Checks({ checks }: { checks: Check[] }) {
-  if (!checks.length) return null;
+function kindLabel(kind?: string): string {
+  if (kind === "pulse") return "10m";
+  if (kind === "hour") return "1h";
+  if (kind === "confirm") return "15m";
+  return kind || "snap";
+}
+
+function SnapCard({ s }: { s: SnapshotRow }) {
+  const slope = s.mc_slope;
   return (
-    <ul className="checks">
-      {checks.map((c) => (
-        <li key={c.text} className={c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"}>
-          {c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"} — {c.text}
-        </li>
-      ))}
-    </ul>
+    <div className={`snap-card ${s.incomplete ? "thin" : ""}`}>
+      <div className="snap-top">
+        <b>{kindLabel(s.kind)}</b>
+        <em>{timeAgo(s.at)}</em>
+      </div>
+      <div className="snap-mc">{fmtUsd(s.mc_usd)}</div>
+      <div className={`meta ${slope != null && slope >= 0 ? "up" : "down"}`}>
+        {slope != null ? `${slope >= 0 ? "+" : ""}${(slope * 100).toFixed(1)}%` : "no slope"}
+        {s.score != null ? ` · surv ${s.score}` : ""}
+      </div>
+      {s.narrative && <p className="story-clip">{s.narrative}</p>}
+    </div>
   );
 }
 
@@ -58,7 +70,7 @@ export default function PatientPage() {
   const { connected, tick } = useSse();
   const q = usePoll<PatientChart>(
     () => api(`api/patient/${id}`),
-    connected ? 45_000 : 10_000,
+    connected ? 20_000 : 8_000,
     [id, tick],
   );
 
@@ -90,7 +102,11 @@ export default function PatientPage() {
       ...(reasons.fails ?? []).map((text) => ({ text, hold: false as const })),
       ...(reasons.unknowns ?? []).map((text) => ({ text, hold: null })),
     ];
-  const call = reasons.call || t.last_verdict || "pass";
+  const snaps = [...(d.snapshots ?? [])].reverse().slice(0, 12);
+  const notes = d.memory?.caution && typeof d.memory.caution === "object"
+    ? (d.memory.caution as { notes?: string[] }).notes ?? []
+    : [];
+  const story = d.narrative || reasons.thesis || "";
 
   const copyMint = () => {
     void navigator.clipboard?.writeText(t.mint);
@@ -105,7 +121,7 @@ export default function PatientPage() {
 
       <div className="hero">
         {t.image && (
-          <img src={t.image} alt="" className="thumb" style={{ width: 64, height: 64, borderRadius: 20 }} />
+          <img src={t.image} alt="" className="thumb lg" style={{ width: 72, height: 72, borderRadius: 22 }} />
         )}
         <div className="hero-copy">
           <h1>${t.symbol || t.name || shortMint(t.mint)}</h1>
@@ -117,16 +133,17 @@ export default function PatientPage() {
             <a className="cta-gmgn" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
             <a className="link" href={`https://dexscreener.com/solana/${t.mint}`} target="_blank" rel="noreferrer">DexScreener</a>
             <a className="link" href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump.fun</a>
-            <button type="button" className="link" onClick={() => nav("/alerts")}>Days</button>
           </div>
         </div>
       </div>
 
-      {(reasons.thesis || reasons.qualityNote) && (
+      {story && (
         <div className="story">
-          <div className="k">{call}{reasons.quality && reasons.quality !== "live" ? ` · ${reasons.quality} data` : ""}</div>
-          <p>{reasons.thesis || d.narrative}</p>
-          {reasons.qualityNote && <p className="quality-note">{reasons.qualityNote}</p>}
+          <div className="k">
+            {trade ? "surviving" : "read"}
+            {t.survival_score != null ? ` · ${t.survival_score}` : ""}
+          </div>
+          <p>{story}</p>
         </div>
       )}
 
@@ -141,34 +158,61 @@ export default function PatientPage() {
         </div>
       </div>
 
+      <div className="grid3">
+        <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Now</span></div>
+        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "At pass" : "Admit"}</span></div>
+        <div className="vit"><b>{t.survival_score ?? "—"}</b><span>Survival</span></div>
+        <div className="vit"><b>{fmtUsd(t.last_liq)}</b><span>Liquidity</span></div>
+        <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
+        <div className="vit"><b>{t.wallet_buys}</b><span>Wallets</span></div>
+      </div>
+
+      {snaps.length > 0 && (
+        <>
+          <div className="section-h">Snapshots · 10m / 15m / 1h</div>
+          <div className="snap-list">
+            {snaps.map((s) => (
+              <SnapCard key={`${s.kind}-${s.at}`} s={s} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {notes.length > 0 && (
+        <>
+          <div className="section-h">Memory</div>
+          <ol className="stream">
+            {notes.slice().reverse().slice(0, 8).map((n, i) => (
+              <li key={`${n}-${i}`}>
+                <span className="t">note</span>
+                <b className="k-read">MEM</b>
+                <span>{n}</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+
       {trade?.exit_title && (
-        <div className={`alert kind-${trade.exit_action === "exit" ? "act" : trade.exit_action === "trim" ? "watch" : "info"}`}>
-          <div className="k">{trade.exit_action ?? "hold"}{trade.exit_take_pct ? ` · ${trade.exit_take_pct}%` : ""}</div>
+        <div className="alert kind-watch">
+          <div className="k">note</div>
           <h3>{trade.exit_title}</h3>
           {trade.exit_body && <p>{trade.exit_body}</p>}
         </div>
       )}
 
-      <div className="section-h">How it decided</div>
-      {checks.length === 0 && <div className="empty">Waiting on the first Dex read.</div>}
-      <Checks checks={checks} />
-
-      {d.watch && !trade && (
-        <div className="alert kind-watch">
-          <div className="k">stalking</div>
-          <h3>{d.watch.headline || "Livable pool, hour not clean enough to size"}</h3>
-          <p>The gate has not passed. Buyers have to take the live hour, MC has to stay above the rug zone, and Dex has to actually print a tape.</p>
-        </div>
+      {checks.length > 0 && !trade && (
+        <>
+          <div className="section-h">Gate</div>
+          <ul className="checks">
+            {checks.map((c) => (
+              <li key={c.text} className={c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"}>
+                {c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"} — {c.text}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
-
-      <div className="grid3">
-        <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Now</span></div>
-        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "At pass" : "Admit"}</span></div>
-        <div className="vit"><b>{fmtUsd(trade?.peak_mc ?? t.peak_mc)}</b><span>ATH</span></div>
-        <div className="vit"><b>{fmtUsd(t.last_liq)}</b><span>Liquidity</span></div>
-        <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
-        <div className="vit"><b>{t.wallet_buys}</b><span>Wallets</span></div>
-      </div>
 
       <div className="section-h">Tape</div>
       <div className="grid3">
@@ -179,20 +223,6 @@ export default function PatientPage() {
 
       <div className="section-h">{trade ? "Since pass" : "Market cap"}</div>
       <Spark points={spark} admit={entry ?? null} />
-
-      {(d.sources ?? []).length > 0 && (
-        <>
-          <div className="section-h">Public feeds</div>
-          <div className="grid3">
-            {(d.sources ?? []).slice(0, 6).map((s) => (
-              <div key={`${s.source}-${s.at}`} className={`vit ${s.ok ? "" : "down"}`}>
-                <b>{s.ok ? "ok" : "miss"}</b>
-                <span>{s.source} · {fmtUsd(s.mc_usd)}</span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
 
       <div className="section-h">Wallets</div>
       <div className="list">

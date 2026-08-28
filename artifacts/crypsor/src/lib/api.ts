@@ -203,6 +203,10 @@ export type PassCard = {
   last_liq: number | null;
   wallet_buys: number;
   tape_lead: string | null;
+  survival?: number | null;
+  momentum?: "up" | "flat" | "down" | "unread" | null;
+  band?: "low" | "mid" | "mega" | null;
+  story?: string | null;
 };
 
 export type DayRoll = {
@@ -221,14 +225,18 @@ export type LiveBoard = {
   at: string;
   live: PassCard[];
   archived: PassCard[];
+  performers?: PassCard[];
   days: DayRoll[];
+  census?: { tokens: number; passed: number };
   totals: {
     live: number;
     archived: number;
     dead: number;
     passed: number;
+    tokens?: number;
     avgGainPct: number | null;
     avgAthPct: number | null;
+    avgSurvival?: number | null;
     hit2x: number;
   };
 };

@@ -1,18 +1,18 @@
 /**
- * Omo desk runtime — wallet-buy discovery, then the omo read → gate → book loop.
+ * Desk runtime — wallet-buy discovery, omo gate, then live prints + snapshots.
  *
- *   intake   tracked-wallet buys (Helius) — the only discovery source
- *   vitals   DexScreener tape + pump.fun callback + omo gate
- *   book     omo exit rules on locked names
- *   reporter census + prune
- *
- * Debate, dual snapshots, GMGN-required lock, and backtest weights are gone.
- * Render Starter: this process stays up, so the intervals below are the scheduler.
+ *   intake     tracked-wallet buys (Helius), swap-verified, majors dropped
+ *   vitals     Dex / pump.fun prints. Once passed, data rolls — no re-gate
+ *   snapshots  10m / 15m / 1h series with memory and survival
+ *   archive    random dead/exited sample for momentum
+ *   book       live stats on passes (research notes, not a trade bot)
+ *   reporter   census + prune
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
 import { archiveTick, vitalsTick } from "../agents/vitals";
+import { snapshotsTick } from "../agents/snapshots";
 import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
 
@@ -23,12 +23,13 @@ let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
 const VITALS_MS = 18_000;
+const SNAP_MS = 22_000;
 const ARCHIVE_MS = 90_000;
 const BOOK_MS = 25_000;
 const REPORT_MS = 120_000;
 
-let last = { intake: 0, vitals: 0, archive: 0, book: 0, reporter: 0 };
-let running = { intake: false, vitals: false, archive: false, book: false, reporter: false };
+let last = { intake: 0, vitals: 0, snapshots: 0, archive: 0, book: 0, reporter: 0 };
+let running = { intake: false, vitals: false, snapshots: false, archive: false, book: false, reporter: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -56,6 +57,12 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 5_000);
       setInterval(() => {
+        if (running.snapshots || Date.now() - last.snapshots < SNAP_MS) return;
+        running.snapshots = true;
+        last.snapshots = Date.now();
+        void guarded("snapshots", snapshotsTick).finally(() => { running.snapshots = false; });
+      }, 8_000);
+      setInterval(() => {
         if (running.archive || Date.now() - last.archive < ARCHIVE_MS) return;
         running.archive = true;
         last.archive = Date.now();
@@ -74,7 +81,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
       }, 15_000);
       started = true;
-      log.info("omo desk started (intake · live vitals · random archive · book · reporter)");
+      log.info("desk started (intake · vitals · 10m/15m/1h snapshots · archive · book · reporter)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -96,6 +103,7 @@ export function agentStatus(): {
     intervalsMs: {
       intake: INTAKE_MS,
       vitals: VITALS_MS,
+      snapshots: SNAP_MS,
       archive: ARCHIVE_MS,
       book: BOOK_MS,
       reporter: REPORT_MS,
@@ -108,6 +116,7 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
   await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
+  await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
   await guarded("archive", async () => { out.archive = await archiveTick(); });
   await guarded("book", async () => { out.book = await bookTick(); });
   await guarded("reporter", async () => { out.reporter = await reporterTick(); });

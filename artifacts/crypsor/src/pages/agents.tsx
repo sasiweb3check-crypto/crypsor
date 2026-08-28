@@ -10,10 +10,11 @@ const LANES = [
 ] as const;
 
 const LOOP = [
-  { id: "intake", title: "Intake", copy: "Tracked-wallet buys. The only discovery source." },
-  { id: "vitals", title: "Live gate", copy: "Fresh Dex / pump.fun prints on live passes first." },
+  { id: "intake", title: "Intake", copy: "Swap-verified wallet buys. Majors and LSTs never enter." },
+  { id: "vitals", title: "Live prints", copy: "Dex / pump.fun on live names. Once passed, data rolls — no re-gate." },
+  { id: "snapshots", title: "Snapshots", copy: "10m pulse, 15m confirm, 1h hour. Memory + survival from the series." },
   { id: "archive", title: "Archive sample", copy: "Random dead/exited passes — three at a time — watching for momentum." },
-  { id: "book", title: "Book", copy: "Exit rules on live passes. Stats roll up by day." },
+  { id: "book", title: "Book", copy: "Live stats on passes. Research notes, not a trade bot." },
 ];
 
 export default function AgentsPage() {

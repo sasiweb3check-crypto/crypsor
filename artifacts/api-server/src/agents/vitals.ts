@@ -21,6 +21,7 @@ import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
 import { considerEntry } from "./watch";
 import { emitLiveStats, syncPassPrint } from "./stats";
+import { isNoiseToken } from "../scoring/noise";
 
 const HOT = 10;
 const ARCHIVE = 3;
@@ -270,7 +271,9 @@ async function scanRows(
     }
 
     const d = decide(candidate, research ?? undefined);
-    const phase = nextPhase((row.phase as Phase) || "intake", d);
+    const phase = held
+      ? ((row.phase as Phase) || "ward")
+      : nextPhase((row.phase as Phase) || "intake", d);
     const ticker = candidate.symbol;
     const mc = candidate.mcUsd || null;
     const liq = candidate.liquidityUsd || null;
@@ -385,7 +388,7 @@ async function scanRows(
       if (d.call === "pass") refused += 1;
     }
 
-    if (phase !== prev) {
+    if (phase !== prev && !held) {
       await agentNote("ward", "PHASE", `$${ticker} ${prev} → ${phase} (${d.call})`, {
         tokenId: row.id, mint: row.mint, quiet: true,
       });
@@ -408,7 +411,7 @@ async function scanRows(
       await syncPassPrint(row.id, mc, liq);
     }
 
-    if (mc != null && mc > 0 && d.call === "buying" && !d.dead) {
+    if (mc != null && mc > 0 && d.call === "buying" && !d.dead && !held && !isNoiseToken(row.mint, ticker)) {
       const outcome = await considerEntry({
         tokenId: row.id, mint: row.mint, symbol: ticker, phase,
         call: d.call, thesis: d.thesis, checks: d.checks, refusedOn: d.refusedOn,

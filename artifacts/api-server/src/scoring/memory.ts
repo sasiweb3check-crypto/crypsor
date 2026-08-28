@@ -14,7 +14,7 @@ export type Caution = {
   missingHolders: number;
   disagree: number;
   thinQuality: number;
-  lastDumpKind: "pulse" | "confirm" | null;
+  lastDumpKind: "pulse" | "confirm" | "hour" | null;
   lastDumpAt: string | null;
   notes: string[];
 };
@@ -29,12 +29,13 @@ export type AgentMemory = {
   caution: Caution;
   pulse: KindMemory;
   confirm: KindMemory;
+  hour: KindMemory;
 };
 
 export type CautionLevel = "clear" | "wary" | "blocked";
 
 export type SnapshotEvent = {
-  kind: "pulse" | "confirm";
+  kind: "pulse" | "confirm" | "hour";
   fill: { mc: Fill; liq: Fill; holders: Fill };
   dump: boolean;
   exodus: boolean;
@@ -52,6 +53,7 @@ export function emptyMemory(): AgentMemory {
     },
     pulse: { incomplete: 0, lastAt: null, lastFill: null },
     confirm: { incomplete: 0, lastAt: null, lastFill: null },
+    hour: { incomplete: 0, lastAt: null, lastFill: null },
   };
 }
 
@@ -112,8 +114,9 @@ export function remember(prev: AgentMemory, ev: SnapshotEvent, now = new Date())
     caution.notes = note(caution.notes, `${ev.kind}: holders left between prints — that is exit, not a dip`);
   }
 
+  const prevKind = prev[ev.kind] ?? { incomplete: 0, lastAt: null, lastFill: null };
   const kindMem: KindMemory = {
-    incomplete: bump(prev[ev.kind].incomplete, incomplete),
+    incomplete: bump(prevKind.incomplete, incomplete),
     lastAt: now.toISOString(),
     lastFill: ev.fill,
   };
@@ -122,6 +125,7 @@ export function remember(prev: AgentMemory, ev: SnapshotEvent, now = new Date())
     caution,
     pulse: ev.kind === "pulse" ? kindMem : prev.pulse,
     confirm: ev.kind === "confirm" ? kindMem : prev.confirm,
+    hour: ev.kind === "hour" ? kindMem : (prev.hour ?? emptyMemory().hour),
   };
 }
 
@@ -142,5 +146,6 @@ export function parseMemory(raw: unknown): AgentMemory {
     caution: { ...base.caution, ...(o.caution ?? {}) },
     pulse: { ...base.pulse, ...(o.pulse ?? {}) },
     confirm: { ...base.confirm, ...(o.confirm ?? {}) },
+    hour: { ...base.hour, ...(o.hour ?? {}) },
   };
 }

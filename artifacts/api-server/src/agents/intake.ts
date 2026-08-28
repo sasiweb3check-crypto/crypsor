@@ -7,6 +7,8 @@ import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { recentBuys } from "../sources/helius";
 import { coin as pumpCoin } from "../sources/pumpfun";
+import { pairsForMints } from "../sources/dexscreener";
+import { isNoiseToken } from "../scoring/noise";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
 
@@ -33,10 +35,26 @@ export async function intakeTick(): Promise<{ wallets: number; buys: number; adm
 
   for (const w of batch) {
     const found = await recentBuys(w.address, 20);
-    for (const b of found) {
-      if (Date.now() - b.ts > 8 * 3600_000) continue;
+    const fresh = found.filter((b) => Date.now() - b.ts <= 8 * 3600_000);
+    const pairs = await pairsForMints([...new Set(fresh.map((b) => b.mint))]);
+    for (const b of fresh) {
       buys += 1;
-      const wasNew = await admit(b.mint, w.address, w.label, b.sig, b.ts);
+      const meta = await pumpCoin(b.mint);
+      if (isNoiseToken(b.mint, meta?.symbol)) {
+        await agentNote("intake", "SKIP", `noise ${meta?.symbol || b.mint.slice(0, 6)} — not a pass name`, {
+          mint: b.mint, quiet: true,
+        });
+        continue;
+      }
+      const onDex = pairs.has(b.mint);
+      const onPump = Boolean(meta);
+      if (!onDex && !onPump) {
+        await agentNote("intake", "VERIFY", `${b.mint.slice(0, 6)}… Helius swap but Dex and pump.fun both blank — not admitted`, {
+          mint: b.mint, quiet: true,
+        });
+        continue;
+      }
+      const wasNew = await admit(b.mint, w.address, w.label, b.sig, b.ts, meta);
       if (wasNew) admitted += 1;
     }
   }
@@ -52,8 +70,8 @@ async function admit(
   label: string | null,
   sig: string,
   ts: number,
+  meta: Awaited<ReturnType<typeof pumpCoin>>,
 ): Promise<boolean> {
-  const meta = await pumpCoin(mint);
   const mc = meta?.usd_market_cap ?? null;
   const ins = await pool.query(
     `WITH existing AS (
