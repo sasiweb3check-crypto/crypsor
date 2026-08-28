@@ -6,6 +6,11 @@
  *   holders  GMGN quality (rate-limited)
  *   reporter census
  *   backtest self-improving weights from TRADE outcomes
+ *
+ * Render Starter: this process stays up, so the intervals below are the
+ * real scheduler. Vercel Hobby / Render free freeze without traffic, so
+ * /keepalive + an external pinger (see docs/UPTIME.md) keep those hot.
+ * Every loop is also runnable as a single bounded tick via runFullTick().
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";

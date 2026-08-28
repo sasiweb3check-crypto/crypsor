@@ -27,8 +27,10 @@ See **[docs/RENDER.md](docs/RENDER.md)** — Blueprint file is `render.yaml`.
 
 On Render **Starter** the process does not sleep — no pinger needed.
 
-On Render **free**, the instance sleeps without traffic. Point a free pinger
-at `GET /api/keepalive`: [docs/UPTIME.md](docs/UPTIME.md).
+On Render **free** or **Vercel Hobby**, the instance sleeps without traffic.
+Point a free pinger at `GET /api/keepalive`: [docs/UPTIME.md](docs/UPTIME.md).
+A GitHub Actions baseline (`.github/workflows/keepalive.yml`) pings every
+30 minutes if you set the `APP_URL` repo variable.
 
 ## Development
 

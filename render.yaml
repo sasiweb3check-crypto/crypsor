@@ -1,10 +1,10 @@
-# Crypsor — one always-on web service (desk SPA + Express API + funnel).
+# Crypsor — one always-on web service (desk SPA + Express API + ward agents).
 # Blueprint: https://render.com/docs/infrastructure-as-code
 #
 # Deploy: https://dashboard.render.com/select-repo?type=blueprint
 # (connect this GitHub repo, then fill in sync: false secrets).
 #
-# One instance only — the funnel runs in-process; extra instances would
+# One instance only — the agents run in-process; extra instances would
 # duplicate scans and Telegram alerts.
 #
 # plan: starter stays up 24/7 (~$7/mo). `free` spins down after ~15 min idle
@@ -28,14 +28,8 @@ services:
         value: "22"
       - key: PNPM_VERSION
         value: "10"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: crypsor-db
-          property: connectionString
       - key: AIVEN_DATABASE_URL
-        fromDatabase:
-          name: crypsor-db
-          property: connectionString
+        sync: false
       - key: HELIUS_API_KEY
         sync: false
       - key: GMGN_API_KEY
@@ -49,9 +43,6 @@ services:
       - key: TELEGRAM_PUSH_ENABLED
         value: "true"
       # Same-origin deploy: do NOT set VITE_API_URL (desk calls /api on this host).
-
-databases:
-  - name: crypsor-db
-    plan: free
-    region: oregon
-    postgresMajorVersion: "16"
+      # Split-host only:
+      # - key: CORS_ORIGIN
+      #   sync: false
