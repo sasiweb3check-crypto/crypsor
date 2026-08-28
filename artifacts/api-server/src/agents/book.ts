@@ -4,8 +4,10 @@
  */
 import { pool } from "../core/db";
 import { planExit } from "../scoring/exit";
+import { athPct, gainPct } from "../scoring/stats";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
+import { emitLiveStats, rollupDays } from "./stats";
 
 export async function lockTrade(opts: {
   tokenId: number;
@@ -21,8 +23,9 @@ export async function lockTrade(opts: {
   const ins = await pool.query(
     `INSERT INTO ward_trades (
        token_id, alert_id, entry_mc, entry_liq, entry_holders, entry_score,
-       peak_mc, last_mc, last_liq, last_holders, status, exit_action, exit_title, extra
-     ) VALUES ($1,$2,$3,$4,$5,$6,$3,$3,$4,$5,'open','hold','Hold the lock',$7)
+       peak_mc, last_mc, last_liq, last_holders, status, exit_action, exit_title, extra,
+       gain_x, ath_x, gain_pct, ath_pct
+     ) VALUES ($1,$2,$3,$4,$5,$6,$3,$3,$4,$5,'open','hold','Hold the lock',$7,1,1,0,0)
      ON CONFLICT (token_id) DO NOTHING
      RETURNING id`,
     [
@@ -114,6 +117,8 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
 
     const gainX = plan.gainX;
     const athX = plan.athX;
+    const gPct = gainPct(lastMc, row.entry_mc);
+    const aPct = athPct(peak, row.entry_mc);
     let status = row.status;
     if (plan.action === "exit" && dead) status = "dead";
     else if (plan.action === "exit") status = "exit";
@@ -125,14 +130,19 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
       `UPDATE ward_trades SET
          peak_mc = $2, peak_at = CASE WHEN $2 > COALESCE(peak_mc,0) THEN NOW() ELSE peak_at END,
          last_mc = $3, last_liq = $4, last_holders = $5,
-         gain_x = $6, ath_x = $7,
+         gain_x = $6, ath_x = $7, gain_pct = $13, ath_pct = $14,
          status = $8, exit_action = $9, exit_take_pct = $10, exit_title = $11, exit_body = $12,
          closed_at = CASE WHEN $8 IN ('dead','exit') AND closed_at IS NULL THEN NOW() ELSE closed_at END,
-         close_mc = CASE WHEN $8 IN ('dead','exit') THEN $3 ELSE close_mc END
+         close_mc = CASE WHEN $8 IN ('dead','exit') THEN $3 ELSE close_mc END,
+         archived_at = CASE
+           WHEN $8 IN ('dead','exit') AND archived_at IS NULL THEN NOW()
+           WHEN $8 IN ('open','trim') THEN NULL
+           ELSE archived_at END
        WHERE id = $1`,
       [
         row.id, peak, lastMc, row.last_liq, row.last_holders,
         gainX, athX, status, plan.action, plan.takePct, plan.title, plan.body,
+        gPct, aPct,
       ],
     );
 
@@ -153,9 +163,11 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
       });
     }
     await agentNote("book", plan.action.toUpperCase(), `$${ticker} ${plan.title} · ${gainX?.toFixed(2) ?? "—"}×`, {
-      tokenId: row.token_id, mint: row.mint,
+      tokenId: row.token_id, mint: row.mint, quiet: plan.action === "hold",
     });
   }
 
+  await rollupDays();
+  await emitLiveStats();
   return { open: due.rows.length, changed };
 }

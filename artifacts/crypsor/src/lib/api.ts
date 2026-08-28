@@ -174,8 +174,69 @@ export type TradeCard = {
   exit_body: string | null;
   gain_x: number | null;
   ath_x: number | null;
+  gain_pct?: number | null;
+  ath_pct?: number | null;
   closed_at: string | null;
   close_mc: number | null;
+};
+
+export type PassLane = "live" | "archived" | "dead";
+
+export type PassCard = {
+  id: number;
+  token_id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  passed_at: string;
+  pass_mc: number;
+  last_mc: number | null;
+  peak_mc: number | null;
+  gain_x: number | null;
+  ath_x: number | null;
+  gain_pct: number | null;
+  ath_pct: number | null;
+  lane: PassLane;
+  status: string;
+  phase: string | null;
+  last_liq: number | null;
+  wallet_buys: number;
+  tape_lead: string | null;
+};
+
+export type DayRoll = {
+  day: string;
+  passed: number;
+  live: number;
+  archived: number;
+  dead: number;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  hit2x: number;
+  bestAthPct: number | null;
+};
+
+export type LiveBoard = {
+  at: string;
+  live: PassCard[];
+  archived: PassCard[];
+  days: DayRoll[];
+  totals: {
+    live: number;
+    archived: number;
+    dead: number;
+    passed: number;
+    avgGainPct: number | null;
+    avgAthPct: number | null;
+    hit2x: number;
+  };
+};
+
+export type DayPasses = {
+  day: string;
+  passes: PassCard[];
+  at: string;
 };
 
 export type DeskState = {
@@ -404,6 +465,25 @@ export function fmtSignedX(v: number | null | undefined): string {
 export function fmtPct(v: number | null | undefined, digits = 0): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v.toFixed(digits)}%`;
+}
+
+export function fmtGainPct(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
+}
+
+export function fmtPassAt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "—";
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+export function fmtDay(iso: string): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export function timeAgo(iso: string | null | undefined): string {

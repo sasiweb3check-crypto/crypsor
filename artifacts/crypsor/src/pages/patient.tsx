@@ -1,6 +1,6 @@
 import { useRoute, useLocation } from "wouter";
 import {
-  api, fmtUsd, fmtSignedX, timeAgo, shortMint, shortWallet, gmgnUrl,
+  api, fmtUsd, fmtGainPct, fmtPassAt, fmtSignedX, timeAgo, shortMint, shortWallet, gmgnUrl,
   type PatientChart, type TapeWindow, type TradeCard, type Check, type DecisionReasons,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
@@ -117,7 +117,7 @@ export default function PatientPage() {
             <a className="cta-gmgn" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
             <a className="link" href={`https://dexscreener.com/solana/${t.mint}`} target="_blank" rel="noreferrer">DexScreener</a>
             <a className="link" href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump.fun</a>
-            <button type="button" className="link" onClick={() => nav("/alerts")}>Book</button>
+            <button type="button" className="link" onClick={() => nav("/alerts")}>Days</button>
           </div>
         </div>
       </div>
@@ -131,10 +131,12 @@ export default function PatientPage() {
       )}
 
       <div className="stat">
-        <div className={`big-score ${(gain ?? 1) >= 1 ? "" : "down"}`}>
-          {fmtSignedX(gain)}
+        <div className={`big-score ${(trade?.gain_pct ?? ((gain ?? 1) - 1) * 100) >= 0 ? "" : "down"}`}>
+          {trade ? fmtGainPct(trade.gain_pct ?? ((gain ?? 1) - 1) * 100) : fmtSignedX(gain)}
           <small>
-            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : d.watch ? "stalking — not locked" : "not locked"}
+            {trade
+              ? `passed ${fmtPassAt(trade.called_at)} at ${fmtUsd(trade.entry_mc)} · ATH ${fmtGainPct(trade.ath_pct ?? ((ath ?? 1) - 1) * 100)}`
+              : "not a pass — refusals stay in logs"}
           </small>
         </div>
       </div>
@@ -161,7 +163,7 @@ export default function PatientPage() {
 
       <div className="grid3">
         <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Now</span></div>
-        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "Lock" : "Admit"}</span></div>
+        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "At pass" : "Admit"}</span></div>
         <div className="vit"><b>{fmtUsd(trade?.peak_mc ?? t.peak_mc)}</b><span>ATH</span></div>
         <div className="vit"><b>{fmtUsd(t.last_liq)}</b><span>Liquidity</span></div>
         <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
@@ -175,7 +177,7 @@ export default function PatientPage() {
         <TapeBlock label="6h" w={last?.tape?.h6} />
       </div>
 
-      <div className="section-h">{trade ? "Since lock" : "Market cap"}</div>
+      <div className="section-h">{trade ? "Since pass" : "Market cap"}</div>
       <Spark points={spark} admit={entry ?? null} />
 
       {(d.sources ?? []).length > 0 && (

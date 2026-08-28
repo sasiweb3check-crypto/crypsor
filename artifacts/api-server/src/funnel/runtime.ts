@@ -12,7 +12,7 @@
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
-import { vitalsTick } from "../agents/vitals";
+import { archiveTick, vitalsTick } from "../agents/vitals";
 import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
 
@@ -22,12 +22,13 @@ let started = false;
 let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
-const VITALS_MS = 22_000;
-const BOOK_MS = 40_000;
+const VITALS_MS = 18_000;
+const ARCHIVE_MS = 90_000;
+const BOOK_MS = 25_000;
 const REPORT_MS = 120_000;
 
-let last = { intake: 0, vitals: 0, book: 0, reporter: 0 };
-let running = { intake: false, vitals: false, book: false, reporter: false };
+let last = { intake: 0, vitals: 0, archive: 0, book: 0, reporter: 0 };
+let running = { intake: false, vitals: false, archive: false, book: false, reporter: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -55,6 +56,12 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 5_000);
       setInterval(() => {
+        if (running.archive || Date.now() - last.archive < ARCHIVE_MS) return;
+        running.archive = true;
+        last.archive = Date.now();
+        void guarded("archive", archiveTick).finally(() => { running.archive = false; });
+      }, 12_000);
+      setInterval(() => {
         if (running.book || Date.now() - last.book < BOOK_MS) return;
         running.book = true;
         last.book = Date.now();
@@ -67,7 +74,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
       }, 15_000);
       started = true;
-      log.info("omo desk started (intake · vitals/gate · book · reporter)");
+      log.info("omo desk started (intake · live vitals · random archive · book · reporter)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -89,6 +96,7 @@ export function agentStatus(): {
     intervalsMs: {
       intake: INTAKE_MS,
       vitals: VITALS_MS,
+      archive: ARCHIVE_MS,
       book: BOOK_MS,
       reporter: REPORT_MS,
     },
@@ -100,6 +108,7 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
   await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
+  await guarded("archive", async () => { out.archive = await archiveTick(); });
   await guarded("book", async () => { out.book = await bookTick(); });
   await guarded("reporter", async () => { out.reporter = await reporterTick(); });
   return out;
