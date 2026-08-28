@@ -136,6 +136,20 @@ input:focus { border-color: rgba(228, 196, 138, 0.5); }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
+.stats-kicker {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  font-weight: 700;
+  margin-top: 4px;
+}
+.stats-sub {
+  font-size: 12px;
+  color: var(--mute);
+  margin-top: -4px;
+  margin-bottom: 4px;
+}
 .stat {
   background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent 40%), var(--panel);
   border: 1px solid var(--line);
@@ -420,7 +434,26 @@ input:focus { border-color: rgba(228, 196, 138, 0.5); }
   width: 52px; height: 52px; border-radius: 16px;
   object-fit: cover; background: var(--panel-2); flex: none;
 }
-.thumb.blank { display: block; }
+.thumb.blank {
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--mute);
+  background: var(--panel-2);
+}
+.hero-thumb { width: 72px; height: 72px; border-radius: 22px; }
+.st.sent.hot { color: var(--gold); background: var(--gold-dim); }
+.st.sent.mixed { color: var(--sky); background: var(--sky-dim); }
+.st.sent.quiet { color: var(--mute); background: rgba(255,255,255,0.04); }
+.trade.tape.wait { opacity: 0.88; }
+.trade.tape .pass-side em {
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
 .card-main { min-width: 0; }
 .sym {
   font-weight: 700;

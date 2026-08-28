@@ -130,7 +130,7 @@ const SCHEMA: string[] = [
          stage = 'killed',
          kill_reason = COALESCE(kill_reason, 'not_wallet_buy'),
          deceased_at = COALESCE(deceased_at, NOW())
-   WHERE source <> 'wallet_buy'
+   WHERE source NOT IN ('wallet_buy','public_tape','dex_boost','pump_mover','gecko','pump_live')
      AND COALESCE(wallet_buys, 0) = 0
      AND COALESCE(phase, 'intake') <> 'deceased'`,
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS tape jsonb`,
@@ -138,6 +138,7 @@ const SCHEMA: string[] = [
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS phase text`,
   `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS whale_pct real`,
   `CREATE INDEX IF NOT EXISTS idx_f2_tokens_phase ON f2_tokens (phase, last_scan_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_f2_tokens_source_scan ON f2_tokens (source, last_scan_at)`,
 
   `CREATE TABLE IF NOT EXISTS ward_admissions (
      id serial PRIMARY KEY,

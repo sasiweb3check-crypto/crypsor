@@ -10,7 +10,10 @@ import { lockTrade } from "./book";
 import { raiseAlert, tradeTelegram } from "./alerts";
 import { emitLiveStats } from "./stats";
 import { isNoiseToken } from "../scoring/noise";
+import { canLockPass } from "../scoring/entry";
 import type { Call, Check, QualityGrade, TapeLead } from "../scoring/omo";
+
+export { canLockPass } from "../scoring/entry";
 
 export async function considerEntry(opts: {
   tokenId: number;
@@ -31,6 +34,15 @@ export async function considerEntry(opts: {
 }): Promise<"lock" | "watch" | "skip"> {
   if (opts.call !== "buying") return "skip";
   if (isNoiseToken(opts.mint, opts.symbol)) return "skip";
+  if (!canLockPass(opts.walletBuys)) {
+    await agentNote(
+      "omo",
+      "READ",
+      `$${opts.symbol} scanner buying at $${Math.round(opts.mc)} — suggestion only, no tracked wallet yet`,
+      { tokenId: opts.tokenId, mint: opts.mint, quiet: true },
+    );
+    return "watch";
+  }
 
   const already = await pool.query(
     `SELECT id, status FROM ward_trades WHERE token_id = $1`,

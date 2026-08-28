@@ -4,9 +4,9 @@
  *   market.server.ts  Dex tape, fake-chart filter, newborn fade, second pass
  *   audit.server.ts   one rule set for the live gate and the published refusals
  *
- * Crypsor only change vs omo: names arrive from tracked-wallet buys (Helius),
- * not from DexScreener search / boosts. Everything after that is the same loop:
- * read the public tape → second pass → gate → buy / stalk / pass.
+ * Names arrive from tracked-wallet buys (Helius) or public tape (Dex boosts,
+ * pump movers, CoinGecko). Public tape never auto-locks — suggestion only.
+ * A pass still needs a tracked-wallet swap. After that: read tape → gate.
  *
  * Low-cap is fine. A ~$2k market cap is already in the rug zone — we never
  * suggest those. Missing feeds fail the related rule and say so. We do not
