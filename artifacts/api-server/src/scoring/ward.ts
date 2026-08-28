@@ -94,6 +94,36 @@ export function setWeights(next: Record<string, number>): void {
   }
 }
 
+export function resetWeights(): void {
+  weights = { ...DEFAULT_WEIGHTS };
+}
+
+export function emptyTape(): TapeWindow {
+  return { buys: null, sells: null, volUsd: null, changePct: null };
+}
+
+export type Prognosis = {
+  id: "admitted" | "stable" | "observe" | "critical" | "recovering" | "revived" | "dead" | "late";
+  label: string;
+};
+
+export function prognosis(phase: Phase, score: number | null, fails: string[] = []): Prognosis {
+  if (phase === "deceased") return { id: "dead", label: "Deceased" };
+  if (fails.includes("chase")) return { id: "late", label: "Late / chase" };
+  if (phase === "icu") return { id: "critical", label: "About to die" };
+  if (phase === "revived") return { id: "revived", label: "Revived" };
+  if (phase === "recovery") return { id: "recovering", label: "Recovering" };
+  if (phase === "intake") return { id: "admitted", label: "Just admitted" };
+  if (score != null && score >= 68) return { id: "stable", label: "Stable" };
+  return { id: "observe", label: "Under observation" };
+}
+
+export function failsOf(reasons: unknown): string[] {
+  if (!reasons || typeof reasons !== "object") return [];
+  const fails = (reasons as { fails?: unknown }).fails;
+  return Array.isArray(fails) ? fails.filter((x): x is string => typeof x === "string") : [];
+}
+
 function txnLead(w: TapeWindow): "buyers" | "sellers" | "two_sided" | "unknown" {
   const b = w.buys ?? 0;
   const s = w.sells ?? 0;

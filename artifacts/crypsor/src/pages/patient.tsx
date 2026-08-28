@@ -1,7 +1,7 @@
 import { useRoute, useLocation } from "wouter";
 import {
   api, fmtPct, fmtUsd, fmtX, timeAgo, shortMint, shortWallet, PHASE_META,
-  type PatientChart, type Factor, type Phase,
+  type PatientChart, type Factor, type Phase, type TapeWindow,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
@@ -25,6 +25,22 @@ function Spark({ points, admit }: { points: Array<{ t: number; v: number }>; adm
       )}
       <path d={d} className={up ? "spark-line" : "spark-line down"} />
     </svg>
+  );
+}
+
+function TapeBlock({ label, w }: { label: string; w?: TapeWindow | null }) {
+  const ch = w?.changePct;
+  return (
+    <div className="factor">
+      <div className="factor-top">
+        <span>{label}</span>
+        <em>{w?.buys ?? "—"} buy / {w?.sells ?? "—"} sell</em>
+      </div>
+      <p>
+        Vol {fmtUsd(w?.volUsd ?? null)}
+        {ch != null ? ` · ${ch >= 0 ? "+" : ""}${ch.toFixed(0)}%` : ""}
+      </p>
+    </div>
   );
 }
 
@@ -98,6 +114,8 @@ export default function PatientPage() {
           <div style={{ marginTop: 8 }}>
             <span className={`badge phase-${phase}`}>{PHASE_META[phase]?.label ?? phase}</span>
             {" "}
+            {t.prognosis && <span className={`badge phase-${phase}`}>{t.prognosis.label}</span>}
+            {" "}
             <span className={`badge phase-ward tape-${tape}`}>{tape.replace("_", " ")}</span>
           </div>
           <p className="blurb" style={{ marginTop: 8 }}>{PHASE_META[phase]?.hint}</p>
@@ -120,6 +138,17 @@ export default function PatientPage() {
         <div className="vit"><b>{fmtX(t.peakX)}</b><span>Peak</span></div>
       </div>
 
+      <div className="section-h">Course</div>
+      <div className="course">
+        {(d.course ?? []).length === 0 && <span className="blurb">Waiting for the first vitals pass.</span>}
+        {(d.course ?? []).map((c) => (
+          <span key={`${c.phase}-${c.at}`} className={`badge phase-${c.phase as Phase}`}>
+            {PHASE_META[c.phase as Phase]?.label ?? c.phase}
+            {c.score != null ? ` ${c.score}` : ""}
+          </span>
+        ))}
+      </div>
+
       <div className="section-h">How it decided</div>
       <Factors factors={factors} />
 
@@ -130,15 +159,14 @@ export default function PatientPage() {
         <div className="vit"><b>{fmtPct(last?.bot_pct)}</b><span>Bot hold</span></div>
         <div className="vit"><b>{fmtPct(last?.sniper_pct)}</b><span>Snipers</span></div>
         <div className="vit"><b>{last?.smart_count ?? "—"}</b><span>Smart</span></div>
+        <div className="vit"><b>{last?.kol_count ?? "—"}</b><span>KOL</span></div>
         <div className="vit"><b>{fmtPct(last?.whale_pct)}</b><span>Whales</span></div>
       </div>
 
-      <div className="section-h">Tape (5m)</div>
-      <div className="grid3">
-        <div className="vit"><b>{last?.buys_5m ?? "—"}</b><span>Buys</span></div>
-        <div className="vit"><b>{last?.sells_5m ?? "—"}</b><span>Sells</span></div>
-        <div className="vit"><b>{fmtUsd(last?.vol_5m)}</b><span>Volume</span></div>
-      </div>
+      <div className="section-h">Tape (omo 5m / 1h / 6h)</div>
+      <TapeBlock label="5 minutes" w={last?.tape?.m5 ?? { buys: last?.buys_5m ?? null, sells: last?.sells_5m ?? null, volUsd: last?.vol_5m ?? null, changePct: null }} />
+      <TapeBlock label="1 hour" w={last?.tape?.h1} />
+      <TapeBlock label="6 hours" w={last?.tape?.h6} />
 
       <div className="section-h">Market cap since admit</div>
       <Spark points={spark} admit={t.admission_mc} />

@@ -152,7 +152,19 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
         reading.bundlerHoldPct, reading.sniperHoldPct, reading.botHoldPct,
         reading.smartCount, reading.kolCount, reading.whaleHoldPct,
         verdict.fails.length === 0, JSON.stringify(verdict.fails),
-        JSON.stringify({ lead: verdict.tapeLead, holds: verdict.holds, factors: verdict.factors }),
+        JSON.stringify({
+          lead: verdict.tapeLead,
+          holds: verdict.holds,
+          fails: verdict.fails,
+          unknowns: verdict.unknowns,
+          factors: verdict.factors,
+          m5: reading.m5,
+          h1: reading.h1,
+          h6: reading.h6,
+          chase: verdict.chase,
+          dead: verdict.dead,
+          tradeOk: verdict.tradeOk,
+        }),
         verdict.score, phase,
       ],
     );
@@ -229,8 +241,12 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
         title: `TRADE $${ticker}`,
         body: `Score ${verdict.score}. ${verdict.holds.slice(0, 2).join("; ")}. MC ${mc != null ? `$${Math.round(mc)}` : "—"} · ${row.wallet_buys} wallets.`,
         payload: {
-          mint: row.mint, score: verdict.score, mc, liq,
+          mint: row.mint, symbol: ticker, score: verdict.score, mc, liq,
           holders: reading.holders, tape: verdict.tapeLead, holds: verdict.holds,
+          fails: verdict.fails, factors: verdict.factors,
+          m5: reading.m5, h1: reading.h1, h6: reading.h6,
+          top10: reading.top10Pct, bundlers: reading.bundlerHoldPct,
+          bots: reading.botHoldPct, wallets: row.wallet_buys, phase,
         },
         telegram: false,
       });
@@ -247,6 +263,13 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
           tape: verdict.tapeLead,
           holds: verdict.holds,
           fails: verdict.fails,
+          factors: verdict.factors,
+          m5: reading.m5,
+          h1: reading.h1,
+          h6: reading.h6,
+          top10: reading.top10Pct,
+          bundlers: reading.bundlerHoldPct,
+          bots: reading.botHoldPct,
         });
         await pool.query(
           `INSERT INTO f2_calls (token_id, alert_mc, peak_mc, last_mc, safe, deep, telegram_sent, journal_until)

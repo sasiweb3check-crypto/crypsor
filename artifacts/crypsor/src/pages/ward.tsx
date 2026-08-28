@@ -42,10 +42,13 @@ function Card({ p, onOpen }: { p: PatientCard; onOpen: () => void }) {
           <span className={`badge phase-${p.phase}`}>{PHASE_META[p.phase]?.label ?? p.phase}</span>
         </div>
         <div className="meta">
-          {fmtUsd(p.last_mc)} · {p.wallet_buys} wallet{p.wallet_buys === 1 ? "" : "s"}
-          {x != null ? ` · ${x.toFixed(1)}×` : ""} · {timeAgo(p.last_scan_at || p.discovered_at)}
+          {p.prognosis?.label ?? PHASE_META[p.phase]?.hint} · {fmtUsd(p.last_mc)}
         </div>
-        <div className="meta">{reason}</div>
+        <div className="meta">
+          {p.wallet_buys} wallet{p.wallet_buys === 1 ? "" : "s"}
+          {x != null ? ` · ${x.toFixed(1)}×` : ""} · {timeAgo(p.last_scan_at || p.discovered_at)}
+          {reason ? ` · ${reason}` : ""}
+        </div>
       </div>
       <Score n={p.survival_score} phase={p.phase} />
     </button>

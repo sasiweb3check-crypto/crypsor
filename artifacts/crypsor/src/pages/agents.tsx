@@ -5,7 +5,7 @@ const DESK = [
   { id: "intake", title: "Intake", copy: "Reads Helius for buys from wallets you added. Each new mint is admitted." },
   { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
   { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "reporter", title: "Reporter", copy: "Census and pruning so the free instance stays light." },
+  { id: "reporter", title: "Reporter", copy: "Writes the ward census report and prunes old scans so the free instance stays light." },
   { id: "backtest", title: "Backtest", copy: "Paper 2× after TRADE. Nudges factor weights toward what survived." },
   { id: "alerts", title: "Alerts", copy: "Telegram + live desk for admit, trade, ICU, death, revival." },
 ];
@@ -37,6 +37,16 @@ export default function AgentsPage() {
           <div className="stat-label">Hit rate</div>
         </div>
       </div>
+
+      {d?.report && (
+        <div className="factor">
+          <div className="factor-top">
+            <span>Last report</span>
+            <em>{timeAgo(d.report.at)}</em>
+          </div>
+          <p>{d.report.detail}</p>
+        </div>
+      )}
 
       {d?.weights && (
         <>

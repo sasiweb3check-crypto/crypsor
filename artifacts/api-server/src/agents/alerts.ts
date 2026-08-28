@@ -2,6 +2,7 @@ import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { esc, sendTelegram } from "../core/telegram";
 import { agentNote } from "./log";
+import type { Factor, TapeWindow } from "../scoring/ward";
 
 export type AlertKind = "admit" | "trade" | "critical" | "deceased" | "revived" | "report";
 
@@ -60,6 +61,12 @@ export async function raiseAlert(opts: {
   return true;
 }
 
+function tapeLine(label: string, w: TapeWindow | undefined): string {
+  if (!w || (w.buys == null && w.sells == null)) return "";
+  const ch = w.changePct != null ? ` ${w.changePct >= 0 ? "+" : ""}${Math.round(w.changePct)}%` : "";
+  return `${label} ${w.buys ?? "—"}/${w.sells ?? "—"} buy/sell${ch}`;
+}
+
 export async function tradeTelegram(p: {
   symbol: string;
   mint: string;
@@ -72,14 +79,29 @@ export async function tradeTelegram(p: {
   tape: string;
   holds: string[];
   fails: string[];
+  factors?: Factor[];
+  m5?: TapeWindow;
+  h1?: TapeWindow;
+  h6?: TapeWindow;
+  top10?: number | null;
+  bundlers?: number | null;
+  bots?: number | null;
 }): Promise<void> {
+  const factorBits = (p.factors ?? [])
+    .map((f) => `${f.label} ${Math.round(f.points)}/${f.max}`)
+    .slice(0, 6);
   const lines = [
     `TRADE $${p.symbol}`,
-    `score ${p.score} · ${p.phase}`,
+    `score ${p.score} · ${p.phase} · tape ${p.tape}`,
     `mc ${p.mc != null ? `$${Math.round(p.mc)}` : "—"} · liq ${p.liq != null ? `$${Math.round(p.liq)}` : "—"} · holders ${p.holders ?? "—"}`,
-    `tape ${p.tape} · ${p.wallets} tracked wallets`,
+    `top10 ${p.top10 != null ? `${Math.round(p.top10)}%` : "—"} · bundlers ${p.bundlers != null ? `${Math.round(p.bundlers)}%` : "—"} · bots ${p.bots != null ? `${Math.round(p.bots)}%` : "—"}`,
+    `${p.wallets} tracked wallets`,
+    tapeLine("5m", p.m5),
+    tapeLine("1h", p.h1),
+    tapeLine("6h", p.h6),
     p.holds.length ? `holds: ${p.holds.slice(0, 3).join("; ")}` : "",
     p.fails.length ? `fails: ${p.fails.slice(0, 3).join("; ")}` : "",
+    factorBits.length ? `factors: ${factorBits.join(" · ")}` : "",
     `https://dexscreener.com/solana/${p.mint}`,
     `https://solscan.io/token/${p.mint}`,
   ].filter(Boolean);

@@ -178,6 +178,15 @@ const SCHEMA: string[] = [
      updated_at timestamptz NOT NULL DEFAULT NOW(),
      note text
    )`,
+  `CREATE TABLE IF NOT EXISTS ward_reports (
+     id serial PRIMARY KEY,
+     census jsonb NOT NULL,
+     survival real,
+     trades_24h integer,
+     paper jsonb,
+     detail text NOT NULL,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
 ];
 
 let ensured = false;

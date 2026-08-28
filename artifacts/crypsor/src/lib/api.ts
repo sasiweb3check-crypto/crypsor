@@ -35,6 +35,15 @@ export type Factor = {
   reason: string;
 };
 
+export type TapeWindow = {
+  buys: number | null;
+  sells: number | null;
+  volUsd: number | null;
+  changePct: number | null;
+};
+
+export type Prognosis = { id: string; label: string };
+
 export type PatientCard = {
   id: number;
   mint: string;
@@ -57,6 +66,7 @@ export type PatientCard = {
   deceased_at: string | null;
   revived_at: string | null;
   graduated: boolean;
+  prognosis?: Prognosis;
 };
 
 export type WardBoard = {
@@ -90,7 +100,18 @@ export type ScanRow = {
   kol_count: number | null;
   pass: boolean;
   fail_reasons: string[] | null;
-  tape: { lead?: string; holds?: string[]; factors?: Factor[] } | null;
+  tape: {
+    lead?: string;
+    holds?: string[];
+    fails?: string[];
+    factors?: Factor[];
+    m5?: TapeWindow;
+    h1?: TapeWindow;
+    h6?: TapeWindow;
+    chase?: boolean;
+    dead?: boolean;
+    tradeOk?: boolean;
+  } | null;
   score: number | null;
   phase: string | null;
 };
@@ -103,9 +124,11 @@ export type PatientChart = {
     kill_reason: string | null;
     called_at: string | null;
     alert_mc: number | null;
+    prognosis?: Prognosis;
   };
   lastScan: ScanRow | null;
   scans: ScanRow[];
+  course: Array<{ phase: string; at: string; score: number | null }>;
   admissions: Array<{ wallet: string; sig: string | null; at: string; label: string | null }>;
   alerts: Array<{
     id: number; kind: string; title: string; body: string | null;
@@ -142,6 +165,14 @@ export type AgentsState = {
   weights: Record<string, number>;
   last24h: Array<{ agent: string; last_at: string; n: number }>;
   paper: { judged: number; wins: number };
+  report: {
+    census: Record<string, number>;
+    survival: number | null;
+    trades_24h: number;
+    paper: { judged?: number; wins?: number };
+    detail: string;
+    at: string;
+  } | null;
   notes: Array<{
     id: number; agent: string; action: string; token_id: number | null;
     mint: string | null; detail: string; at: string;

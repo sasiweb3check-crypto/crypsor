@@ -230,6 +230,16 @@ input:focus { border-color: rgba(125, 255, 195, 0.45); }
   font-weight: 600;
 }
 
+.course {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 0 2px;
+  scrollbar-width: none;
+}
+.course::-webkit-scrollbar { display: none; }
+.course .badge { font-size: 11px; padding: 0.35rem 0.65rem; }
+
 .badge {
   display: inline-flex;
   align-items: center;
