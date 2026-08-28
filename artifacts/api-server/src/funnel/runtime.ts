@@ -1,9 +1,10 @@
 /**
  * Scheduler — runs the funnel loops while the instance is warm.
  *
- * Vercel Hobby: instances freeze without traffic, so /keepalive + an
- * external pinger (see docs/UPTIME.md) keep this hot. Every loop is also
- * runnable as a single bounded tick via runFullTick() for cron pings.
+ * Render Starter: this process stays up, so the intervals below are the
+ * real scheduler. Vercel Hobby / Render free freeze without traffic, so
+ * /keepalive + an external pinger (see docs/UPTIME.md) keep those hot.
+ * Every loop is also runnable as a single bounded tick via runFullTick().
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";

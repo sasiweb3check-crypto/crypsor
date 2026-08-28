@@ -1,14 +1,12 @@
-# Keepalive safety net — wakes the Vercel API so the scanner pipeline runs
+# Keepalive safety net — wakes a sleeping host so the scanner pipeline runs
 # even when nobody has the app open.
 #
-# Vercel serverless freezes the function instance between requests, which
-# pauses the monitor/pump/GEM loops. Each ping below triggers a full
-# pipeline tick (wallet scan + pump refresh + desk prices).
+# Needed for Vercel Hobby and Render free (they freeze / spin down without
+# traffic). Not needed on Render Starter (always-on).
 #
-# This workflow is the BASELINE (every 30 min — fits the free 2,000 Actions
-# minutes/month on private repos: ~48 one-minute-billed runs/day ≈ 1,440/mo).
-# For true minute-level 24/7 coverage, ALSO set up a free external pinger —
-# see docs/UPTIME.md (cron-job.org every minute is the recommended primary).
+# Set GitHub Actions variable APP_URL to the live origin, e.g.
+#   https://crypsor.onrender.com
+# Without APP_URL the job no-ops so it cannot hit a stale host.
 
 name: keepalive
 
@@ -30,19 +28,23 @@ jobs:
     steps:
       - name: Ping pipeline tick
         env:
-          APP_URL: https://crypsor-nine.vercel.app
+          APP_URL: ${{ vars.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -u
+          if [ -z "${APP_URL:-}" ]; then
+            echo "APP_URL repo variable not set — skip (see docs/UPTIME.md)"
+            exit 0
+          fi
+          APP_URL="${APP_URL%/}"
           if [ -n "${CRON_SECRET:-}" ]; then
-            echo "tick (authorized)"
+            echo "tick (authorized) → ${APP_URL}"
             curl -sS --max-time 55 -H "Authorization: Bearer ${CRON_SECRET}" \
               "${APP_URL}/api/cron/tick" | head -c 400 || true
           else
-            echo "keepalive (public)"
+            echo "keepalive (public) → ${APP_URL}"
             curl -sS --max-time 55 "${APP_URL}/api/keepalive" | head -c 400 || true
           fi
           echo
-          # Second ping ~50s later keeps the instance warm a little longer
           sleep 50
           curl -sS --max-time 40 "${APP_URL}/api/keepalive" | head -c 200 || true

@@ -26,16 +26,26 @@ router.get("/healthz", async (_req, res) => {
     const t0 = Date.now();
     await pool.query("SELECT 1");
     const dbMs = Date.now() - t0;
-    const counts = await pool.query(
-      `SELECT stage, COUNT(*)::int AS n FROM f2_tokens
-       WHERE discovered_at > NOW() - INTERVAL '24 hours' GROUP BY stage`,
-    );
-    const lastScan = await pool.query("SELECT MAX(at) AS at FROM f2_scans");
+    let funnel24h: Record<string, number> = {};
+    let lastScanAt: unknown = null;
+    try {
+      const counts = await pool.query(
+        `SELECT stage, COUNT(*)::int AS n FROM f2_tokens
+         WHERE discovered_at > NOW() - INTERVAL '24 hours' GROUP BY stage`,
+      );
+      const lastScan = await pool.query("SELECT MAX(at) AS at FROM f2_scans");
+      funnel24h = Object.fromEntries(
+        counts.rows.map((r: { stage: string; n: number }) => [r.stage, r.n]),
+      );
+      lastScanAt = lastScan.rows[0]?.at ?? null;
+    } catch {
+      // Schema may still be creating on a fresh boot — DB ping is enough for Render.
+    }
     res.json(ok({
       db: `${dbMs}ms`,
       helius: Boolean(await heliusKey()),
-      funnel24h: Object.fromEntries(counts.rows.map((r) => [r.stage, r.n])),
-      lastScanAt: lastScan.rows[0]?.at ?? null,
+      funnel24h,
+      lastScanAt,
     }));
   } catch (err) {
     res.status(500).json(fail(err instanceof Error ? err.message : "health failed"));
