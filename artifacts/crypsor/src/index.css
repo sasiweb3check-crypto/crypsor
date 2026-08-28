@@ -447,8 +447,10 @@ input:focus { border-color: rgba(125, 255, 195, 0.45); }
   color: var(--gold);
 }
 .alert.kind-trade .k { color: var(--sage); }
-.alert.kind-critical .k, .alert.kind-deceased .k { color: var(--coral); }
+.alert.kind-critical .k, .alert.kind-deceased .k, .alert.kind-act .k { color: var(--coral); }
 .alert.kind-revived .k { color: var(--violet); }
+.alert.kind-watch .k { color: var(--gold); }
+.alert.kind-info .k { color: var(--sage); }
 .alert h3 { font-size: 15px; margin: 2px 0 4px; }
 .alert p { color: var(--mute); font-size: 13px; }
 

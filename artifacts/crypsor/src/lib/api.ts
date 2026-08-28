@@ -66,6 +66,9 @@ export type PatientCard = {
   deceased_at: string | null;
   revived_at: string | null;
   graduated: boolean;
+  last_quality?: number | null;
+  cap_band?: "low" | "mid" | "mega" | null;
+  last_suggestion?: string | null;
   prognosis?: Prognosis;
 };
 
@@ -79,6 +82,7 @@ export type WardBoard = {
     trades24h: number;
   };
   patients: PatientCard[];
+  suggestions?: Suggestion[];
   weights: Record<string, number>;
 };
 
@@ -114,6 +118,45 @@ export type ScanRow = {
   } | null;
   score: number | null;
   phase: string | null;
+  quality?: number | null;
+  sources?: { used?: Record<string, string | null>; flags?: string[] } | null;
+};
+
+export type Suggestion = {
+  id: string;
+  severity: "info" | "watch" | "act";
+  title: string;
+  body: string;
+};
+
+export type SnapshotRow = {
+  at: string;
+  band: string;
+  mc_usd: number | null;
+  liq_usd: number | null;
+  holders: number | null;
+  top10_pct: number | null;
+  score: number | null;
+  phase: string | null;
+  quality: number | null;
+  tape_lead: string | null;
+  mc_slope: number | null;
+  liq_slope: number | null;
+  holder_slope: number | null;
+  flags: string[] | null;
+  suggestions: Suggestion[] | null;
+};
+
+export type SourceReadRow = {
+  source: string;
+  ok: boolean;
+  mc_usd: number | null;
+  liq_usd: number | null;
+  holders: number | null;
+  top10_pct: number | null;
+  latency_ms: number | null;
+  extra: Record<string, unknown> | null;
+  at: string;
 };
 
 export type PatientChart = {
@@ -135,6 +178,9 @@ export type PatientChart = {
     payload: Record<string, unknown> | null; telegram_sent: boolean; at: string;
   }>;
   notes: Array<{ agent: string; action: string; detail: string; at: string }>;
+  snapshots?: SnapshotRow[];
+  sources?: SourceReadRow[];
+  suggestions?: Suggestion[];
   weights: Record<string, number>;
 };
 
@@ -171,7 +217,15 @@ export type AgentsState = {
     trades_24h: number;
     paper: { judged?: number; wins?: number };
     detail: string;
+    suggestions?: Suggestion[];
+    quality?: Record<string, unknown>;
     at: string;
+  } | null;
+  quality?: {
+    sources?: Array<{ source: string; n: number; ok: number; avg_ms: number | null }>;
+    snapshots?: Array<{ band: string; n: number }>;
+    bands?: Array<{ band: string; n: number; q?: number | null }>;
+    snapshots6h?: number;
   } | null;
   notes: Array<{
     id: number; agent: string; action: string; token_id: number | null;

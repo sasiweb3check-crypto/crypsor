@@ -187,6 +187,54 @@ const SCHEMA: string[] = [
      detail text NOT NULL,
      at timestamptz NOT NULL DEFAULT NOW()
    )`,
+  `ALTER TABLE ward_reports ADD COLUMN IF NOT EXISTS suggestions jsonb`,
+  `ALTER TABLE ward_reports ADD COLUMN IF NOT EXISTS quality jsonb`,
+
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_quality integer`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS cap_band text`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_snapshot_at timestamptz`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_suggestion text`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS quality integer`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS sources jsonb`,
+
+  `CREATE TABLE IF NOT EXISTS ward_source_reads (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES f2_tokens(id),
+     source text NOT NULL,
+     ok boolean NOT NULL,
+     mc_usd real,
+     liq_usd real,
+     holders integer,
+     top10_pct real,
+     latency_ms integer,
+     extra jsonb,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_source_reads_token ON ward_source_reads (token_id, at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_source_reads_src ON ward_source_reads (source, at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_snapshots (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES f2_tokens(id),
+     band text NOT NULL,
+     mc_usd real,
+     liq_usd real,
+     holders integer,
+     top10_pct real,
+     score integer,
+     phase text,
+     quality integer,
+     tape_lead text,
+     mc_slope real,
+     liq_slope real,
+     holder_slope real,
+     sources jsonb,
+     flags jsonb,
+     suggestions jsonb,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_token ON ward_snapshots (token_id, at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_band ON ward_snapshots (band, at DESC)`,
 ];
 
 let ensured = false;

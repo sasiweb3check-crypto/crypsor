@@ -1,11 +1,13 @@
 /**
  * Ward runtime — dedicated in-process agents (free-tier: one Node process).
  *
- *   intake   wallet buys only (Helius)
- *   vitals   DexScreener/pump tape + scoring + phase
- *   holders  GMGN quality (rate-limited)
- *   reporter census
- *   backtest self-improving weights from TRADE outcomes
+ *   intake     wallet buys only (Helius)
+ *   vitals     DexScreener/pump tape + scoring + phase
+ *   quality    Dex vs pump vs GMGN — fill gaps, flag disagreement
+ *   holders    GMGN quality (rate-limited)
+ *   snapshots  low/mid cap time-series + suggestions
+ *   reporter   census + snapshot report
+ *   backtest   self-improving weights from TRADE outcomes
  *
  * Render Starter: this process stays up, so the intervals below are the
  * real scheduler. Vercel Hobby / Render free freeze without traffic, so
@@ -16,7 +18,9 @@ import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
 import { vitalsTick } from "../agents/vitals";
+import { qualityTick } from "../agents/quality";
 import { holdersTick } from "../agents/holders";
+import { snapshotsTick } from "../agents/snapshots";
 import { reporterTick } from "../agents/reporter";
 import { backtestTick, loadWeights } from "../agents/backtest";
 
@@ -27,12 +31,19 @@ let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
 const VITALS_MS = 22_000;
+const QUALITY_MS = 55_000;
 const HOLDERS_MS = 90_000;
+const SNAPSHOT_MS = 50_000;
 const REPORT_MS = 120_000;
 const BACKTEST_MS = 10 * 60_000;
 
-let last = { intake: 0, vitals: 0, holders: 0, reporter: 0, backtest: 0 };
-let running = { intake: false, vitals: false, holders: false, reporter: false, backtest: false };
+let last = {
+  intake: 0, vitals: 0, quality: 0, holders: 0, snapshots: 0, reporter: 0, backtest: 0,
+};
+let running = {
+  intake: false, vitals: false, quality: false, holders: false,
+  snapshots: false, reporter: false, backtest: false,
+};
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -61,11 +72,23 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 5_000);
       setInterval(() => {
+        if (running.quality || Date.now() - last.quality < QUALITY_MS) return;
+        running.quality = true;
+        last.quality = Date.now();
+        void guarded("quality", qualityTick).finally(() => { running.quality = false; });
+      }, 8_000);
+      setInterval(() => {
         if (running.holders || Date.now() - last.holders < HOLDERS_MS) return;
         running.holders = true;
         last.holders = Date.now();
         void guarded("holders", holdersTick).finally(() => { running.holders = false; });
       }, 8_000);
+      setInterval(() => {
+        if (running.snapshots || Date.now() - last.snapshots < SNAPSHOT_MS) return;
+        running.snapshots = true;
+        last.snapshots = Date.now();
+        void guarded("snapshots", snapshotsTick).finally(() => { running.snapshots = false; });
+      }, 10_000);
       setInterval(() => {
         if (running.reporter || Date.now() - last.reporter < REPORT_MS) return;
         running.reporter = true;
@@ -79,7 +102,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("backtest", backtestTick).finally(() => { running.backtest = false; });
       }, 30_000);
       started = true;
-      log.info("ward agents started (intake · vitals · holders · reporter · backtest)");
+      log.info("ward agents started (intake · vitals · quality · holders · snapshots · reporter · backtest)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -101,7 +124,9 @@ export function agentStatus(): {
     intervalsMs: {
       intake: INTAKE_MS,
       vitals: VITALS_MS,
+      quality: QUALITY_MS,
       holders: HOLDERS_MS,
+      snapshots: SNAPSHOT_MS,
       reporter: REPORT_MS,
       backtest: BACKTEST_MS,
     },
@@ -113,7 +138,9 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
   await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
+  await guarded("quality", async () => { out.quality = await qualityTick(); });
   await guarded("holders", async () => { out.holders = await holdersTick(); });
+  await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
   await guarded("reporter", async () => { out.reporter = await reporterTick(); });
   return out;
 }
