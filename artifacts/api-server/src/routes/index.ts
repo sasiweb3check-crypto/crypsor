@@ -1,20 +1,20 @@
 /**
- * v2 API — vault dashboard, funnel state, token journal, wallets, settings.
+ * Ward API — hospital board, patient chart, alerts, agents, wallets, settings.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "../core/db";
 import { sseHandler } from "../core/bus";
-import { ensureRuntime, runFullTick } from "../funnel/runtime";
-import { T } from "../funnel/filters";
-import { heliusKey } from "../core/settings";
-import { setSetting, getSetting } from "../core/settings";
+import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
+import { heliusKey, setSetting, getSetting } from "../core/settings";
+import { getWeights, prognosis, failsOf, type Phase } from "../scoring/ward";
 
 const router: IRouter = Router();
 
 const ok = (data: unknown) => ({ ok: true, data });
 const fail = (error: string) => ({ ok: false, error });
 
-// Warm-instance boot on every request (Vercel Fluid)
+const PHASES = ["intake", "icu", "ward", "recovery", "revived", "deceased"] as const;
+
 router.use((_req, _res, next) => {
   void ensureRuntime().finally(() => next());
 });
@@ -26,16 +26,18 @@ router.get("/healthz", async (_req, res) => {
     const t0 = Date.now();
     await pool.query("SELECT 1");
     const dbMs = Date.now() - t0;
-    let funnel24h: Record<string, number> = {};
+    let census: Record<string, number> = {};
     let lastScanAt: unknown = null;
     try {
       const counts = await pool.query(
-        `SELECT stage, COUNT(*)::int AS n FROM f2_tokens
-         WHERE discovered_at > NOW() - INTERVAL '24 hours' GROUP BY stage`,
+        `SELECT COALESCE(phase, 'intake') AS phase, COUNT(*)::int AS n
+         FROM f2_tokens
+         WHERE source = 'wallet_buy' OR wallet_buys > 0
+         GROUP BY 1`,
       );
       const lastScan = await pool.query("SELECT MAX(at) AS at FROM f2_scans");
-      funnel24h = Object.fromEntries(
-        counts.rows.map((r: { stage: string; n: number }) => [r.stage, r.n]),
+      census = Object.fromEntries(
+        counts.rows.map((r: { phase: string; n: number }) => [r.phase, r.n]),
       );
       lastScanAt = lastScan.rows[0]?.at ?? null;
     } catch {
@@ -44,8 +46,9 @@ router.get("/healthz", async (_req, res) => {
     res.json(ok({
       db: `${dbMs}ms`,
       helius: Boolean(await heliusKey()),
-      funnel24h,
+      census,
       lastScanAt,
+      agents: agentStatus(),
     }));
   } catch (err) {
     res.status(500).json(fail(err instanceof Error ? err.message : "health failed"));
@@ -67,7 +70,7 @@ async function boundedTick(): Promise<Record<string, unknown>> {
 function cronAuthorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
   if (secret) return (req.headers.authorization ?? "") === `Bearer ${secret}`;
-  return true; // no secret configured — endpoint stays open but rate-limited
+  return true;
 }
 
 async function keepaliveHandler(_req: Request, res: Response) {
@@ -91,162 +94,243 @@ router.post("/cron/tick", (req, res) => {
   void boundedTick().then((r) => res.json(ok({ ...r, at: new Date().toISOString() })));
 });
 
-// ── vault (the dashboard) ───────────────────────────────────────────────────
+// ── ward board ───────────────────────────────────────────────────────────────
 
-const PERIODS: Record<string, string> = {
-  "24h": "24 hours", "7d": "7 days", "30d": "30 days", all: "100 years",
-};
-
-router.get("/vault", async (req, res) => {
+router.get("/ward", async (req, res) => {
   try {
-    const period = PERIODS[String(req.query.period ?? "24h").toLowerCase()] ?? PERIODS["24h"];
-    const safeOnly = String(req.query.safe ?? "0") === "1";
-    const sort = String(req.query.sort ?? "time");
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "50"), 10) || 50, 1), 200);
+    const phase = String(req.query.phase ?? "live").toLowerCase();
+    const q = String(req.query.q ?? "").trim();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
 
-    const calls = await pool.query(
-      `SELECT c.id, c.token_id, t.mint, t.symbol, t.name, t.image, t.source,
-              t.wallet_buys, c.called_at, c.alert_mc, c.peak_mc, c.peak_at,
-              c.last_mc, c.safe, c.deep,
-              (c.peak_mc / NULLIF(c.alert_mc, 0)) AS peak_x
-       FROM f2_calls c JOIN f2_tokens t ON t.id = c.token_id
-       WHERE c.called_at > NOW() - INTERVAL '${period}'
-         ${safeOnly ? "AND c.safe = true" : ""}
-       ORDER BY ${sort === "performance" ? "peak_x DESC NULLS LAST" : "c.called_at DESC"}
-       LIMIT ${limit}`,
+    const census = await pool.query(
+      `SELECT COALESCE(phase,'intake') AS phase, COUNT(*)::int AS n
+       FROM f2_tokens
+       WHERE source = 'wallet_buy' OR wallet_buys > 0
+       GROUP BY 1`,
+    );
+    const counts: Record<string, number> = {};
+    for (const r of census.rows as Array<{ phase: string; n: number }>) counts[r.phase] = r.n;
+
+    const live = (counts.intake ?? 0) + (counts.ward ?? 0) + (counts.icu ?? 0)
+      + (counts.recovery ?? 0) + (counts.revived ?? 0);
+    const dead = counts.deceased ?? 0;
+    const survival = live + dead > 0 ? live / (live + dead) : null;
+
+    const trades24 = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM ward_alerts
+       WHERE kind = 'trade' AND at > NOW() - INTERVAL '24 hours'`,
+    );
+    const avgScore = await pool.query(
+      `SELECT AVG(survival_score) AS avg
+       FROM f2_tokens
+       WHERE (source = 'wallet_buy' OR wallet_buys > 0)
+         AND COALESCE(phase,'intake') NOT IN ('deceased') AND survival_score IS NOT NULL`,
     );
 
-    const stats = await pool.query(
-      `SELECT COUNT(*)::int AS signals,
-              COUNT(*) FILTER (WHERE peak_mc >= alert_mc * 2)::int AS w2,
-              COUNT(*) FILTER (WHERE peak_mc >= alert_mc * 5)::int AS w5,
-              COUNT(*) FILTER (WHERE peak_mc >= alert_mc * 10)::int AS w10,
-              AVG(peak_mc / NULLIF(alert_mc, 0)) AS avg_x,
-              MAX(peak_mc / NULLIF(alert_mc, 0)) AS best_x
-       FROM f2_calls
-       WHERE called_at > NOW() - INTERVAL '${period}'
-         ${safeOnly ? "AND safe = true" : ""}`,
-    );
-    const s = stats.rows[0] ?? {};
-    const signals = Number(s.signals ?? 0);
-    // Win rate counts only calls old enough to have had a chance (>=30 min)
-    const matured = await pool.query(
-      `SELECT COUNT(*)::int AS n,
-              COUNT(*) FILTER (WHERE peak_mc >= alert_mc * ${T.WIN_MULTIPLE})::int AS wins
-       FROM f2_calls
-       WHERE called_at > NOW() - INTERVAL '${period}'
-         AND called_at < NOW() - INTERVAL '30 minutes'
-         ${safeOnly ? "AND safe = true" : ""}`,
-    );
-    const m = matured.rows[0] ?? {};
-
-    // Best symbol
-    const best = await pool.query(
-      `SELECT t.symbol, (c.peak_mc / NULLIF(c.alert_mc,0)) AS x
-       FROM f2_calls c JOIN f2_tokens t ON t.id = c.token_id
-       WHERE c.called_at > NOW() - INTERVAL '${period}'
-         ${safeOnly ? "AND c.safe = true" : ""}
-       ORDER BY x DESC NULLS LAST LIMIT 1`,
-    );
-
-    res.json(ok({
-      calls: calls.rows,
-      stats: {
-        signals,
-        winners2x: Number(s.w2 ?? 0),
-        winners5x: Number(s.w5 ?? 0),
-        winners10x: Number(s.w10 ?? 0),
-        avgReturn: s.avg_x != null ? Number(s.avg_x) : null,
-        bestX: s.best_x != null ? Number(s.best_x) : null,
-        bestSymbol: best.rows[0]?.symbol ?? null,
-        winRate: Number(m.n ?? 0) > 0 ? Number(m.wins) / Number(m.n) : null,
-        matured: Number(m.n ?? 0),
-      },
-    }));
-  } catch (err) {
-    console.error("vault failed", err);
-    res.status(500).json(fail("vault failed"));
-  }
-});
-
-// ── funnel state (pipeline page) ────────────────────────────────────────────
-
-router.get("/funnel", async (_req, res) => {
-  try {
-    const counts = await pool.query(
-      `SELECT stage, COUNT(*)::int AS n FROM f2_tokens
-       WHERE discovered_at > NOW() - INTERVAL '24 hours' GROUP BY stage`,
-    );
-    const tracking = await pool.query(
-      `SELECT t.id, t.mint, t.symbol, t.source, t.wallet_buys, t.pass_streak,
-              t.scans_total, t.discovered_at,
-              s.mc_usd, s.holders, s.top10_pct, s.pass, s.fail_reasons
+    const where: string[] = ["(t.source = 'wallet_buy' OR t.wallet_buys > 0)"];
+    const params: unknown[] = [];
+    if (phase === "live") {
+      where.push(`COALESCE(t.phase,'intake') <> 'deceased'`);
+    } else if ((PHASES as readonly string[]).includes(phase)) {
+      params.push(phase);
+      where.push(`COALESCE(t.phase,'intake') = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(t.symbol ILIKE $${params.length} OR t.name ILIKE $${params.length} OR t.mint ILIKE $${params.length})`);
+    }
+    params.push(limit);
+    const patients = await pool.query(
+      `SELECT t.id, t.mint, t.symbol, t.name, t.image,
+              COALESCE(t.phase,'intake') AS phase,
+              t.survival_score, t.wallet_buys, t.last_mc, t.peak_mc, t.admission_mc,
+              t.last_liq, t.last_holders, t.tape_lead, t.last_verdict, t.last_reasons,
+              t.discovered_at, t.last_scan_at, t.deceased_at, t.revived_at, t.graduated
        FROM f2_tokens t
-       LEFT JOIN LATERAL (
-         SELECT mc_usd, holders, top10_pct, pass, fail_reasons
-         FROM f2_scans WHERE token_id = t.id ORDER BY at DESC LIMIT 1
-       ) s ON TRUE
-       WHERE t.stage IN ('tracking', 'deepdive')
-       ORDER BY t.wallet_buys DESC, t.discovered_at DESC
-       LIMIT 40`,
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY CASE COALESCE(t.phase,'intake')
+                  WHEN 'icu' THEN 0 WHEN 'intake' THEN 1 WHEN 'recovery' THEN 2
+                  WHEN 'revived' THEN 3 WHEN 'ward' THEN 4 ELSE 5 END,
+                t.survival_score DESC NULLS LAST,
+                t.discovered_at DESC
+       LIMIT $${params.length}`,
+      params,
     );
-    const recentKills = await pool.query(
-      `SELECT mint, symbol, kill_reason, discovered_at FROM f2_tokens
-       WHERE stage = 'killed' ORDER BY id DESC LIMIT 25`,
-    );
-    const killReasons = await pool.query(
-      `SELECT split_part(kill_reason, ':', 1) AS reason, COUNT(*)::int AS n
-       FROM f2_tokens WHERE stage = 'killed'
-         AND discovered_at > NOW() - INTERVAL '24 hours'
-       GROUP BY 1 ORDER BY n DESC LIMIT 10`,
-    );
+
     res.json(ok({
-      counts: Object.fromEntries(counts.rows.map((r) => [r.stage, r.n])),
-      tracking: tracking.rows,
-      recentKills: recentKills.rows,
-      killReasons: killReasons.rows,
-      thresholds: T,
+      census: counts,
+      stats: {
+        live,
+        deceased: dead,
+        survival,
+        avgScore: avgScore.rows[0]?.avg != null ? Number(avgScore.rows[0].avg) : null,
+        trades24h: Number(trades24.rows[0]?.n ?? 0),
+      },
+      patients: patients.rows.map((row) => {
+        const phase = (row.phase ?? "intake") as Phase;
+        return {
+          ...row,
+          prognosis: prognosis(phase, row.survival_score, failsOf(row.last_reasons)),
+        };
+      }),
+      weights: getWeights(),
     }));
   } catch (err) {
-    console.error("funnel failed", err);
-    res.status(500).json(fail("funnel failed"));
+    console.error("ward failed", err);
+    res.status(500).json(fail("ward failed"));
   }
 });
 
-// ── token detail (journal) ──────────────────────────────────────────────────
+// ── patient chart ────────────────────────────────────────────────────────────
 
-router.get("/token/:id", async (req, res) => {
+router.get("/patient/:id", async (req, res) => {
   try {
     const id = parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id)) { res.status(400).json(fail("bad id")); return; }
+
     const tr = await pool.query(
-      `SELECT t.*, c.id AS call_id, c.called_at, c.alert_mc, c.peak_mc, c.peak_at,
-              c.last_mc, c.safe, c.deep, c.telegram_sent
-       FROM f2_tokens t LEFT JOIN f2_calls c ON c.token_id = t.id
+      `SELECT t.*, c.id AS call_id, c.called_at, c.alert_mc, c.peak_mc AS call_peak_mc,
+              c.last_mc AS call_last_mc, c.safe, c.telegram_sent
+       FROM f2_tokens t
+       LEFT JOIN f2_calls c ON c.token_id = t.id
        WHERE t.id = $1`,
       [id],
     );
     if (!tr.rows.length) { res.status(404).json(fail("not found")); return; }
-    const token = tr.rows[0];
+    const token = tr.rows[0] as Record<string, unknown>;
 
     const scans = await pool.query(
-      `SELECT at, mc_usd, liq_usd, holders, top10_pct, buys_5m, sells_5m,
-              bundler_pct, smart_count, kol_count, pass, fail_reasons
-       FROM f2_scans WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+      `SELECT at, mc_usd, liq_usd, price_usd, holders, top10_pct,
+              buys_5m, sells_5m, vol_5m, bundler_pct, sniper_pct, bot_pct,
+              whale_pct, smart_count, kol_count, pass, fail_reasons, tape, score, phase
+       FROM f2_scans WHERE token_id = $1 ORDER BY at ASC LIMIT 80`,
       [id],
     );
-    const journal = token.call_id
-      ? await pool.query(
-        `SELECT at, price_usd, mc_usd, liq_usd, holders, bot_pct, smart_count,
-                whale_pct, buys_5m, sells_5m
-         FROM f2_journal WHERE call_id = $1 ORDER BY at ASC LIMIT 2000`,
-        [token.call_id],
-      )
-      : { rows: [] };
+    const admissions = await pool.query(
+      `SELECT a.wallet, a.sig, a.at, w.label
+       FROM ward_admissions a
+       LEFT JOIN walletdatasource w ON w.address = a.wallet
+       WHERE a.token_id = $1
+       ORDER BY a.at ASC`,
+      [id],
+    );
+    const alerts = await pool.query(
+      `SELECT id, kind, title, body, payload, telegram_sent, at
+       FROM ward_alerts WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+      [id],
+    );
+    const notes = await pool.query(
+      `SELECT agent, action, detail, at
+       FROM ward_agent_log WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+      [id],
+    );
 
-    res.json(ok({ token, scans: scans.rows.reverse(), journal: journal.rows }));
+    const lastScan = scans.rows[scans.rows.length - 1] ?? null;
+    const admitMc = Number(token.admission_mc ?? token.mc_at_discovery ?? 0) || null;
+    const lastMc = Number(token.last_mc ?? 0) || null;
+    const peakMc = Number(token.peak_mc ?? 0) || null;
+    const phase = ((token.phase as string) || "intake") as Phase;
+    const course: Array<{ phase: string; at: string; score: number | null }> = [];
+    for (const s of scans.rows as Array<{ phase: string | null; at: string; score: number | null }>) {
+      if (!s.phase) continue;
+      const prev = course[course.length - 1];
+      if (!prev || prev.phase !== s.phase) course.push({ phase: s.phase, at: s.at, score: s.score });
+      else prev.score = s.score;
+    }
+
+    res.json(ok({
+      token: {
+        ...token,
+        phase,
+        xFromAdmit: admitMc && lastMc ? lastMc / admitMc : null,
+        peakX: admitMc && peakMc ? peakMc / admitMc : null,
+        prognosis: prognosis(phase, Number(token.survival_score ?? NaN) || null, failsOf(token.last_reasons)),
+      },
+      lastScan,
+      scans: scans.rows,
+      course,
+      admissions: admissions.rows,
+      alerts: alerts.rows,
+      notes: notes.rows,
+      weights: getWeights(),
+    }));
   } catch (err) {
-    console.error("token detail failed", err);
-    res.status(500).json(fail("token detail failed"));
+    console.error("patient failed", err);
+    res.status(500).json(fail("patient failed"));
+  }
+});
+
+// ── alerts ───────────────────────────────────────────────────────────────────
+
+router.get("/alerts", async (req, res) => {
+  try {
+    const kind = String(req.query.kind ?? "").trim();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
+    const params: unknown[] = [];
+    let where = "WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)";
+    if (kind) {
+      params.push(kind);
+      where += ` AND a.kind = $${params.length}`;
+    }
+    params.push(limit);
+    const r = await pool.query(
+      `SELECT a.id, a.token_id, a.kind, a.title, a.body, a.payload, a.telegram_sent, a.at,
+              t.mint, t.symbol, t.name, t.image, t.phase, t.survival_score
+       FROM ward_alerts a
+       JOIN f2_tokens t ON t.id = a.token_id
+       ${where}
+       ORDER BY a.at DESC
+       LIMIT $${params.length}`,
+      params,
+    );
+    res.json(ok(r.rows));
+  } catch (err) {
+    console.error("alerts failed", err);
+    res.status(500).json(fail("alerts failed"));
+  }
+});
+
+// ── agents ───────────────────────────────────────────────────────────────────
+
+router.get("/agents", async (_req, res) => {
+  try {
+    const notes = await pool.query(
+      `SELECT id, agent, action, token_id, mint, detail, at
+       FROM ward_agent_log ORDER BY at DESC LIMIT 80`,
+    );
+    const byAgent = await pool.query(
+      `SELECT agent, MAX(at) AS last_at, COUNT(*)::int AS n
+       FROM ward_agent_log
+       WHERE at > NOW() - INTERVAL '24 hours'
+       GROUP BY agent`,
+    );
+    const paper = await pool.query(
+      `SELECT
+         COUNT(*)::int AS judged,
+         COUNT(*) FILTER (
+           WHERE t.peak_mc >= NULLIF((a.payload->>'mc')::real, 0) * 2
+         )::int AS wins
+       FROM ward_alerts a
+       JOIN f2_tokens t ON t.id = a.token_id
+       WHERE a.kind = 'trade'
+         AND a.at < NOW() - INTERVAL '2 hours'
+         AND a.at > NOW() - INTERVAL '7 days'`,
+    );
+    const report = await pool.query(
+      `SELECT census, survival, trades_24h, paper, detail, at
+       FROM ward_reports ORDER BY id DESC LIMIT 1`,
+    );
+    res.json(ok({
+      status: agentStatus(),
+      weights: getWeights(),
+      last24h: byAgent.rows,
+      paper: paper.rows[0] ?? { judged: 0, wins: 0 },
+      report: report.rows[0] ?? null,
+      notes: notes.rows,
+    }));
+  } catch (err) {
+    console.error("agents failed", err);
+    res.status(500).json(fail("agents failed"));
   }
 });
 
@@ -285,7 +369,6 @@ router.get("/settings", async (_req, res) => {
   const out: Record<string, string | null> = {};
   for (const k of SETTING_KEYS) {
     const v = await getSetting(k);
-    // mask secrets — only reveal tail
     out[k] = v ? `••••${v.slice(-6)}` : null;
   }
   res.json(ok(out));

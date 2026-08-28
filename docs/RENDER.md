@@ -47,7 +47,7 @@ from the same process, so the browser should call `/api` on the current host.
 1. Open `https://<service>.onrender.com` — you should see the desk.
 2. `https://<service>.onrender.com/api/healthz` → `"ok": true` and a `db` ping.
 3. Settings → paste Helius (and Telegram) if they are not already in the DB.
-4. Confirm the pipeline page is moving (new tokens / scans).
+4. Confirm the ward board is moving (new patients / scans). Wallets live in Settings.
 
 Custom domain: Render → service → **Custom Domains**. Same-origin still applies.
 

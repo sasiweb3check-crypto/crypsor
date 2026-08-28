@@ -1,17 +1,19 @@
 # Crypsor
 
-Solana memecoin gem desk — tracked-wallet discovery, evidence-gated GEM
-scoring, survival tracking, Telegram alerts.
+Hospital for Solana tokens bought by **your** wallets. The only data source
+is wallet buys (Helius). Each mint is a patient: intake → ward / ICU →
+recovery, deceased, or revived. Survival is scored from tape leadership
+(omo-style 5m/1h/6h), liquidity, holder behaviour, and holder quality
+(hold share, not bot counts).
 
-- **Desk:** confirmed GEM calls (judged by survival) + live capture log
-- **Engine:** buy-sourced discovery → snapshot tape → GEM score (flow /
-  holders / smart / structure / timing, hard vetoes, confidence gate) →
-  GEM_CALL alerts → survival scoring after the call
+- **Ward:** live patients by phase, survival rate, TRADE alerts
+- **Patient chart:** every factor, tape, holder quality, admitting wallets
+- **Agents:** intake, vitals, holders, reporter, backtest (self-tuning weights)
+- **Alerts:** Telegram + in-app for admit, trade, ICU, death, revival
 
 ## Deploy (Render)
 
-The funnel is an always-on Node process. **Render Starter** is the intended
-host: one web service serves the desk, `/api`, and the scanner together.
+One Node process on **Render** serves the desk, `/api`, and the agents.
 
 See **[docs/RENDER.md](docs/RENDER.md)** — Blueprint file is `render.yaml`.
 
@@ -25,19 +27,19 @@ See **[docs/RENDER.md](docs/RENDER.md)** — Blueprint file is `render.yaml`.
 
 On Render **Starter** the process does not sleep — no pinger needed.
 
-On Render **free** or **Vercel Hobby**, the instance freezes without traffic.
-Set up a free external pinger: [docs/UPTIME.md](docs/UPTIME.md). A GitHub
-Actions baseline (`.github/workflows/keepalive.yml`) pings every 30 minutes
-if you set the `APP_URL` repo variable.
+On Render **free** or **Vercel Hobby**, the instance sleeps without traffic.
+Point a free pinger at `GET /api/keepalive`: [docs/UPTIME.md](docs/UPTIME.md).
+A GitHub Actions baseline (`.github/workflows/keepalive.yml`) pings every
+30 minutes if you set the `APP_URL` repo variable.
 
 ## Development
 
 ```bash
 pnpm install
 pnpm --filter @workspace/api-server dev   # API on :3000
-pnpm --filter @workspace/crypsor dev      # Vite dev server
+pnpm --filter @workspace/crypsor dev      # Vite desk
 ```
 
-Env: `DATABASE_URL` (Postgres), `HELIUS_API_KEY`, optional `GMGN_API_KEY`,
-`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (or via Settings UI), `CRON_SECRET`
-for the authorized cron tick.
+Env: `DATABASE_URL` or `AIVEN_DATABASE_URL`, `HELIUS_API_KEY`, optional
+`GMGN_API_KEY`, Telegram via Settings, `CRON_SECRET` for `/api/cron/tick`.
+Add wallets in Settings — that is the entire discovery surface.

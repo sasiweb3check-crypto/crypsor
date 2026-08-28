@@ -14,6 +14,13 @@ if (!rawDatabaseUrl) {
 }
 
 const isAivenDatabase = rawDatabaseUrl.includes("aivencloud.com");
+const isRenderInternalPostgres = (() => {
+  try {
+    return /^dpg-[a-z0-9-]+$/i.test(new URL(rawDatabaseUrl).hostname);
+  } catch {
+    return false;
+  }
+})();
 const databaseUrl = isAivenDatabase
   ? (() => {
       const url = new URL(rawDatabaseUrl);
@@ -27,9 +34,10 @@ const databaseUrl = isAivenDatabase
 
 const isProduction = process.env.NODE_ENV === "production";
 const requiresSsl =
-  rawDatabaseUrl.includes("sslmode=require") ||
-  isAivenDatabase ||
-  isProduction;
+  !isRenderInternalPostgres &&
+  (rawDatabaseUrl.includes("sslmode=require") ||
+    isAivenDatabase ||
+    isProduction);
 
 export const pool = new Pool({
   connectionString: databaseUrl,

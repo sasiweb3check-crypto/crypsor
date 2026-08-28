@@ -1,6 +1,3 @@
-/**
- * SETTINGS — API keys + tracked wallets (buy-source list).
- */
 import { useState } from "react";
 import { api } from "../lib/api";
 import { usePoll } from "../hooks/use-data";
@@ -9,7 +6,7 @@ type Wallets = Array<{ id: number; address: string; label: string | null; create
 
 export default function SettingsPage() {
   const settingsQ = usePoll<Record<string, string | null>>(() => api("api/settings"), 60_000);
-  const walletsQ = usePoll<Wallets>(() => api("api/wallets"), 30_000);
+  const walletsQ = usePoll<Wallets>(() => api("api/wallets"), 20_000);
 
   const [helius, setHelius] = useState("");
   const [tgToken, setTgToken] = useState("");
@@ -29,7 +26,7 @@ export default function SettingsPage() {
           telegram_chat_id: tgChat,
         }),
       });
-      setMsg("saved ✓");
+      setMsg("Saved");
       setHelius(""); setTgToken(""); setTgChat("");
       settingsQ.refresh();
     } catch (e) {
@@ -56,42 +53,49 @@ export default function SettingsPage() {
   const cur = settingsQ.data;
 
   return (
-    <div className="v-page">
-      <h2 className="v-h2">SETTINGS</h2>
+    <div className="page">
+      <header className="topbar">
+        <div className="brand">Settings</div>
+      </header>
+      <p className="blurb">
+        The only data source is wallet buys. Add Solana addresses you trust — every buy becomes a patient.
+      </p>
 
-      <h3 className="v-h3">API KEYS</h3>
-      <div className="v-form">
-        <label className="v-field">
-          <span>Helius API key {cur?.helius_api_key && <em className="v-green">set {cur.helius_api_key}</em>}</span>
-          <input value={helius} onChange={(e) => setHelius(e.target.value)} placeholder="new key…" />
-        </label>
-        <label className="v-field">
-          <span>Telegram bot token {cur?.telegram_bot_token && <em className="v-green">set {cur.telegram_bot_token}</em>}</span>
-          <input value={tgToken} onChange={(e) => setTgToken(e.target.value)} placeholder="123456:ABC…" />
-        </label>
-        <label className="v-field">
-          <span>Telegram chat id {cur?.telegram_chat_id && <em className="v-green">set {cur.telegram_chat_id}</em>}</span>
-          <input value={tgChat} onChange={(e) => setTgChat(e.target.value)} placeholder="chat id…" />
-        </label>
-        <button type="button" className="v-btn" onClick={() => void save()}>SAVE</button>
-        {msg && <span className="v-muted">{msg}</span>}
+      <div className="section-h">Tracked wallets</div>
+      <div className="form">
+        <input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Solana address" autoCapitalize="off" />
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label (optional)" />
+        <button type="button" className="btn" onClick={() => void addWallet()}>Admit wallet</button>
       </div>
-
-      <h3 className="v-h3">TRACKED WALLETS (buy source)</h3>
-      <div className="v-form v-form-row">
-        <input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="wallet address" className="v-grow" />
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="label" />
-        <button type="button" className="v-btn" onClick={() => void addWallet()}>ADD</button>
-      </div>
-      <div className="v-table">
+      <div className="list">
         {(walletsQ.data ?? []).map((w) => (
-          <div key={w.id} className="v-tr3 v-row-static">
-            <span className="v-mono">{w.address.slice(0, 8)}…{w.address.slice(-6)}</span>
-            <span>{w.label ?? "—"}</span>
-            <button type="button" className="v-chip v-red" onClick={() => void removeWallet(w.id)}>remove</button>
+          <div key={w.id} className="wallet">
+            <div className="card-main">
+              <div className="sym">{w.label || "Unnamed"}</div>
+              <code>{w.address}</code>
+            </div>
+            <button type="button" className="btn ghost" onClick={() => void removeWallet(w.id)}>Remove</button>
           </div>
         ))}
-        {(walletsQ.data ?? []).length === 0 && <div className="v-empty">no wallets tracked yet</div>}
+        {(walletsQ.data ?? []).length === 0 && <div className="row"><span className="blurb">No wallets yet.</span></div>}
+      </div>
+
+      <div className="section-h">Keys</div>
+      <div className="form">
+        <label className="field">
+          <span>Helius {cur?.helius_api_key && <em className="tape-buyers"> · {cur.helius_api_key}</em>}</span>
+          <input value={helius} onChange={(e) => setHelius(e.target.value)} placeholder="New key" autoCapitalize="off" />
+        </label>
+        <label className="field">
+          <span>Telegram bot {cur?.telegram_bot_token && <em className="tape-buyers"> · {cur.telegram_bot_token}</em>}</span>
+          <input value={tgToken} onChange={(e) => setTgToken(e.target.value)} placeholder="123456:ABC…" autoCapitalize="off" />
+        </label>
+        <label className="field">
+          <span>Telegram chat {cur?.telegram_chat_id && <em className="tape-buyers"> · {cur.telegram_chat_id}</em>}</span>
+          <input value={tgChat} onChange={(e) => setTgChat(e.target.value)} placeholder="Chat id" autoCapitalize="off" />
+        </label>
+        <button type="button" className="btn" onClick={() => void save()}>Save keys</button>
+        {msg && <span className="blurb">{msg}</span>}
       </div>
     </div>
   );

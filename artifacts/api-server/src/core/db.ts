@@ -105,6 +105,88 @@ const SCHEMA: string[] = [
      chain text NOT NULL DEFAULT 'solana',
      created_at timestamptz NOT NULL DEFAULT NOW()
    )`,
+
+  // ── Ward (hospital) columns on existing patients ──
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS phase text`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS survival_score integer`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS admission_mc real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS peak_mc real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_mc real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_liq real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_holders integer`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_verdict text`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_reasons jsonb`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS tape_lead text`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS deceased_at timestamptz`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS revived_at timestamptz`,
+  `UPDATE f2_tokens SET phase = CASE
+      WHEN stage = 'killed' THEN 'deceased'
+      WHEN stage = 'called' THEN 'ward'
+      ELSE COALESCE(phase, 'intake')
+    END
+    WHERE phase IS NULL`,
+  `UPDATE f2_tokens
+     SET phase = 'deceased',
+         stage = 'killed',
+         kill_reason = COALESCE(kill_reason, 'not_wallet_buy'),
+         deceased_at = COALESCE(deceased_at, NOW())
+   WHERE source <> 'wallet_buy'
+     AND COALESCE(wallet_buys, 0) = 0
+     AND COALESCE(phase, 'intake') <> 'deceased'`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS tape jsonb`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS score integer`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS phase text`,
+  `ALTER TABLE f2_scans ADD COLUMN IF NOT EXISTS whale_pct real`,
+  `CREATE INDEX IF NOT EXISTS idx_f2_tokens_phase ON f2_tokens (phase, last_scan_at)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_admissions (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES f2_tokens(id),
+     wallet text NOT NULL,
+     sig text,
+     at timestamptz NOT NULL DEFAULT NOW(),
+     UNIQUE (token_id, wallet, sig)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_admissions_token ON ward_admissions (token_id, at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_alerts (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL REFERENCES f2_tokens(id),
+     kind text NOT NULL,
+     title text NOT NULL,
+     body text,
+     payload jsonb,
+     telegram_sent boolean NOT NULL DEFAULT false,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_alerts_at ON ward_alerts (at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_agent_log (
+     id serial PRIMARY KEY,
+     agent text NOT NULL,
+     action text NOT NULL,
+     token_id integer,
+     mint text,
+     detail text NOT NULL,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_agent_log_at ON ward_agent_log (at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_weights (
+     factor text PRIMARY KEY,
+     weight real NOT NULL,
+     updated_at timestamptz NOT NULL DEFAULT NOW(),
+     note text
+   )`,
+  `CREATE TABLE IF NOT EXISTS ward_reports (
+     id serial PRIMARY KEY,
+     census jsonb NOT NULL,
+     survival real,
+     trades_24h integer,
+     paper jsonb,
+     detail text NOT NULL,
+     at timestamptz NOT NULL DEFAULT NOW()
+   )`,
 ];
 
 let ensured = false;

@@ -1,6 +1,6 @@
 /**
  * Standalone host (Render / VPS / local): binds 0.0.0.0:$PORT, starts the
- * funnel loops immediately, and serves the desk SPA when WEB_DIST is present.
+ * ward agents immediately, and serves the desk SPA when WEB_DIST is present.
  */
 import app from "./app";
 import { pool } from "./core/db";
@@ -25,13 +25,13 @@ async function main(): Promise<void> {
   try {
     await ensureRuntime();
   } catch (err) {
-    logger.error({ err }, "funnel runtime failed to start");
+    logger.error({ err }, "ward runtime failed to start");
     process.exit(1);
     return;
   }
 
   const server = app.listen(port, "0.0.0.0", () => {
-    logger.info({ port }, "crypsor v2 api listening");
+    logger.info({ port }, "crypsor ward api listening");
   });
 
   server.on("error", (err) => {
