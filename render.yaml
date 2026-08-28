@@ -1,0 +1,48 @@
+# Crypsor — one always-on web service (desk SPA + Express API + funnel).
+# Blueprint: https://render.com/docs/infrastructure-as-code
+#
+# Deploy: https://dashboard.render.com/select-repo?type=blueprint
+# (connect this GitHub repo, then fill in sync: false secrets).
+#
+# One instance only — the funnel runs in-process; extra instances would
+# duplicate scans and Telegram alerts.
+#
+# plan: starter stays up 24/7 (~$7/mo). `free` spins down after ~15 min idle
+# and the pipeline dies with it — only use free if you also ping /api/keepalive.
+
+services:
+  - type: web
+    name: crypsor
+    runtime: node
+    plan: starter
+    region: oregon
+    numInstances: 1
+    autoDeployTrigger: commit
+    healthCheckPath: /api/healthz
+    buildCommand: pnpm install --no-frozen-lockfile --prod=false && pnpm run build:render
+    startCommand: pnpm run start:render
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: PNPM_VERSION
+        value: "10"
+      - key: AIVEN_DATABASE_URL
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: GMGN_API_KEY
+        sync: false
+      - key: GMGN_PROXIES
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: TELEGRAM_PUSH_ENABLED
+        value: "true"
+      # Same-origin deploy: do NOT set VITE_API_URL (desk calls /api on this host).
+      # Split-host only:
+      # - key: CORS_ORIGIN
+      #   sync: false

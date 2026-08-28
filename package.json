@@ -9,7 +9,12 @@
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "build:web": "pnpm --filter @workspace/crypsor run build",
-    "build:api": "pnpm --filter @workspace/api-server run build"
+    "build:api": "pnpm --filter @workspace/api-server run build",
+    "build:render": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/crypsor run build",
+    "start:render": "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+  },
+  "engines": {
+    "node": ">=22 <25"
   },
   "dependencies": {
     "@replit/connectors-sdk": "^0.4.1"
