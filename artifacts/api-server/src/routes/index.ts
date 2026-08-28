@@ -145,7 +145,8 @@ router.get("/ward", async (req, res) => {
               COALESCE(t.phase,'intake') AS phase,
               t.survival_score, t.wallet_buys, t.last_mc, t.peak_mc, t.admission_mc,
               t.last_liq, t.last_holders, t.tape_lead, t.last_verdict, t.last_reasons,
-              t.discovered_at, t.last_scan_at, t.deceased_at, t.revived_at, t.graduated
+              t.discovered_at, t.last_scan_at, t.deceased_at, t.revived_at, t.graduated,
+              t.last_quality, t.cap_band, t.last_suggestion
        FROM f2_tokens t
        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
        ORDER BY CASE COALESCE(t.phase,'intake')
@@ -156,6 +157,42 @@ router.get("/ward", async (req, res) => {
        LIMIT $${params.length}`,
       params,
     );
+
+    let suggestions: unknown[] = [];
+    try {
+      const sug = await pool.query(
+        `SELECT suggestions FROM ward_reports WHERE suggestions IS NOT NULL ORDER BY id DESC LIMIT 1`,
+      );
+      const raw = sug.rows[0]?.suggestions;
+      suggestions = Array.isArray(raw) ? raw : [];
+      if (!suggestions.length) {
+        const recent = await pool.query(
+          `SELECT suggestions FROM ward_snapshots
+           WHERE at > NOW() - INTERVAL '3 hours' AND suggestions IS NOT NULL
+           ORDER BY at DESC LIMIT 80`,
+        );
+        const tally = new Map<string, { s: Record<string, unknown>; n: number }>();
+        for (const row of recent.rows as Array<{ suggestions: unknown }>) {
+          const list = Array.isArray(row.suggestions) ? row.suggestions as Array<Record<string, unknown>> : [];
+          for (const s of list) {
+            const id = String(s?.id ?? "");
+            if (!id) continue;
+            const prev = tally.get(id);
+            if (prev) prev.n += 1;
+            else tally.set(id, { s, n: 1 });
+          }
+        }
+        suggestions = [...tally.values()]
+          .sort((a, b) => b.n - a.n)
+          .slice(0, 4)
+          .map(({ s, n }) => ({
+            ...s,
+            body: `${String(s.body ?? "")} (${n} patient${n === 1 ? "" : "s"} in 3h)`,
+          }));
+      }
+    } catch {
+      suggestions = [];
+    }
 
     res.json(ok({
       census: counts,
@@ -173,6 +210,7 @@ router.get("/ward", async (req, res) => {
           prognosis: prognosis(phase, row.survival_score, failsOf(row.last_reasons)),
         };
       }),
+      suggestions,
       weights: getWeights(),
     }));
   } catch (err) {
@@ -224,6 +262,26 @@ router.get("/patient/:id", async (req, res) => {
        FROM ward_agent_log WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );
+    let snapshots: unknown[] = [];
+    let sources: unknown[] = [];
+    try {
+      const snap = await pool.query(
+        `SELECT at, band, mc_usd, liq_usd, holders, top10_pct, score, phase, quality,
+                tape_lead, mc_slope, liq_slope, holder_slope, flags, suggestions
+         FROM ward_snapshots WHERE token_id = $1 ORDER BY at ASC LIMIT 48`,
+        [id],
+      );
+      snapshots = snap.rows;
+      const reads = await pool.query(
+        `SELECT source, ok, mc_usd, liq_usd, holders, top10_pct, latency_ms, extra, at
+         FROM ward_source_reads WHERE token_id = $1 ORDER BY at DESC LIMIT 18`,
+        [id],
+      );
+      sources = reads.rows;
+    } catch {
+      snapshots = [];
+      sources = [];
+    }
 
     const lastScan = scans.rows[scans.rows.length - 1] ?? null;
     const admitMc = Number(token.admission_mc ?? token.mc_at_discovery ?? 0) || null;
@@ -252,6 +310,11 @@ router.get("/patient/:id", async (req, res) => {
       admissions: admissions.rows,
       alerts: alerts.rows,
       notes: notes.rows,
+      snapshots,
+      sources,
+      suggestions: (snapshots as Array<{ suggestions?: unknown }>).length
+        ? (snapshots as Array<{ suggestions?: unknown }>)[snapshots.length - 1]?.suggestions ?? []
+        : [],
       weights: getWeights(),
     }));
   } catch (err) {
@@ -317,15 +380,40 @@ router.get("/agents", async (_req, res) => {
          AND a.at > NOW() - INTERVAL '7 days'`,
     );
     const report = await pool.query(
-      `SELECT census, survival, trades_24h, paper, detail, at
+      `SELECT census, survival, trades_24h, paper, detail, suggestions, quality, at
        FROM ward_reports ORDER BY id DESC LIMIT 1`,
     );
+    let quality: unknown = report.rows[0]?.quality ?? null;
+    try {
+      const src = await pool.query(
+        `SELECT source,
+                COUNT(*)::int AS n,
+                COUNT(*) FILTER (WHERE ok)::int AS ok,
+                AVG(latency_ms) FILTER (WHERE ok) AS avg_ms
+         FROM ward_source_reads
+         WHERE at > NOW() - INTERVAL '6 hours'
+         GROUP BY source`,
+      );
+      const snaps = await pool.query(
+        `SELECT COALESCE(band,'unknown') AS band, COUNT(*)::int AS n
+         FROM ward_snapshots WHERE at > NOW() - INTERVAL '6 hours'
+         GROUP BY 1`,
+      );
+      quality = {
+        ...(typeof quality === "object" && quality ? quality as Record<string, unknown> : {}),
+        sources: src.rows,
+        snapshots: snaps.rows,
+      };
+    } catch {
+      // quality tables may be empty on first boot
+    }
     res.json(ok({
       status: agentStatus(),
       weights: getWeights(),
       last24h: byAgent.rows,
       paper: paper.rows[0] ?? { judged: 0, wins: 0 },
       report: report.rows[0] ?? null,
+      quality,
       notes: notes.rows,
     }));
   } catch (err) {

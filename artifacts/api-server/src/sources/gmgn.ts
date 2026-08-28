@@ -1,12 +1,16 @@
 /**
- * GMGN data source — browser-header curl over HTTP/2 (verified working from
- * server IPs), OpenAPI-first when GMGN_API_KEY is set.
+ * GMGN free web endpoints — browser-header curl over HTTP/2.
  *
- * Verified endpoints (2026-08):
- *   /api/v1/token_info/sol/:mint            holder_count, liquidity, timestamps
- *   /vas/api/v1/token_holder_stat/sol/:mint smart_degen/renowned/sniper/bundler/bot counts
- *   /vas/api/v1/token_holders/sol/:mint     top holders w/ tags + amount_percentage
- *   /api/v1/mutil_window_token_security_launchpad/sol/:mint  security (best effort)
+ * Official OpenAPI (GMGNAI/gmgn-skills GET /v1/token/info) needs an API key.
+ * The site's own gmgn.ai JSON (same data the UI loads) works without one:
+ *   /api/v1/token_info/sol/:mint
+ *   /api/v1/token_stat/sol/:mint                 top10 / creator / bot hold rates
+ *   /vas/api/v1/token_holder_stat/sol/:mint
+ *   /vas/api/v1/token_holders/sol/:mint
+ *   /api/v1/mutil_window_token_security_launchpad/sol/:mint
+ *
+ * defi/quotation/v1/tokens is the paid-shape path and returns invalid argument
+ * without their device/session — we do not call it.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -134,6 +138,54 @@ export async function tokenIntel(mint: string): Promise<TokenIntel | null> {
     bundlerHoldPct: haveList ? bundH : null,
     botHoldPct: haveList ? botH : null,
     whaleHoldPct: haveList ? whaleH : null,
+  };
+}
+
+export type TokenStat = {
+  holderCount: number | null;
+  top10Pct: number | null;
+  creatorHoldPct: number | null;
+  botDegenPct: number | null;
+  freshWalletPct: number | null;
+  bundlerPct: number | null;
+  sniperHoldPct: number | null;
+  creatorTokens: number | null;
+};
+
+/** Rates from /token_stat are 0–1 fractions. */
+function ratePct(v: unknown): number | null {
+  const n = num(v);
+  if (n == null) return null;
+  return n > 1 ? n : n * 100;
+}
+
+/** Light 2-call read for the quality agent (info + stat, no holder list). */
+export async function qualityIntel(mint: string): Promise<{
+  holderCount: number | null;
+  liqUsd: number | null;
+  top10Pct: number | null;
+  creatorHoldPct: number | null;
+  botDegenPct: number | null;
+  freshWalletPct: number | null;
+  bundlerPct: number | null;
+  sniperHoldPct: number | null;
+  creatorTokens: number | null;
+} | null> {
+  const [info, stat] = await Promise.all([
+    gmgnGet(`https://gmgn.ai/api/v1/token_info/sol/${mint}`),
+    gmgnGet(`https://gmgn.ai/api/v1/token_stat/sol/${mint}`),
+  ]);
+  if (!info && !stat) return null;
+  return {
+    holderCount: num(info?.holder_count) ?? num(stat?.holder_count),
+    liqUsd: num(info?.liquidity),
+    top10Pct: ratePct(stat?.top_10_holder_rate),
+    creatorHoldPct: ratePct(stat?.creator_hold_rate),
+    botDegenPct: ratePct(stat?.bot_degen_rate) ?? ratePct(stat?.top_bot_degen_percentage),
+    freshWalletPct: ratePct(stat?.fresh_wallet_rate),
+    bundlerPct: ratePct(stat?.top_bundler_trader_percentage),
+    sniperHoldPct: ratePct(stat?.top70_sniper_hold_rate),
+    creatorTokens: num(stat?.creator_created_count),
   };
 }
 

@@ -4,8 +4,10 @@ import { usePoll, useSse } from "../hooks/use-data";
 const DESK = [
   { id: "intake", title: "Intake", copy: "Reads Helius for buys from wallets you added. Each new mint is admitted." },
   { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
+  { id: "quality", title: "Quality", copy: "Cross-checks Dex, pump.fun coin, and GMGN. Fills gaps. Flags >25% disagreement." },
   { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "reporter", title: "Reporter", copy: "Writes the ward census report and prunes old scans so the free instance stays light." },
+  { id: "snapshots", title: "Snapshots", copy: "Low-cap and mid-cap time-series. Slopes become suggestions for you and the other agents." },
+  { id: "reporter", title: "Reporter", copy: "Writes the ward census + snapshot report and prunes old scans so the free instance stays light." },
   { id: "backtest", title: "Backtest", copy: "Paper 2× after TRADE. Nudges factor weights toward what survived." },
   { id: "alerts", title: "Alerts", copy: "Telegram + live desk for admit, trade, ICU, death, revival." },
 ];
@@ -46,6 +48,39 @@ export default function AgentsPage() {
           </div>
           <p>{d.report.detail}</p>
         </div>
+      )}
+
+      {(d?.report?.suggestions ?? []).length > 0 && (
+        <>
+          <div className="section-h">Ward suggestions</div>
+          {(d?.report?.suggestions ?? []).map((s) => (
+            <div key={s.id} className={`alert kind-${s.severity}`}>
+              <div className="k">{s.severity}</div>
+              <h3>{s.title}</h3>
+              <p>{s.body}</p>
+            </div>
+          ))}
+        </>
+      )}
+
+      {d?.quality?.sources && d.quality.sources.length > 0 && (
+        <>
+          <div className="section-h">Source health (6h)</div>
+          <div className="grid3">
+            {d.quality.sources.map((s) => (
+              <div key={s.source} className="vit">
+                <b>{s.ok}/{s.n}</b>
+                <span>{s.source}{s.avg_ms != null ? ` · ${Math.round(s.avg_ms)}ms` : ""}</span>
+              </div>
+            ))}
+            {(d.quality.snapshots ?? []).map((s) => (
+              <div key={`snap-${s.band}`} className="vit">
+                <b>{s.n}</b>
+                <span>{s.band} snaps</span>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {d?.weights && (

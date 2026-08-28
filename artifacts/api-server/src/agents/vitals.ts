@@ -5,7 +5,7 @@
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { pairsForMints, type DexPair } from "../sources/dexscreener";
-import { coin as pumpCoin, virtualLiqUsd } from "../sources/pumpfun";
+import { pumpVitals } from "../sources/pumpfun";
 import { judge, nextPhase, type Phase, type Reading, type TapeWindow } from "../scoring/ward";
 import { agentNote } from "./log";
 import { raiseAlert, tradeTelegram } from "./alerts";
@@ -74,14 +74,32 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
     let graduated = row.graduated || Boolean(pair && pair.dexId && pair.dexId !== "pumpfun");
 
     if (mc == null || liq == null) {
-      const p = await pumpCoin(row.mint);
+      try {
+        const cached = await pool.query(
+          `SELECT source, mc_usd, liq_usd FROM ward_source_reads
+           WHERE token_id = $1 AND ok = true AND at > NOW() - INTERVAL '15 minutes'
+           ORDER BY at DESC LIMIT 8`,
+          [row.id],
+        );
+        for (const r of cached.rows as Array<{ source: string; mc_usd: number | null; liq_usd: number | null }>) {
+          if (mc == null && r.mc_usd != null) mc = r.mc_usd;
+          if (liq == null && r.liq_usd != null) liq = r.liq_usd;
+        }
+      } catch {
+        // table may not exist on the very first boot before schema ALTER lands
+      }
+    }
+
+    if (mc == null || liq == null) {
+      const p = await pumpVitals(row.mint);
       if (p) {
-        mc = mc ?? p.usd_market_cap ?? null;
-        liq = liq ?? virtualLiqUsd(p);
-        graduated = Boolean(p.complete);
-        if (!row.symbol && p.symbol) {
+        mc = mc ?? p.mcUsd;
+        liq = liq ?? p.liqUsd;
+        graduated = p.graduated || graduated;
+        const c = p.coin;
+        if (!row.symbol && c.symbol) {
           await pool.query("UPDATE f2_tokens SET symbol = COALESCE(symbol,$2), name = COALESCE(name,$3), image = COALESCE(image,$4) WHERE id = $1",
-            [row.id, p.symbol, p.name ?? null, p.image_uri ?? null]);
+            [row.id, c.symbol, c.name ?? null, c.image_uri ?? null]);
         }
       }
     }

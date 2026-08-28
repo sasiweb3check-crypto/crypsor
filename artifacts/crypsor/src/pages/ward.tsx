@@ -46,8 +46,9 @@ function Card({ p, onOpen }: { p: PatientCard; onOpen: () => void }) {
         </div>
         <div className="meta">
           {p.wallet_buys} wallet{p.wallet_buys === 1 ? "" : "s"}
+          {p.cap_band ? ` · ${p.cap_band}` : ""}
           {x != null ? ` · ${x.toFixed(1)}×` : ""} · {timeAgo(p.last_scan_at || p.discovered_at)}
-          {reason ? ` · ${reason}` : ""}
+          {p.last_suggestion ? ` · ${p.last_suggestion}` : reason ? ` · ${reason}` : ""}
         </div>
       </div>
       <Score n={p.survival_score} phase={p.phase} />
@@ -128,6 +129,14 @@ export default function WardPage() {
           autoCorrect="off"
         />
       </div>
+
+      {(d?.suggestions ?? []).slice(0, 3).map((s) => (
+        <div key={s.id} className={`alert kind-${s.severity}`}>
+          <div className="k">{s.severity} · ward</div>
+          <h3>{s.title}</h3>
+          <p>{s.body}</p>
+        </div>
+      ))}
 
       {board.loading && !d && <div className="empty">Reading the ward…</div>}
       {board.error && <div className="empty err">{board.error}</div>}

@@ -1,7 +1,7 @@
 import { useRoute, useLocation } from "wouter";
 import {
   api, fmtPct, fmtUsd, fmtX, timeAgo, shortMint, shortWallet, PHASE_META,
-  type PatientChart, type Factor, type Phase, type TapeWindow,
+  type PatientChart, type Factor, type Phase, type TapeWindow, type Suggestion,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
@@ -65,6 +65,29 @@ function Factors({ factors }: { factors: Factor[] }) {
   );
 }
 
+function fmtSlope(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const pct = v * 100;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(0)}%`;
+}
+
+function Suggestions({ items }: { items: Suggestion[] }) {
+  if (!items.length) return null;
+  return (
+    <>
+      <div className="section-h">Suggestions</div>
+      {items.map((s) => (
+        <div key={s.id} className={`alert kind-${s.severity}`}>
+          <div className="k">{s.severity}</div>
+          <h3>{s.title}</h3>
+          <p>{s.body}</p>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export default function PatientPage() {
   const [, params] = useRoute("/p/:id");
   const [, nav] = useLocation();
@@ -96,6 +119,12 @@ export default function PatientPage() {
     .map((s) => ({ t: new Date(s.at).getTime(), v: s.mc_usd! }));
   const last = d.lastScan;
   const tape = last?.tape?.lead ?? t.tape_lead ?? "unknown";
+  const suggestions: Suggestion[] = Array.isArray(d.suggestions) ? d.suggestions : [];
+  const snapSpark = (d.snapshots ?? [])
+    .filter((s) => s.mc_usd != null && s.mc_usd > 0)
+    .map((s) => ({ t: new Date(s.at).getTime(), v: s.mc_usd! }));
+  const latestSnap = (d.snapshots ?? [])[(d.snapshots?.length ?? 0) - 1];
+  const latestReads = (d.sources ?? []).slice(0, 6);
 
   return (
     <div className="page">
@@ -117,6 +146,7 @@ export default function PatientPage() {
             {t.prognosis && <span className={`badge phase-${phase}`}>{t.prognosis.label}</span>}
             {" "}
             <span className={`badge phase-ward tape-${tape}`}>{tape.replace("_", " ")}</span>
+            {t.cap_band ? <>{" "}<span className="badge phase-ward">{t.cap_band} cap</span></> : null}
           </div>
           <p className="blurb" style={{ marginTop: 8 }}>{PHASE_META[phase]?.hint}</p>
         </div>
@@ -135,8 +165,12 @@ export default function PatientPage() {
         <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
         <div className="vit"><b>{fmtUsd(t.admission_mc)}</b><span>Admit MC</span></div>
         <div className="vit"><b>{fmtX(t.xFromAdmit)}</b><span>Since admit</span></div>
-        <div className="vit"><b>{fmtX(t.peakX)}</b><span>Peak</span></div>
+        <div className="vit"><b>{t.peakX != null ? fmtX(t.peakX) : "—"}</b><span>Peak</span></div>
+        <div className="vit"><b>{t.last_quality ?? last?.quality ?? "—"}</b><span>Data quality</span></div>
+        <div className="vit"><b>{t.cap_band ?? "—"}</b><span>Cap band</span></div>
       </div>
+
+      <Suggestions items={suggestions} />
 
       <div className="section-h">Course</div>
       <div className="course">
@@ -170,6 +204,37 @@ export default function PatientPage() {
 
       <div className="section-h">Market cap since admit</div>
       <Spark points={spark} admit={t.admission_mc} />
+
+      {snapSpark.length >= 2 && (
+        <>
+          <div className="section-h">Snapshots ({latestSnap?.band ?? t.cap_band ?? "cap"})</div>
+          <Spark points={snapSpark} admit={t.admission_mc} />
+          {latestSnap && (
+            <div className="grid3">
+              <div className="vit"><b>{fmtSlope(latestSnap.mc_slope)}</b><span>MC slope</span></div>
+              <div className="vit"><b>{fmtSlope(latestSnap.liq_slope)}</b><span>Liq slope</span></div>
+              <div className="vit"><b>{fmtSlope(latestSnap.holder_slope)}</b><span>Holder slope</span></div>
+            </div>
+          )}
+        </>
+      )}
+
+      {latestReads.length > 0 && (
+        <>
+          <div className="section-h">Source reads</div>
+          <div className="list">
+            {latestReads.map((r, i) => (
+              <div key={`${r.source}-${r.at}-${i}`} className="row">
+                <span>{r.source} {r.ok ? "ok" : "down"}</span>
+                <span className="blurb">
+                  {fmtUsd(r.mc_usd)} · liq {fmtUsd(r.liq_usd)} · h {r.holders ?? "—"}
+                  {r.latency_ms != null ? ` · ${r.latency_ms}ms` : ""} · {timeAgo(r.at)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="section-h">Admitting wallets</div>
       <div className="list">
