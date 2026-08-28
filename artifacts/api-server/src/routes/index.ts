@@ -10,6 +10,7 @@ import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { getWeights, prognosis, failsOf, callOf, type Phase } from "../scoring/ward";
 import { seedTradesFromAlerts } from "../agents/book";
 import { buildLiveBoard, passesOnDay } from "../agents/stats";
+import { imageProxy } from "./img";
 
 const router: IRouter = Router();
 
@@ -24,11 +25,17 @@ function pageParams(req: Request, fallback = 8, max = 40): { page: number; limit
   return { page, limit, offset: (page - 1) * limit };
 }
 
-router.use((_req, _res, next) => {
+router.use((req, _res, next) => {
+  if (req.path === "/img") {
+    next();
+    return;
+  }
   void ensureRuntime().finally(() => next());
 });
 
 // ── health ──────────────────────────────────────────────────────────────────
+
+router.get("/img", (req, res) => { void imageProxy(req, res); });
 
 router.get("/healthz", async (_req, res) => {
   try {
@@ -248,7 +255,7 @@ router.get("/stats", async (req, res) => {
       res.json(ok({ day, passes, at: new Date().toISOString() }));
       return;
     }
-    const payload = await cached("stats:live", 800, async () => {
+    const payload = await cached("stats:live", 2_000, async () => {
       await seedTradesFromAlerts();
       return buildLiveBoard();
     });
@@ -262,7 +269,7 @@ router.get("/stats", async (req, res) => {
 router.get("/desk", async (req, res) => {
   try {
     const { page, limit, offset } = pageParams(req, 8, 40);
-    const payload = await cached(`desk:${page}:${limit}`, 800, async () => {
+      const payload = await cached(`desk:${page}:${limit}`, 2_000, async () => {
       await seedTradesFromAlerts();
       const board = await buildLiveBoard();
       const open = await pool.query(

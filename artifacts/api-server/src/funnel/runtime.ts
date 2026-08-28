@@ -17,6 +17,7 @@ import { archiveTick, vitalsTick } from "../agents/vitals";
 import { snapshotsTick } from "../agents/snapshots";
 import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
+import { stashFreshCounts } from "../agents/stash";
 
 const log = logger.child({ module: "runtime" });
 
@@ -50,7 +51,9 @@ export async function ensureRuntime(): Promise<void> {
   if (!bootPromise) {
     bootPromise = (async () => {
       await ensureSchema();
+      await stashFreshCounts();
       last.discover = Date.now() - DISCOVER_MS + 18_000;
+      last.vitals = Date.now() - VITALS_MS + 8_000;
       setInterval(() => {
         if (running.intake || Date.now() - last.intake < INTAKE_MS) return;
         running.intake = true;
@@ -93,8 +96,16 @@ export async function ensureRuntime(): Promise<void> {
         last.reporter = Date.now();
         void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
       }, 15_000);
+      setInterval(() => {
+        if (running.vitals) return;
+        if (last.vitals && Date.now() - last.vitals < VITALS_MS * 4) return;
+        running.vitals = true;
+        last.vitals = Date.now();
+        log.warn("vitals watchdog — loop was quiet, kicking a print");
+        void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
+      }, 30_000);
       started = true;
-      log.info("desk started (intake · discover · vitals · 10m/15m/1h snapshots · archive · book · reporter)");
+      log.info("desk started 24/7 (intake · discover · vitals · snapshots · archive · book · reporter)");
     })().catch((err) => {
       bootPromise = null;
       throw err;

@@ -424,7 +424,53 @@ input:focus { border-color: rgba(228, 196, 138, 0.5); }
   margin-top: 6px;
 }
 
-.trade.rich .sym { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; }
+.trade.rich {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.thumb-hit, .performer-open {
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+}
+.card-main {
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  min-width: 0;
+}
+.gmgn-ic {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  color: var(--ink);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: -0.04em;
+  text-decoration: none;
+  flex: none;
+}
+.gmgn-ic:hover { background: var(--sage-dim); color: var(--sage); }
+.pass-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.performer-card { position: relative; }
+.performer-card .gmgn-ic {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+.performer-open { width: 100%; background: transparent; padding: 0; text-align: left; color: inherit; }
 .p-sym { font-weight: 700; font-size: 14px; }
 .p-ath { color: var(--mute); font-size: 12px; font-variant-numeric: tabular-nums; }
 .p-now { font-family: var(--serif); font-weight: 600; font-variant-numeric: tabular-nums; }

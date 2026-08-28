@@ -24,6 +24,7 @@ import { raiseAlert } from "./alerts";
 import { considerEntry } from "./watch";
 import { emitLiveStats, syncPassPrint } from "./stats";
 import { isNoiseToken } from "../scoring/noise";
+import { hotness } from "../scoring/hotness";
 
 const HOT = 12;
 const ARCHIVE = 3;
@@ -161,7 +162,8 @@ async function recordSource(
 async function persistImage(tokenId: number, url: string | null): Promise<void> {
   if (!url) return;
   await pool.query(
-    `UPDATE f2_tokens SET image = COALESCE(NULLIF(image, ''), $2) WHERE id = $1`,
+    `UPDATE f2_tokens SET image = $2
+     WHERE id = $1 AND (image IS NULL OR image = '' OR image NOT LIKE 'https://%')`,
     [tokenId, url],
   );
 }
@@ -363,6 +365,27 @@ async function scanRows(
       ],
     );
 
+    const heat = phase === "deceased" || d.dead
+      ? 0
+      : hotness({
+          mcUsd: mc ?? 0,
+          liqUsd: liq ?? 0,
+          vol1h: candidate.vol1h,
+          vol5m: candidate.vol5m,
+          buys1h: candidate.buys1h,
+          sells1h: candidate.sells1h,
+          chg1h: candidate.chg1h,
+          chg6h: research?.chg6h ?? candidate.chg6h,
+          tapeLead: d.tapeLead,
+          socials: candidate.socials.length,
+          walletBuys: candidate.walletBuys,
+          quality: d.quality === "live" ? 80 : d.quality === "fallback" ? 40 : 15,
+          survival: d.score,
+          ageHours: candidate.ageHours,
+          chase: d.chase,
+          dead: d.dead,
+        });
+
     await pool.query(
       `UPDATE f2_tokens SET
          scans_total = scans_total + 1,
@@ -389,13 +412,14 @@ async function scanRows(
          last_quality = $13,
          last_suggestion = $14,
          symbol = COALESCE(symbol, $15),
-         name = COALESCE(name, $16)
+         name = COALESCE(name, $16),
+         hotness = $17
        WHERE id = $1`,
       [
         row.id, d.tradeOk, mc, liq, row.last_holders,
         d.score, d.call, JSON.stringify(reasons), d.tapeLead, phase, d.tradeOk, graduated,
         d.quality === "live" ? 80 : d.quality === "fallback" ? 40 : 15,
-        d.thesis, candidate.symbol, candidate.name,
+        d.thesis, candidate.symbol, candidate.name, heat,
       ],
     );
 

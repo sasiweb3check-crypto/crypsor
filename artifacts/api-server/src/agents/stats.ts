@@ -1,17 +1,16 @@
 /**
  * Live board — SSE payload + REST.
- * Passes stay the book. Public tape is waiting / suggestions, never a lock.
+ * Desk shows hot live names only. Discovery and refusals stay in logs.
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { athPct, gainPct, laneOf, rollDays, type DayRoll } from "../scoring/stats";
 import { capBand, type CapBand } from "../scoring/quality";
 import { isNoiseToken } from "../scoring/noise";
-import { clip } from "../scoring/image";
 import { MC_SUGGEST_MIN } from "../scoring/omo";
+import { HOT_FLOOR } from "../scoring/hotness";
+import { statsEpoch } from "./stash";
 import type { Momentum } from "../scoring/survival";
-
-const PUBLIC = ["public_tape", "dex_boost", "pump_mover", "gecko"];
 
 export type PassCard = {
   id: number;
@@ -38,6 +37,7 @@ export type PassCard = {
   momentum: Momentum | null;
   band: CapBand | null;
   story: string | null;
+  hotness: number | null;
 };
 
 export type Sentiment = "hot" | "mixed" | "quiet";
@@ -85,6 +85,7 @@ export type PerformanceStats = {
 
 export type LiveBoard = {
   at: string;
+  epoch: string | null;
   live: PassCard[];
   archived: PassCard[];
   performers: PassCard[];
@@ -100,7 +101,7 @@ export type LiveBoard = {
 const SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.called_at, tr.peak_mc, tr.last_mc,
             tr.gain_x, tr.ath_x, tr.gain_pct, tr.ath_pct, tr.status, tr.last_liq,
             t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase, t.tape_lead,
-            t.survival_score, t.last_momentum, t.last_narrative, t.cap_band
+            t.survival_score, t.last_momentum, t.cap_band, t.hotness
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id`;
 
@@ -136,62 +137,9 @@ function card(row: Record<string, unknown>): PassCard {
     survival: row.survival_score != null ? Number(row.survival_score) : null,
     momentum: (row.last_momentum as Momentum | null) ?? null,
     band: (row.cap_band as CapBand | null) ?? capBand(last),
-    story: clip(row.last_narrative as string | null, 140),
+    story: null,
+    hotness: row.hotness != null ? Number(row.hotness) : null,
   };
-}
-
-function socialsOfMeta(meta: unknown): string[] {
-  if (!meta || typeof meta !== "object") return [];
-  const raw = (meta as { socials?: unknown }).socials;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((s) => String(s)).filter(Boolean).slice(0, 4);
-}
-
-function sentimentOfMeta(meta: unknown): Sentiment | null {
-  const s = meta && typeof meta === "object" ? (meta as { sentiment?: unknown }).sentiment : null;
-  if (s === "hot" || s === "mixed" || s === "quiet") return s;
-  return null;
-}
-
-function tapeName(row: Record<string, unknown>): TapeName {
-  const last = row.last_mc != null ? Number(row.last_mc) : null;
-  const peak = row.peak_mc != null ? Number(row.peak_mc) : null;
-  const suggest = row.admission_mc != null ? Number(row.admission_mc) : last;
-  const meta = row.meta;
-  return {
-    id: Number(row.id),
-    mint: String(row.mint),
-    symbol: (row.symbol as string | null) ?? null,
-    name: (row.name as string | null) ?? null,
-    image: (row.image as string | null) ?? null,
-    source: String(row.source ?? "public_tape"),
-    last_mc: last,
-    last_liq: row.last_liq != null ? Number(row.last_liq) : null,
-    peak_mc: peak,
-    suggest_mc: suggest,
-    gain_pct: gainPct(last, suggest ?? 0),
-    ath_pct: athPct(peak, suggest ?? 0),
-    last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
-    tape_lead: (row.tape_lead as string | null) ?? null,
-    story: clip(row.last_narrative as string | null, 140),
-    thesis: clip(row.last_suggestion as string | null, 140),
-    sentiment: sentimentOfMeta(meta),
-    socials: socialsOfMeta(meta),
-    wallet_buys: Number(row.wallet_buys ?? 0),
-    quality: row.last_quality != null ? Number(row.last_quality) : null,
-  };
-}
-
-function uniqueTape(rows: TapeName[]): TapeName[] {
-  const seen = new Set<number>();
-  const out: TapeName[] = [];
-  for (const c of rows) {
-    if (isNoiseToken(c.mint, c.symbol)) continue;
-    if (seen.has(c.id)) continue;
-    seen.add(c.id);
-    out.push(c);
-  }
-  return out;
 }
 
 function uniqueByToken(cards: PassCard[]): PassCard[] {
@@ -244,24 +192,71 @@ export async function rollupDays(): Promise<void> {
 }
 
 export async function buildLiveBoard(): Promise<LiveBoard> {
-  const live = await pool.query(
+  const epoch = await statsEpoch();
+  const epochIso = epoch?.toISOString() ?? null;
+  const since = epoch ?? new Date(0);
+
+  const hot = await pool.query(
+    `SELECT t.id AS token_id, t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase,
+            t.tape_lead, t.survival_score, t.last_momentum, t.cap_band, t.hotness,
+            t.last_mc AS token_last_mc, t.peak_mc AS token_peak_mc, t.admission_mc,
+            t.last_liq AS token_last_liq, t.last_scan_at,
+            tr.id, tr.entry_mc, tr.called_at, tr.peak_mc, tr.last_mc, tr.last_liq,
+            tr.gain_x, tr.ath_x, tr.gain_pct, tr.ath_pct, tr.status
+     FROM f2_tokens t
+     LEFT JOIN ward_trades tr ON tr.token_id = t.id
+       AND tr.status IN ('open','trim')
+       AND tr.called_at >= $2
+     WHERE COALESCE(t.hotness, 0) >= $1
+       AND COALESCE(t.phase, 'intake') <> 'deceased'
+       AND COALESCE(t.last_mc, t.admission_mc, 0) >= $3
+     ORDER BY t.hotness DESC NULLS LAST, t.last_scan_at DESC NULLS LAST
+     LIMIT 24`,
+    [HOT_FLOOR, since, MC_SUGGEST_MIN],
+  );
+
+  const liveCards = uniqueByToken(hot.rows.map((r) => {
+    const row = r as Record<string, unknown>;
+    const entry = row.entry_mc != null ? Number(row.entry_mc) : Number(row.admission_mc) || 0;
+    const last = row.last_mc != null ? Number(row.last_mc) : (row.token_last_mc != null ? Number(row.token_last_mc) : null);
+    const peak = row.peak_mc != null ? Number(row.peak_mc) : (row.token_peak_mc != null ? Number(row.token_peak_mc) : last);
+    const called = row.called_at ?? row.last_scan_at ?? new Date().toISOString();
+    return card({
+      ...row,
+      id: row.id ?? row.token_id,
+      entry_mc: entry,
+      last_mc: last,
+      peak_mc: peak,
+      called_at: called,
+      status: row.status ?? "watch",
+      last_liq: row.last_liq ?? row.token_last_liq,
+    });
+  }));
+
+  const livePass = await pool.query(
     `${SELECT}
      WHERE tr.status IN ('open','trim') AND COALESCE(t.phase,'ward') <> 'deceased'
+       AND tr.called_at >= $1
      ORDER BY tr.called_at DESC
      LIMIT 80`,
+    [since],
   );
   const archived = await pool.query(
     `${SELECT}
-     WHERE tr.status IN ('dead','exit') OR t.phase = 'deceased'
+     WHERE (tr.status IN ('dead','exit') OR t.phase = 'deceased')
+       AND tr.called_at >= $1
      ORDER BY COALESCE(tr.closed_at, tr.called_at) DESC
-     LIMIT 80`,
+     LIMIT 40`,
+    [since],
   );
+
   const dayRows = await pool.query(
     `SELECT (tr.called_at AT TIME ZONE 'UTC')::date::text AS day,
             tr.status, t.phase, tr.gain_pct, tr.ath_pct
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id
-     WHERE tr.called_at > NOW() - INTERVAL '21 days'`,
+     WHERE tr.called_at >= $1`,
+    [since],
   );
   let days: DayRoll[] = rollDays(dayRows.rows as Array<{
     day: string; status: string; phase: string | null; gain_pct: number | null; ath_pct: number | null;
@@ -271,8 +266,10 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
       `SELECT day::text, passed_n, live_n, archived_n, dead_n,
               avg_gain_pct, avg_ath_pct, hit_2x_n, best_ath_pct
        FROM ward_day_stats
+       WHERE day >= $1::date
        ORDER BY day DESC
        LIMIT 21`,
+      [since],
     );
     if (stored.rows.length) {
       days = stored.rows.map((r: {
@@ -294,77 +291,24 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     // use rolled days
   }
 
-  const liveCards = uniqueByToken(live.rows.map((r) => card(r as Record<string, unknown>)));
+  const passCards = uniqueByToken(livePass.rows.map((r) => card(r as Record<string, unknown>)));
   const archCards = uniqueByToken(archived.rows.map((r) => card(r as Record<string, unknown>)));
-  const allPct = [...liveCards, ...archCards];
+  const allPct = [...passCards, ...archCards];
   const gains = allPct.map((c) => c.gain_pct).filter((n): n is number => n != null);
   const aths = allPct.map((c) => c.ath_pct).filter((n): n is number => n != null);
-  const survs = allPct.map((c) => c.survival).filter((n): n is number => n != null);
+  const survs = liveCards.map((c) => c.survival).filter((n): n is number => n != null);
   const performers = [...liveCards]
-    .sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999))
+    .filter((c) => (c.ath_pct ?? 0) > 0 || (c.hotness ?? 0) >= HOT_FLOOR)
+    .sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999) || (b.hotness ?? 0) - (a.hotness ?? 0))
     .slice(0, 8);
 
-  const TAPE = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.source,
-            t.last_mc, t.last_liq, t.peak_mc, t.admission_mc, t.last_scan_at,
-            t.tape_lead, t.last_narrative, t.last_suggestion, t.last_quality,
-            t.wallet_buys, t.meta
-     FROM f2_tokens t`;
-
-  let suggestions: TapeName[] = [];
-  let waiting: TapeName[] = [];
-  try {
-    const sug = await pool.query(
-      `${TAPE}
-       WHERE t.source = ANY($1::text[])
-         AND t.last_verdict = 'buying'
-         AND COALESCE(t.phase,'intake') <> 'deceased'
-         AND COALESCE(t.wallet_buys, 0) = 0
-         AND COALESCE(t.last_mc, 0) >= $2
-         AND COALESCE(t.last_quality, 0) >= 40
-         AND NOT EXISTS (SELECT 1 FROM ward_trades tr WHERE tr.token_id = t.id)
-       ORDER BY t.last_scan_at DESC NULLS LAST
-       LIMIT 12`,
-      [PUBLIC, MC_SUGGEST_MIN],
-    );
-    suggestions = uniqueTape(sug.rows.map((r) => tapeName(r as Record<string, unknown>)));
-  } catch {
-    suggestions = [];
-  }
-  try {
-    const wait = await pool.query(
-      `${TAPE}
-       WHERE t.source = ANY($1::text[])
-         AND t.last_scan_at IS NULL
-         AND COALESCE(t.phase,'intake') <> 'deceased'
-       ORDER BY t.discovered_at DESC
-       LIMIT 10`,
-      [PUBLIC],
-    );
-    waiting = uniqueTape(wait.rows.map((r) => tapeName(r as Record<string, unknown>)));
-  } catch {
-    waiting = [];
-  }
-
-  let tokens = 0;
-  let passedN = liveCards.length + archCards.length;
-  let waitingN = waiting.length;
-  let scanned24h = 0;
+  let passedN = passCards.length + archCards.length;
   try {
     const cen = await pool.query(
-      `SELECT
-         (SELECT COUNT(*)::int FROM f2_tokens WHERE COALESCE(phase,'intake') <> 'deceased') AS tokens,
-         (SELECT COUNT(*)::int FROM ward_trades) AS passed,
-         (SELECT COUNT(*)::int FROM f2_tokens
-           WHERE source = ANY($1::text[]) AND last_scan_at IS NULL
-             AND COALESCE(phase,'intake') <> 'deceased') AS waiting,
-         (SELECT COUNT(*)::int FROM f2_tokens
-           WHERE last_scan_at > NOW() - INTERVAL '24 hours') AS scanned24h`,
-      [PUBLIC],
+      `SELECT COUNT(*)::int AS passed FROM ward_trades WHERE called_at >= $1`,
+      [since],
     );
-    tokens = Number(cen.rows[0]?.tokens ?? 0);
     passedN = Number(cen.rows[0]?.passed ?? passedN);
-    waitingN = Number(cen.rows[0]?.waiting ?? waitingN);
-    scanned24h = Number(cen.rows[0]?.scanned24h ?? 0);
   } catch {
     // first boot
   }
@@ -380,24 +324,25 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     hit2x: aths.filter((n) => n >= 100).length,
   };
   const tokenStats: TokenStats = {
-    tokens,
-    waiting: waitingN,
-    suggestions: suggestions.length,
-    scanned24h,
+    tokens: liveCards.length,
+    waiting: 0,
+    suggestions: 0,
+    scanned24h: 0,
   };
 
   return {
     at: new Date().toISOString(),
+    epoch: epochIso,
     live: liveCards,
-    archived: archCards,
+    archived: [],
     performers,
-    suggestions,
-    waiting,
+    suggestions: [],
+    waiting: [],
     days,
-    census: { tokens, passed: passedN, waiting: waitingN, suggestions: suggestions.length },
+    census: { tokens: liveCards.length, passed: passedN, waiting: 0, suggestions: 0 },
     tokenStats,
     performance,
-    totals: { ...performance, tokens },
+    totals: { ...performance, tokens: liveCards.length },
   };
 }
 

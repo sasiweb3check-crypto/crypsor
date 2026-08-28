@@ -97,6 +97,13 @@ export default function SettingsPage() {
         <button type="button" className="btn" onClick={() => void save()}>Save keys</button>
         {msg && <span className="blurb">{msg}</span>}
       </div>
+
+      <div className="section-h">24/7</div>
+      <p className="blurb">
+        The scanner already loops inside this process. On Render <b>Starter</b> it never sleeps — confirm the service plan is Starter and instance count is 1.
+        If the host is <b>Free</b>, add a cron-job.org ping every minute to <code>/api/keepalive</code> (or <code>/api/cron/tick</code> with <code>CRON_SECRET</code>),
+        and set the GitHub repo variable <code>APP_URL</code> to this origin so Actions pings every 10 minutes.
+      </p>
     </div>
   );
 }
