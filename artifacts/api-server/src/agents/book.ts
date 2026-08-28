@@ -67,7 +67,7 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
   await seedTradesFromAlerts();
   const due = await pool.query(
     `SELECT tr.id, tr.token_id, tr.entry_mc, tr.peak_mc, tr.status, tr.exit_action, tr.exit_title,
-            t.mint, t.symbol, t.phase, t.last_mc, t.last_liq, t.last_holders, t.peak_mc AS token_peak,
+            tr.called_at, t.mint, t.symbol, t.phase, t.last_mc, t.last_liq, t.last_holders, t.peak_mc AS token_peak,
             t.tape_lead, t.last_reasons
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id
@@ -80,32 +80,36 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
   for (const row of due.rows as Array<{
     id: number; token_id: number; entry_mc: number; peak_mc: number | null;
     status: string; exit_action: string | null; exit_title: string | null;
+    called_at: string;
     mint: string; symbol: string | null; phase: string | null;
     last_mc: number | null; last_liq: number | null; last_holders: number | null;
     token_peak: number | null; tape_lead: string | null; last_reasons: unknown;
   }>) {
     const lastMc = row.last_mc;
     const peak = Math.max(row.peak_mc ?? 0, row.token_peak ?? 0, lastMc ?? 0) || row.entry_mc;
-    const snap = await pool.query(
-      `SELECT liq_slope, holder_slope, tape_lead, suggestions, flags
-       FROM ward_snapshots WHERE token_id = $1 ORDER BY CASE COALESCE(kind,'confirm') WHEN 'confirm' THEN 0 ELSE 1 END, at DESC LIMIT 1`,
-      [row.token_id],
-    );
-    const s = snap.rows[0] as {
-      liq_slope: number | null; holder_slope: number | null; tape_lead: string | null;
-    } | undefined;
-    const reasons = (row.last_reasons ?? {}) as { fails?: string[] };
-    const dead = row.phase === "deceased" || (reasons.fails ?? []).includes("liq_dead");
+    const reasons = (row.last_reasons ?? {}) as {
+      fails?: string[];
+      inputs?: { chg6h?: number; vol6h?: number; buys1h?: number; sells1h?: number };
+    };
+    const inputs = reasons.inputs ?? {};
+    const dead = row.phase === "deceased" || (reasons.fails ?? []).some((f) => /rug|dead|thin/i.test(f));
+    const holdDays = Math.max(0, (Date.now() - new Date(row.called_at).getTime()) / 86_400_000);
     const plan = planExit({
       entryMc: row.entry_mc,
       lastMc,
       peakMc: peak,
       phase: row.phase || "ward",
-      tapeLead: s?.tape_lead ?? row.tape_lead,
+      tapeLead: row.tape_lead,
       dead,
       liqUsd: row.last_liq,
-      liqSlope: s?.liq_slope ?? null,
-      holderSlope: s?.holder_slope ?? null,
+      liqSlope: null,
+      holderSlope: null,
+      chg6h: inputs.chg6h ?? null,
+      vol6h: inputs.vol6h ?? null,
+      buys: inputs.buys1h ?? null,
+      sells: inputs.sells1h ?? null,
+      holdDays,
+      trimsTaken: row.status === "trim" ? 1 : 0,
     });
 
     const gainX = plan.gainX;

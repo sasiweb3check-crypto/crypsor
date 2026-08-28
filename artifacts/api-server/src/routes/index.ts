@@ -7,7 +7,7 @@ import { sseHandler } from "../core/bus";
 import { cached, cacheBackend, cacheGet, cacheSet } from "../core/cache";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
-import { getWeights, prognosis, failsOf, type Phase } from "../scoring/ward";
+import { getWeights, prognosis, failsOf, callOf, type Phase } from "../scoring/ward";
 import { seedTradesFromAlerts } from "../agents/book";
 
 const router: IRouter = Router();
@@ -216,7 +216,7 @@ router.get("/ward", async (req, res) => {
         const phase = (row.phase ?? "intake") as Phase;
         return {
           ...row,
-          prognosis: prognosis(phase, row.survival_score, failsOf(row.last_reasons)),
+          prognosis: prognosis(phase, callOf(row.last_reasons) ?? row.survival_score, failsOf(row.last_reasons)),
         };
       }),
       suggestions,
@@ -267,22 +267,51 @@ router.get("/desk", async (req, res) => {
         const w = await pool.query(
           `SELECT w.token_id, w.status, w.yes_votes, w.no_votes, w.hold_votes, w.agreed, w.entry_ok,
                   w.headline, w.votes, w.last_mc, w.last_liq, w.last_score, w.seen_at, w.updated_at,
-                  t.mint, t.symbol, t.name, t.image, t.phase, t.wallet_buys, t.last_holders
+                  t.mint, t.symbol, t.name, t.image, t.phase, t.wallet_buys, t.last_holders,
+                  t.last_verdict, t.last_reasons, t.last_quality
            FROM ward_watch w
            JOIN f2_tokens t ON t.id = w.token_id
            WHERE w.status = 'watching'
              AND NOT EXISTS (SELECT 1 FROM ward_trades tr WHERE tr.token_id = w.token_id)
-           ORDER BY w.yes_votes DESC, w.updated_at DESC
+           ORDER BY w.updated_at DESC
            LIMIT 12`,
         );
         watch = w.rows;
       } catch {
         watch = [];
       }
+      let verdicts: unknown[] = [];
+      let stream: unknown[] = [];
+      try {
+        const v = await pool.query(
+          `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.last_verdict, t.last_reasons,
+                  t.last_mc, t.last_liq, t.wallet_buys, t.last_quality, t.last_scan_at, t.tape_lead
+           FROM f2_tokens t
+           WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)
+             AND t.last_reasons IS NOT NULL
+             AND t.last_scan_at > NOW() - INTERVAL '6 hours'
+           ORDER BY t.last_scan_at DESC
+           LIMIT 8`,
+        );
+        verdicts = v.rows;
+        const s = await pool.query(
+          `SELECT id, agent, action, token_id, mint, detail, at
+           FROM ward_agent_log
+           WHERE action IN ('READ','DID','REFUSED')
+           ORDER BY at DESC
+           LIMIT 40`,
+        );
+        stream = s.rows;
+      } catch {
+        verdicts = [];
+        stream = [];
+      }
       const n = Number(total.rows[0]?.n ?? 0);
       return {
         open: open.rows,
         watch,
+        verdicts,
+        stream,
         performers: performers.rows,
         paper: {
           n: Number(paper.rows[0]?.n ?? 0),
@@ -441,7 +470,7 @@ router.get("/patient/:id", async (req, res) => {
         phase,
         xFromAdmit: admitMc && lastMc ? lastMc / admitMc : null,
         peakX: admitMc && peakMc ? peakMc / admitMc : null,
-        prognosis: prognosis(phase, Number(token.survival_score ?? NaN) || null, failsOf(token.last_reasons)),
+        prognosis: prognosis(phase, callOf(token.last_reasons) ?? (Number(token.survival_score ?? NaN) || null), failsOf(token.last_reasons)),
       },
       lastScan,
       scans: scans.rows,

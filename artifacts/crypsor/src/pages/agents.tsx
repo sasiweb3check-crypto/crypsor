@@ -2,16 +2,11 @@ import { api, timeAgo, type AgentsState } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
 const DESK = [
-  { id: "intake", title: "Intake", copy: "Reads Helius for buys from wallets you added. Each new mint is admitted." },
-  { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
-  { id: "quality", title: "Quality", copy: "Cross-checks Dex, pump.fun coin, and GMGN. Fills gaps. Flags >25% disagreement." },
-  { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "snapshots", title: "Snapshots", copy: "Two series: pulse every ~2 minutes and confirm every ~5. Missing prints are flagged, never sloped. Each series keeps memory so a dump or unread field still counts on the next tick." },
-  { id: "watch", title: "Watch / debate", copy: "Vitals, quality, holders, and snapshots vote. Unsatisfying entries stay on the watchlist — they are not locked." },
-  { id: "book", title: "Book", copy: "Locks TRADE at entry MC only after agreement. Tracks gain, ATH, and tells you when to trim or flatten." },
+  { id: "intake", title: "Intake", copy: "The only discovery source: Helius buys from wallets you added." },
+  { id: "vitals", title: "Read + gate", copy: "DexScreener public tape, pump.fun callback if Dex is blank, then the omo rule set. Missing data is a fail, not a pass." },
+  { id: "book", title: "Book", copy: "Locks only on a buying call. Exits use omo's stop, trail, liquidity break, invalidation, take-profit, stale thesis." },
   { id: "reporter", title: "Reporter", copy: "Census + prune. Not shown on the desk." },
-  { id: "backtest", title: "Backtest", copy: "Paper 2× after TRADE. Nudges factor weights toward what survived." },
-  { id: "alerts", title: "Alerts", copy: "Telegram + live desk for admit, trade, ICU, death, revival." },
+  { id: "alerts", title: "Alerts", copy: "Telegram + live desk for buys, stalks, refusals, exits." },
 ];
 
 export default function AgentsPage() {
@@ -20,15 +15,16 @@ export default function AgentsPage() {
   const d = q.data;
   const paper = d?.paper;
   const wr = paper && paper.judged > 0 ? Math.round((paper.wins / paper.judged) * 100) : null;
+  const notes = d?.notes ?? [];
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">Agents</div>
+        <div className="brand">Stream</div>
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        Scoring, quality, debate, and phases run here. The desk only shows locks and the watchlist.
+        READ / DID / REFUSED. Same decision loop as omotrades, except names come from our tracked wallets.
       </p>
 
       <div className="stats">
@@ -42,29 +38,6 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      {d?.report && (
-        <div className="factor">
-          <div className="factor-top">
-            <span>Last report</span>
-            <em>{timeAgo(d.report.at)}</em>
-          </div>
-          <p>{d.report.detail}</p>
-        </div>
-      )}
-
-      {(d?.report?.suggestions ?? []).length > 0 && (
-        <>
-          <div className="section-h">Ward suggestions</div>
-          {(d?.report?.suggestions ?? []).map((s) => (
-            <div key={s.id} className={`alert kind-${s.severity}`}>
-              <div className="k">{s.severity}</div>
-              <h3>{s.title}</h3>
-              <p>{s.body}</p>
-            </div>
-          ))}
-        </>
-      )}
-
       {d?.quality?.sources && d.quality.sources.length > 0 && (
         <>
           <div className="section-h">Source health (6h)</div>
@@ -75,52 +48,36 @@ export default function AgentsPage() {
                 <span>{s.source}{s.avg_ms != null ? ` · ${Math.round(s.avg_ms)}ms` : ""}</span>
               </div>
             ))}
-            {(d.quality.snapshots ?? []).map((s) => (
-              <div key={`snap-${s.band}`} className="vit">
-                <b>{s.n}</b>
-                <span>{s.band} snaps</span>
-              </div>
-            ))}
           </div>
         </>
       )}
 
-      {d?.weights && (
-        <>
-          <div className="section-h">Live weights</div>
-          <div className="grid3">
-            {Object.entries(d.weights).map(([k, v]) => (
-              <div key={k} className="vit"><b>{v.toFixed(2)}</b><span>{k}</span></div>
-            ))}
-          </div>
-        </>
-      )}
-
-      <div className="section-h">Desk</div>
+      <div className="section-h">Loop</div>
       {DESK.map((a) => {
-        const last = d?.last24h.find((x) => x.agent === a.id);
-        const running = d?.status.running[a.id];
+        const live = d?.status.running[a.id];
+        const last = d?.status.last[a.id];
         return (
           <div key={a.id} className="factor">
             <div className="factor-top">
-              <span>{a.title}{running ? " · running" : ""}</span>
-              <em>{last ? `${last.n} / 24h` : "idle"}</em>
+              <span>{a.title}{live ? " · running" : ""}</span>
+              <em>{last ? timeAgo(new Date(last).toISOString()) : "idle"}</em>
             </div>
-            <p>{a.copy}{last ? ` Last note ${timeAgo(last.last_at)}.` : ""}</p>
+            <p>{a.copy}</p>
           </div>
         );
       })}
 
-      <div className="section-h">Log</div>
-      <div className="list">
-        {(d?.notes ?? []).map((n) => (
-          <div key={n.id} className="agent-row">
-            <b>{n.agent}<br /><small>{timeAgo(n.at)}</small></b>
-            <p>{n.detail}</p>
-          </div>
+      <div className="section-h">Recent</div>
+      <ol className="stream">
+        {notes.slice(0, 24).map((n) => (
+          <li key={n.id}>
+            <span className="t">{timeAgo(n.at)}</span>
+            <b className={`k-${n.action.toLowerCase()}`}>{n.action}</b>
+            <span>{n.detail}</span>
+          </li>
         ))}
-        {!d?.notes.length && <div className="row"><span className="blurb">Log is empty until the first tick.</span></div>}
-      </div>
+      </ol>
+      {!notes.length && <div className="empty">No stream yet — add wallets and wait for a buy.</div>}
     </div>
   );
 }

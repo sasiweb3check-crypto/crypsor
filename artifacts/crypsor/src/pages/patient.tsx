@@ -1,7 +1,7 @@
 import { useRoute, useLocation } from "wouter";
 import {
   api, fmtUsd, fmtSignedX, timeAgo, shortMint, shortWallet, gmgnUrl,
-  type PatientChart, type TapeWindow, type TradeCard, type SnapshotRow, type AgentVote,
+  type PatientChart, type TapeWindow, type TradeCard, type Check, type DecisionReasons,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
@@ -38,29 +38,16 @@ function TapeBlock({ label, w }: { label: string; w?: TapeWindow | null }) {
   );
 }
 
-function slopeLabel(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const pct = v * 100;
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
-}
-
-function SnapBox({ title, s }: { title: string; s?: SnapshotRow | null }) {
-  const incomplete = Boolean(s?.incomplete) || (s?.filled && Object.values(s.filled).some((v) => v && v !== "live"));
+function Checks({ checks }: { checks: Check[] }) {
+  if (!checks.length) return null;
   return (
-    <div className={`snap-box ${incomplete ? "incomplete" : ""}`}>
-      <b>{title}{incomplete ? <span className="gap">incomplete</span> : null}</b>
-      {s ? (
-        <>
-          <em>{fmtUsd(s.mc_usd)}</em>
-          <p>
-            MC {s.filled?.mc === "live" ? slopeLabel(s.mc_slope) : "unread"}
-            {" · "}liq {s.filled?.liq === "live" ? slopeLabel(s.liq_slope) : "unread"}
-            {" · "}hold {s.filled?.holders === "live" ? slopeLabel(s.holder_slope) : "unread"}
-            {s.tape_lead ? ` · ${s.tape_lead}` : ""}
-          </p>
-        </>
-      ) : <p>Waiting for this series.</p>}
-    </div>
+    <ul className="checks">
+      {checks.map((c) => (
+        <li key={c.text} className={c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"}>
+          {c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"} — {c.text}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -96,7 +83,14 @@ export default function PatientPage() {
   const entry = trade?.entry_mc ?? t.admission_mc;
   const gain = trade?.gain_x ?? t.xFromAdmit;
   const ath = trade?.ath_x ?? t.peakX;
-  const votes = (d.watch?.votes ?? []) as AgentVote[];
+  const reasons = (t.last_reasons ?? last?.tape ?? {}) as DecisionReasons;
+  const checks: Check[] = reasons.checks
+    ?? [
+      ...(reasons.holds ?? []).map((text) => ({ text, hold: true as const })),
+      ...(reasons.fails ?? []).map((text) => ({ text, hold: false as const })),
+      ...(reasons.unknowns ?? []).map((text) => ({ text, hold: null })),
+    ];
+  const call = reasons.call || t.last_verdict || "pass";
 
   const copyMint = () => {
     void navigator.clipboard?.writeText(t.mint);
@@ -128,17 +122,11 @@ export default function PatientPage() {
         </div>
       </div>
 
-      {(d.narrative || d.pulse?.narrative) && (
+      {(reasons.thesis || reasons.qualityNote) && (
         <div className="story">
-          <div className="k">How we read this</div>
-          <p>{d.narrative || d.pulse?.narrative || d.confirm?.narrative}</p>
-          {(d.memory?.caution?.notes?.length ?? 0) > 0 && (
-            <ul className="memory-notes">
-              {(d.memory!.caution!.notes ?? []).slice(-6).reverse().map((n, i) => (
-                <li key={`${i}-${n.slice(0, 24)}`}>{n}</li>
-              ))}
-            </ul>
-          )}
+          <div className="k">{call}{reasons.quality && reasons.quality !== "live" ? ` · ${reasons.quality} data` : ""}</div>
+          <p>{reasons.thesis || d.narrative}</p>
+          {reasons.qualityNote && <p className="quality-note">{reasons.qualityNote}</p>}
         </div>
       )}
 
@@ -146,7 +134,7 @@ export default function PatientPage() {
         <div className={`big-score ${(gain ?? 1) >= 1 ? "" : "down"}`}>
           {fmtSignedX(gain)}
           <small>
-            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : d.watch ? "on watchlist — not locked" : "watching — not locked"}
+            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : d.watch ? "stalking — not locked" : "not locked"}
           </small>
         </div>
       </div>
@@ -159,16 +147,15 @@ export default function PatientPage() {
         </div>
       )}
 
+      <div className="section-h">How it decided</div>
+      {checks.length === 0 && <div className="empty">Waiting on the first Dex read.</div>}
+      <Checks checks={checks} />
+
       {d.watch && !trade && (
         <div className="alert kind-watch">
-          <div className="k">debate · {d.watch.yes_votes} yes / {d.watch.no_votes} no / {d.watch.hold_votes} hold</div>
-          <h3>{d.watch.headline || "Agents have not agreed on this entry"}</h3>
-          <p>{d.watch.entry_ok ? "Entry zone is acceptable." : "Entry is not satisfying yet — stays on watch."}</p>
-          <div className="votes">
-            {votes.map((v) => (
-              <span key={v.agent} className={`vote ${v.vote}`} title={v.reason}>{v.agent} {v.vote}</span>
-            ))}
-          </div>
+          <div className="k">stalking</div>
+          <h3>{d.watch.headline || "Livable pool, hour not clean enough to size"}</h3>
+          <p>The gate has not passed. Buyers have to take the live hour, MC has to stay above the rug zone, and Dex has to actually print a tape.</p>
         </div>
       )}
 
@@ -188,25 +175,20 @@ export default function PatientPage() {
         <TapeBlock label="6h" w={last?.tape?.h6} />
       </div>
 
-      <div className="section-h">Snapshots · pulse 2m / confirm 5m</div>
-      <div className="snap-pair">
-        <SnapBox title="Pulse · 2m" s={d.pulse} />
-        <SnapBox title="Confirm · 5m" s={d.confirm} />
-      </div>
-
       <div className="section-h">{trade ? "Since lock" : "Market cap"}</div>
       <Spark points={spark} admit={entry ?? null} />
 
-      {(d.suggestions ?? []).length > 0 && (
+      {(d.sources ?? []).length > 0 && (
         <>
-          <div className="section-h">Suggestions</div>
-          {(d.suggestions ?? []).slice(0, 3).map((s) => (
-            <div key={s.id} className={`alert kind-${s.severity}`}>
-              <div className="k">{s.severity}</div>
-              <h3>{s.title}</h3>
-              <p>{s.body}</p>
-            </div>
-          ))}
+          <div className="section-h">Public feeds</div>
+          <div className="grid3">
+            {(d.sources ?? []).slice(0, 6).map((s) => (
+              <div key={`${s.source}-${s.at}`} className={`vit ${s.ok ? "" : "down"}`}>
+                <b>{s.ok ? "ok" : "miss"}</b>
+                <span>{s.source} · {fmtUsd(s.mc_usd)}</span>
+              </div>
+            ))}
+          </div>
         </>
       )}
 
