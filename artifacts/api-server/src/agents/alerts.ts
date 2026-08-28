@@ -4,7 +4,7 @@ import { esc, sendTelegram } from "../core/telegram";
 import { agentNote } from "./log";
 import type { Factor, TapeWindow } from "../scoring/ward";
 
-export type AlertKind = "admit" | "trade" | "critical" | "deceased" | "revived" | "report" | "exit" | "trim";
+export type AlertKind = "admit" | "trade" | "critical" | "deceased" | "revived" | "report" | "exit" | "trim" | "watch" | "debate";
 
 const DEDUPE_MS: Record<string, number> = {
   admit: 0,
@@ -15,6 +15,8 @@ const DEDUPE_MS: Record<string, number> = {
   report: 0,
   exit: 20 * 60_000,
   trim: 20 * 60_000,
+  watch: 90 * 60_000,
+  debate: 45 * 60_000,
 };
 
 export async function raiseAlert(opts: {
@@ -104,6 +106,7 @@ export async function tradeTelegram(p: {
     p.holds.length ? `holds: ${p.holds.slice(0, 3).join("; ")}` : "",
     p.fails.length ? `fails: ${p.fails.slice(0, 3).join("; ")}` : "",
     factorBits.length ? `factors: ${factorBits.join(" · ")}` : "",
+    `https://gmgn.ai/sol/token/${p.mint}`,
     `https://dexscreener.com/solana/${p.mint}`,
     `https://solscan.io/token/${p.mint}`,
   ].filter(Boolean);

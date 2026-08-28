@@ -72,6 +72,37 @@ export type PatientCard = {
   prognosis?: Prognosis;
 };
 
+export type AgentVote = {
+  agent: string;
+  vote: "yes" | "no" | "hold";
+  reason: string;
+};
+
+export type WatchCard = {
+  token_id: number;
+  status: string;
+  yes_votes: number;
+  no_votes: number;
+  hold_votes: number;
+  agreed: boolean;
+  entry_ok: boolean;
+  headline: string | null;
+  votes: AgentVote[] | null;
+  last_mc: number | null;
+  last_liq: number | null;
+  last_score: number | null;
+  seen_at: string;
+  updated_at: string;
+  locked_at?: string | null;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  phase: Phase;
+  wallet_buys: number;
+  last_holders: number | null;
+};
+
 export type TradeCard = {
   id: number;
   token_id: number;
@@ -103,8 +134,13 @@ export type TradeCard = {
 
 export type DeskState = {
   open: TradeCard[];
+  watch?: WatchCard[];
   performers: TradeCard[];
   paper: { n: number; wins: number; open: number; avgAth: number | null; avgGain: number | null };
+  page?: number;
+  pages?: number;
+  total?: number;
+  limit?: number;
 };
 
 export type WardBoard = {
@@ -167,6 +203,7 @@ export type Suggestion = {
 export type SnapshotRow = {
   at: string;
   band: string;
+  kind?: "pulse" | "confirm" | string;
   mc_usd: number | null;
   liq_usd: number | null;
   holders: number | null;
@@ -214,9 +251,12 @@ export type PatientChart = {
   }>;
   notes: Array<{ agent: string; action: string; detail: string; at: string }>;
   snapshots?: SnapshotRow[];
+  pulse?: SnapshotRow | null;
+  confirm?: SnapshotRow | null;
   sources?: SourceReadRow[];
   suggestions?: Suggestion[];
   trade?: TradeCard | null;
+  watch?: WatchCard | null;
   weights: Record<string, number>;
 };
 
@@ -235,6 +275,14 @@ export type AlertRow = {
   image: string | null;
   phase: Phase;
   survival_score: number | null;
+};
+
+export type AlertPage = {
+  items: AlertRow[];
+  page: number;
+  pages: number;
+  total: number;
+  limit: number;
 };
 
 export type AgentsState = {
@@ -316,4 +364,8 @@ export function shortMint(mint: string): string {
 
 export function shortWallet(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+}
+
+export function gmgnUrl(mint: string): string {
+  return `https://gmgn.ai/sol/token/${mint}`;
 }

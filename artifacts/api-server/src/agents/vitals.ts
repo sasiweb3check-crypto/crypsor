@@ -8,8 +8,8 @@ import { pairsForMints, type DexPair } from "../sources/dexscreener";
 import { pumpVitals } from "../sources/pumpfun";
 import { judge, nextPhase, type Phase, type Reading, type TapeWindow } from "../scoring/ward";
 import { agentNote } from "./log";
-import { raiseAlert, tradeTelegram } from "./alerts";
-import { lockTrade } from "./book";
+import { raiseAlert } from "./alerts";
+import { considerEntry } from "./watch";
 
 const BATCH = 16;
 
@@ -254,65 +254,15 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
       }
     }
 
-    if (verdict.tradeOk && prev !== "deceased" && mc != null && mc > 0) {
-      const already = await pool.query("SELECT id FROM ward_trades WHERE token_id = $1", [row.id]);
-      if (!already.rows.length) {
-        const fired = await raiseAlert({
-          tokenId: row.id, kind: "trade",
-          title: `TRADE $${ticker}`,
-          body: `Locked at ${mc != null ? `$${Math.round(mc)}` : "—"}. Score ${verdict.score}. ${verdict.holds.slice(0, 2).join("; ")}.`,
-          payload: {
-            mint: row.mint, symbol: ticker, score: verdict.score, mc, liq,
-            holders: reading.holders, tape: verdict.tapeLead, holds: verdict.holds,
-            fails: verdict.fails, wallets: row.wallet_buys, phase,
-          },
-          telegram: false,
-        });
-        if (fired) {
-          trades += 1;
-          const alertRow = await pool.query(
-            `SELECT id FROM ward_alerts WHERE token_id = $1 AND kind = 'trade' ORDER BY id DESC LIMIT 1`,
-            [row.id],
-          );
-          await lockTrade({
-            tokenId: row.id, mint: row.mint, symbol: ticker,
-            alertId: alertRow.rows[0]?.id ?? null,
-            entryMc: mc, entryLiq: liq, entryHolders: reading.holders, entryScore: verdict.score,
-          });
-          await tradeTelegram({
-            symbol: ticker,
-            mint: row.mint,
-            score: verdict.score,
-            phase,
-            mc, liq,
-            holders: reading.holders,
-            wallets: row.wallet_buys,
-            tape: verdict.tapeLead,
-            holds: verdict.holds,
-            fails: verdict.fails,
-            factors: verdict.factors,
-            m5: reading.m5,
-            h1: reading.h1,
-            h6: reading.h6,
-            top10: reading.top10Pct,
-            bundlers: reading.bundlerHoldPct,
-            bots: reading.botHoldPct,
-          });
-          await pool.query(
-            `INSERT INTO f2_calls (token_id, alert_mc, peak_mc, last_mc, safe, deep, telegram_sent, journal_until)
-             VALUES ($1,$2,$2,$2, $3, $4, true, NOW() + INTERVAL '24 hours')
-             ON CONFLICT (token_id) DO NOTHING`,
-            [row.id, mc ?? 0, verdict.score >= 80, JSON.stringify(verdict)],
-          );
-          await agentNote("alerts", "TRADE", `$${ticker} locked at $${Math.round(mc)} — score ${verdict.score}`, {
-            tokenId: row.id, mint: row.mint,
-          });
-        }
-      }
+    if (prev !== "deceased" && mc != null && mc > 0 && (verdict.tradeOk || verdict.score >= 62) && !verdict.dead) {
+      const outcome = await considerEntry({
+        tokenId: row.id, mint: row.mint, symbol: ticker, phase,
+        reading, verdict, mc, liq,
+      });
+      if (outcome === "lock") trades += 1;
     }
-
-    emitSse("vitals:tick", { id: row.id, phase, score: verdict.score });
   }
 
+  emitSse("vitals:tick", { scanned: rows.length, trades, deaths });
   return { scanned: rows.length, trades, deaths };
 }

@@ -235,6 +235,29 @@ const SCHEMA: string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_token ON ward_snapshots (token_id, at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_band ON ward_snapshots (band, at DESC)`,
+  `ALTER TABLE ward_snapshots ADD COLUMN IF NOT EXISTS kind text`,
+  `UPDATE ward_snapshots SET kind = 'confirm' WHERE kind IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_kind ON ward_snapshots (token_id, kind, at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS ward_watch (
+     id serial PRIMARY KEY,
+     token_id integer NOT NULL UNIQUE REFERENCES f2_tokens(id),
+     status text NOT NULL DEFAULT 'watching',
+     yes_votes integer NOT NULL DEFAULT 0,
+     no_votes integer NOT NULL DEFAULT 0,
+     hold_votes integer NOT NULL DEFAULT 0,
+     agreed boolean NOT NULL DEFAULT false,
+     entry_ok boolean NOT NULL DEFAULT false,
+     headline text,
+     votes jsonb,
+     last_mc real,
+     last_liq real,
+     last_score integer,
+     seen_at timestamptz NOT NULL DEFAULT NOW(),
+     updated_at timestamptz NOT NULL DEFAULT NOW(),
+     locked_at timestamptz
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_ward_watch_status ON ward_watch (status, updated_at DESC)`,
 
   `CREATE TABLE IF NOT EXISTS ward_trades (
      id serial PRIMARY KEY,

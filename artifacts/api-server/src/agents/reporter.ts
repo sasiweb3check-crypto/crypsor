@@ -32,9 +32,9 @@ export async function reporterTick(): Promise<Record<string, number>> {
     await pool.query(
       `DELETE FROM ward_snapshots WHERE id IN (
          SELECT id FROM (
-           SELECT id, ROW_NUMBER() OVER (PARTITION BY token_id ORDER BY at DESC) AS rn
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY token_id, COALESCE(kind,'confirm') ORDER BY at DESC) AS rn
            FROM ward_snapshots
-         ) x WHERE rn > 80
+         ) x WHERE rn > 48
        )`,
     );
   } catch {

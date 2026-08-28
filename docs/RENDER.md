@@ -38,6 +38,7 @@ in a long-running Node process — not a serverless function.
 | `TELEGRAM_PUSH_ENABLED` | optional | default `true`; bot token / chat id live in Settings |
 | `VITE_API_URL` | **omit** | Same-origin `/api`. Setting this usually breaks the desk. |
 | `CORS_ORIGIN` | omit | Only if the desk is on a different host |
+| `REDIS_URL` | **omit** | Not needed on 1 instance. In-memory TTL + SSE is the cache. Add Redis only if you ever run 2+ processes. |
 
 Do **not** set `VITE_API_URL` on this service. The desk is built and served
 from the same process, so the browser should call `/api` on the current host.
