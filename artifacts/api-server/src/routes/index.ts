@@ -165,6 +165,31 @@ router.get("/ward", async (req, res) => {
       );
       const raw = sug.rows[0]?.suggestions;
       suggestions = Array.isArray(raw) ? raw : [];
+      if (!suggestions.length) {
+        const recent = await pool.query(
+          `SELECT suggestions FROM ward_snapshots
+           WHERE at > NOW() - INTERVAL '3 hours' AND suggestions IS NOT NULL
+           ORDER BY at DESC LIMIT 80`,
+        );
+        const tally = new Map<string, { s: Record<string, unknown>; n: number }>();
+        for (const row of recent.rows as Array<{ suggestions: unknown }>) {
+          const list = Array.isArray(row.suggestions) ? row.suggestions as Array<Record<string, unknown>> : [];
+          for (const s of list) {
+            const id = String(s?.id ?? "");
+            if (!id) continue;
+            const prev = tally.get(id);
+            if (prev) prev.n += 1;
+            else tally.set(id, { s, n: 1 });
+          }
+        }
+        suggestions = [...tally.values()]
+          .sort((a, b) => b.n - a.n)
+          .slice(0, 4)
+          .map(({ s, n }) => ({
+            ...s,
+            body: `${String(s.body ?? "")} (${n} patient${n === 1 ? "" : "s"} in 3h)`,
+          }));
+      }
     } catch {
       suggestions = [];
     }

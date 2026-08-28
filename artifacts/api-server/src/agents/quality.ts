@@ -62,7 +62,9 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
     rows.filter((r) => r.phase === "icu").slice(0, SECURITY_BUDGET).map((r) => r.id),
   );
 
-  const gathered: Gathered[] = await Promise.all(rows.map(async (row) => {
+  // Pump is cheap and parallel-safe. GMGN from datacenter IPs 403s when we
+  // fan out — fetch pump together, then GMGN one mint at a time.
+  const pumped = await Promise.all(rows.map(async (row) => {
     const pair = dexMap.get(row.mint);
     const graduated = row.graduated || Boolean(pair && pair.dexId && pair.dexId !== "pumpfun");
     const dexRead: SourceRead = {
@@ -73,7 +75,6 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       holders: null,
       top10Pct: null,
     };
-
     const pumpT = await timed(() => pumpVitals(row.mint));
     const pumpRead: SourceRead = {
       source: "pump",
@@ -83,16 +84,20 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       holders: null,
       top10Pct: null,
     };
+    return { row, dexRead, pumpRead, pumpMs: pumpT.ms, pump: pumpT.value, graduated };
+  }));
 
+  const gathered: Gathered[] = [];
+  for (const base of pumped) {
     let gmgnRead: SourceRead = {
       source: "gmgn", ok: false, mcUsd: null, liqUsd: null, holders: null, top10Pct: null,
     };
     let gmgnMs = 0;
     let extra: Record<string, unknown> = {};
-    const didGmgn = gmgnTargets.has(row.id);
+    const didGmgn = gmgnTargets.has(base.row.id);
 
     if (didGmgn) {
-      const g = await timed(() => qualityIntel(row.mint));
+      const g = await timed(() => qualityIntel(base.row.mint));
       gmgnMs = g.ms;
       if (g.value) {
         gmgnRead = {
@@ -113,8 +118,29 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       }
     }
 
-    if (secTargets.has(row.id)) {
-      const sec = await tokenSecurity(row.mint);
+    if (!gmgnRead.ok) {
+      const cached = await pool.query(
+        `SELECT holders, top10_pct FROM f2_scans
+         WHERE token_id = $1 AND (holders IS NOT NULL OR top10_pct IS NOT NULL)
+         ORDER BY at DESC LIMIT 1`,
+        [base.row.id],
+      );
+      const c = cached.rows[0] as { holders: number | null; top10_pct: number | null } | undefined;
+      if (c && (c.holders != null || c.top10_pct != null)) {
+        gmgnRead = {
+          source: "gmgn",
+          ok: true,
+          mcUsd: null,
+          liqUsd: null,
+          holders: c.holders,
+          top10Pct: c.top10_pct,
+        };
+        extra = { ...extra, cached: true };
+      }
+    }
+
+    if (secTargets.has(base.row.id)) {
+      const sec = await tokenSecurity(base.row.mint);
       extra = {
         ...extra,
         honeypot: sec.honeypot,
@@ -123,11 +149,8 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       };
     }
 
-    return {
-      row, dexRead, pumpRead, pumpMs: pumpT.ms, pump: pumpT.value,
-      gmgnRead, gmgnMs, extra, didGmgn, graduated,
-    };
-  }));
+    gathered.push({ ...base, gmgnRead, gmgnMs, extra, didGmgn });
+  }
 
   let filled = 0;
   let flagCount = 0;
@@ -139,7 +162,7 @@ export async function qualityTick(): Promise<{ checked: number; filled: number; 
       { read: g.dexRead, ms: 0 },
       { read: g.pumpRead, ms: g.pumpMs, extra: g.pump ? { graduated: g.pump.graduated, athMc: g.pump.athMc } : undefined },
     ];
-    if (g.didGmgn) writes.push({ read: g.gmgnRead, ms: g.gmgnMs, extra: g.extra });
+    if (g.didGmgn || g.gmgnRead.ok) writes.push({ read: g.gmgnRead, ms: g.gmgnMs, extra: g.extra });
 
     for (const w of writes) {
       await pool.query(
