@@ -1,8 +1,9 @@
 /**
- * Desk runtime — wallet-buy discovery, omo gate, then live prints + snapshots.
+ * Desk runtime — wallet-buy discovery, public tape, omo gate, then live prints.
  *
  *   intake     tracked-wallet buys (Helius), swap-verified, majors dropped
- *   vitals     Dex / pump.fun prints. Once passed, data rolls — no re-gate
+ *   discover   Dex boosts/profiles, pump movers, CoinGecko — waiting room
+ *   vitals     Dex / pump.fun prints. Public tape suggests; wallet buys can lock
  *   snapshots  10m / 15m / 1h series with memory and survival
  *   archive    random dead/exited sample for momentum
  *   book       live stats on passes (research notes, not a trade bot)
@@ -11,6 +12,7 @@
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
+import { discoverTick } from "../agents/discover";
 import { archiveTick, vitalsTick } from "../agents/vitals";
 import { snapshotsTick } from "../agents/snapshots";
 import { bookTick } from "../agents/book";
@@ -22,14 +24,18 @@ let started = false;
 let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
+const DISCOVER_MS = 90_000;
 const VITALS_MS = 18_000;
 const SNAP_MS = 22_000;
 const ARCHIVE_MS = 90_000;
 const BOOK_MS = 25_000;
 const REPORT_MS = 120_000;
 
-let last = { intake: 0, vitals: 0, snapshots: 0, archive: 0, book: 0, reporter: 0 };
-let running = { intake: false, vitals: false, snapshots: false, archive: false, book: false, reporter: false };
+let last = { intake: 0, discover: 0, vitals: 0, snapshots: 0, archive: 0, book: 0, reporter: 0 };
+let running = {
+  intake: false, discover: false, vitals: false, snapshots: false,
+  archive: false, book: false, reporter: false,
+};
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -44,12 +50,19 @@ export async function ensureRuntime(): Promise<void> {
   if (!bootPromise) {
     bootPromise = (async () => {
       await ensureSchema();
+      last.discover = Date.now() - DISCOVER_MS + 18_000;
       setInterval(() => {
         if (running.intake || Date.now() - last.intake < INTAKE_MS) return;
         running.intake = true;
         last.intake = Date.now();
         void guarded("intake", intakeTick).finally(() => { running.intake = false; });
       }, 5_000);
+      setInterval(() => {
+        if (running.discover || Date.now() - last.discover < DISCOVER_MS) return;
+        running.discover = true;
+        last.discover = Date.now();
+        void guarded("discover", discoverTick).finally(() => { running.discover = false; });
+      }, 8_000);
       setInterval(() => {
         if (running.vitals || Date.now() - last.vitals < VITALS_MS) return;
         running.vitals = true;
@@ -81,7 +94,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
       }, 15_000);
       started = true;
-      log.info("desk started (intake · vitals · 10m/15m/1h snapshots · archive · book · reporter)");
+      log.info("desk started (intake · discover · vitals · 10m/15m/1h snapshots · archive · book · reporter)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -102,6 +115,7 @@ export function agentStatus(): {
     running: { ...running },
     intervalsMs: {
       intake: INTAKE_MS,
+      discover: DISCOVER_MS,
       vitals: VITALS_MS,
       snapshots: SNAP_MS,
       archive: ARCHIVE_MS,

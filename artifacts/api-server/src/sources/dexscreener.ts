@@ -2,10 +2,13 @@
  * DexScreener — public pair tape (free, no key). Same endpoints omo uses:
  *   GET /latest/dex/tokens/{mint,...}
  *
- * Discovery does NOT search Dex. We only read mints our wallets already bought.
+ * Pair reads are for mints we already have. Latest boosts/profiles are a
+ * paced public-tape feed — those names wait, then the scanner grades them.
  */
 import { logger } from "../core/log";
 import type { TokenResearch } from "../scoring/omo";
+import { pace } from "./pace";
+import { httpsImage } from "../scoring/image";
 
 export type DexPair = {
   chainId?: string;
@@ -26,8 +29,10 @@ export type DexPair = {
   priceChange?: { m5?: number; h1?: number; h6?: number; h24?: number };
   baseToken?: { address?: string; symbol?: string; name?: string };
   info?: {
+    imageUrl?: string;
+    header?: string;
     websites?: { url?: string }[];
-    socials?: { type?: string; url?: string }[];
+    socials?: { type?: string; url?: string; platform?: string }[];
   };
 };
 
@@ -35,6 +40,7 @@ const UA = { Accept: "application/json", "user-agent": "crypsor/omo-desk" };
 
 async function json<T>(url: string, timeoutMs = 10_000): Promise<T | null> {
   try {
+    await pace("dex", 350);
     const resp = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeoutMs) });
     if (!resp.ok) return null;
     return await resp.json() as T;
@@ -46,9 +52,13 @@ async function json<T>(url: string, timeoutMs = 10_000): Promise<T | null> {
 
 export function socialsOf(pair: DexPair): string[] {
   return (pair.info?.socials ?? [])
-    .map((x) => (x.type ?? "").toLowerCase())
+    .map((x) => (x.type ?? x.platform ?? "").toLowerCase())
     .filter(Boolean)
     .slice(0, 4);
+}
+
+export function imageOf(pair: DexPair | null | undefined): string | null {
+  return httpsImage(pair?.info?.imageUrl || pair?.info?.header);
 }
 
 export function hasSite(pair: DexPair): boolean {
@@ -107,4 +117,36 @@ export async function researchToken(mint: string, symbol: string): Promise<Token
     socials: socialsOf(top),
     hasSite: hasSite(top),
   };
+}
+
+export type DexProfile = {
+  chainId?: string;
+  tokenAddress?: string;
+  icon?: string | null;
+  description?: string | null;
+  links?: { type?: string; label?: string; url?: string }[];
+  amount?: number;
+  totalAmount?: number;
+};
+
+function solanaProfiles(rows: DexProfile[] | DexProfile | null): DexProfile[] {
+  const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+  return list.filter((r) => (r.chainId || "").toLowerCase() === "solana" && r.tokenAddress);
+}
+
+export async function latestBoosts(): Promise<DexProfile[]> {
+  const rows = await json<DexProfile[] | DexProfile>("https://api.dexscreener.com/token-boosts/latest/v1");
+  return solanaProfiles(rows);
+}
+
+export async function latestProfiles(): Promise<DexProfile[]> {
+  const rows = await json<DexProfile[] | DexProfile>("https://api.dexscreener.com/token-profiles/latest/v1");
+  return solanaProfiles(rows);
+}
+
+export function profileSocials(p: DexProfile): string[] {
+  return (p.links ?? [])
+    .map((l) => (l.type || l.label || "").toLowerCase())
+    .filter((s) => /twitter|telegram|discord|website|x\.com/.test(s) || s === "twitter" || s === "telegram")
+    .slice(0, 4);
 }

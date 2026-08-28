@@ -11,7 +11,8 @@ const LANES = [
 
 const LOOP = [
   { id: "intake", title: "Intake", copy: "Swap-verified wallet buys. Majors and LSTs never enter." },
-  { id: "vitals", title: "Live prints", copy: "Dex / pump.fun on live names. Once passed, data rolls — no re-gate." },
+  { id: "discover", title: "Public tape", copy: "Dex boosts/profiles, pump.fun movers, CoinGecko trending. Waiting room only — never a lock." },
+  { id: "vitals", title: "Live prints", copy: "Dex / pump.fun. Public tape can suggest. A pass still needs a wallet buy." },
   { id: "snapshots", title: "Snapshots", copy: "10m pulse, 15m confirm, 1h hour. Memory + survival from the series." },
   { id: "archive", title: "Archive sample", copy: "Random dead/exited passes — three at a time — watching for momentum." },
   { id: "book", title: "Book", copy: "Live stats on passes. Research notes, not a trade bot." },

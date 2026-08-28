@@ -77,10 +77,10 @@ export async function currentlyLive(limit = 48): Promise<PumpCoin[]> {
   return Array.isArray(coins) ? coins : [];
 }
 
-/** Newest launches — secondary discovery feed. */
-export async function newestCoins(limit = 30): Promise<PumpCoin[]> {
+/** Hottest bonding-curve names by recent trades. */
+export async function moverCoins(limit = 12): Promise<PumpCoin[]> {
   const coins = await get<PumpCoin[]>(
-    `/coins?offset=0&limit=${limit}&sort=created_timestamp&order=DESC&includeNsfw=false`,
+    `/coins?offset=0&limit=${limit}&sort=last_trade_timestamp&order=DESC&includeNsfw=false`,
   );
   return Array.isArray(coins) ? coins : [];
 }

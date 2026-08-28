@@ -46,7 +46,7 @@ export default function AlertsPage() {
         <div className={`live-dot ${board.connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        Every pass, by day. Frozen MC at the pass, then gain and ATH after that. Archived and dead names are sampled at random for momentum.
+        Every pass, by day. Frozen MC at the pass, then gain and ATH vs that entry. Archived and dead names are sampled at random for momentum.
       </p>
 
       <div className="days-strip" role="list">

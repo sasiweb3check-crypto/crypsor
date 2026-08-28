@@ -4,6 +4,7 @@ import {
   type PatientChart, type TapeWindow, type TradeCard, type Check, type DecisionReasons, type SnapshotRow,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
+import { TokenImg, sourceLabel } from "../components/pass-card";
 
 function Spark({ points, admit }: { points: Array<{ t: number; v: number }>; admit: number | null }) {
   if (points.length < 2) return <div className="empty">Chart warming.</div>;
@@ -106,7 +107,10 @@ export default function PatientPage() {
   const notes = d.memory?.caution && typeof d.memory.caution === "object"
     ? (d.memory.caution as { notes?: string[] }).notes ?? []
     : [];
-  const story = d.narrative || reasons.thesis || "";
+  const story = d.narrative || reasons.thesis || t.last_suggestion || "";
+  const socials = t.meta?.socials ?? [];
+  const sentiment = t.meta?.sentiment ?? null;
+  const publicTape = t.wallet_buys < 1 && t.source && t.source !== "wallet_buy";
 
   const copyMint = () => {
     void navigator.clipboard?.writeText(t.mint);
@@ -120,9 +124,11 @@ export default function PatientPage() {
       </header>
 
       <div className="hero">
-        {t.image && (
-          <img src={t.image} alt="" className="thumb lg" style={{ width: 72, height: 72, borderRadius: 22 }} />
-        )}
+        <TokenImg
+          src={t.image}
+          letter={t.symbol || t.name || t.mint}
+          className="thumb lg hero-thumb"
+        />
         <div className="hero-copy">
           <h1>${t.symbol || t.name || shortMint(t.mint)}</h1>
           <div className="mint">
@@ -140,10 +146,18 @@ export default function PatientPage() {
       {story && (
         <div className="story">
           <div className="k">
-            {trade ? "surviving" : "read"}
+            {trade ? "surviving" : publicTape ? "public tape" : "read"}
+            {sentiment ? ` · ${sentiment}` : ""}
             {t.survival_score != null ? ` · ${t.survival_score}` : ""}
           </div>
           <p>{story}</p>
+          {(t.source || socials.length > 0) && (
+            <div className="meta" style={{ whiteSpace: "normal", marginTop: 10 }}>
+              {t.source ? sourceLabel(t.source) : ""}
+              {socials.length ? ` · ${socials.join(" · ")}` : ""}
+              {publicTape ? " · suggestion only — not a pass" : ""}
+            </div>
+          )}
         </div>
       )}
 
@@ -152,15 +166,17 @@ export default function PatientPage() {
           {trade ? fmtGainPct(trade.gain_pct ?? ((gain ?? 1) - 1) * 100) : fmtSignedX(gain)}
           <small>
             {trade
-              ? `passed ${fmtPassAt(trade.called_at)} at ${fmtUsd(trade.entry_mc)} · ATH ${fmtGainPct(trade.ath_pct ?? ((ath ?? 1) - 1) * 100)}`
-              : "not a pass — refusals stay in logs"}
+              ? `passed ${fmtPassAt(trade.called_at)} at ${fmtUsd(trade.entry_mc)} · ATH vs entry ${fmtGainPct(trade.ath_pct ?? ((ath ?? 1) - 1) * 100)}`
+              : publicTape
+                ? "scanner can suggest — a pass still needs a tracked wallet"
+                : "not a pass — refusals stay in logs"}
           </small>
         </div>
       </div>
 
       <div className="grid3">
         <div className="vit"><b>{fmtUsd(t.last_mc)}</b><span>Now</span></div>
-        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "At pass" : "Admit"}</span></div>
+        <div className="vit"><b>{fmtUsd(entry)}</b><span>{trade ? "At pass" : publicTape ? "Suggested" : "Admit"}</span></div>
         <div className="vit"><b>{t.survival_score ?? "—"}</b><span>Survival</span></div>
         <div className="vit"><b>{fmtUsd(t.last_liq)}</b><span>Liquidity</span></div>
         <div className="vit"><b>{t.last_holders ?? "—"}</b><span>Holders</span></div>
@@ -221,7 +237,7 @@ export default function PatientPage() {
         <TapeBlock label="6h" w={last?.tape?.h6} />
       </div>
 
-      <div className="section-h">{trade ? "Since pass" : "Market cap"}</div>
+      <div className="section-h">{trade ? "Since pass · vs entry" : "Market cap"}</div>
       <Spark points={spark} admit={entry ?? null} />
 
       <div className="section-h">Wallets</div>

@@ -1,18 +1,20 @@
 /**
- * READ + GATE tick — omo decision loop on wallet-buy names.
+ * READ + GATE tick — omo decision loop.
  *
- *   DexScreener public tape (primary)
- *   pump.fun /coins/{mint} callback if Dex is blank
- *   second pass on every pool for names we actually grade
+ *   Held passes and wallet-buy names first
+ *   Then public-tape waiting room (Dex boosts, pump movers, CoinGecko)
+ *   pump.fun /coins/{mint} if Dex is blank
+ *   Second pass only on names a wallet actually bought (pace Dex)
  *
- * Missing data fails the related rule and is logged. We never invent a pass.
+ * Public tape can suggest. A pass still needs a tracked-wallet swap.
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import {
-  ageHoursOf, hasSite, pairsForMints, researchToken, socialsOf, type DexPair,
+  ageHoursOf, hasSite, imageOf, pairsForMints, researchToken, socialsOf, type DexPair,
 } from "../sources/dexscreener";
 import { pumpVitals } from "../sources/pumpfun";
+import { httpsImage } from "../scoring/image";
 import {
   decide, isFakeChart, money, newbornFaded,
   nextPhase, tapeOf, type OmoCandidate, type Phase, type TokenResearch,
@@ -23,8 +25,9 @@ import { considerEntry } from "./watch";
 import { emitLiveStats, syncPassPrint } from "./stats";
 import { isNoiseToken } from "../scoring/noise";
 
-const HOT = 10;
+const HOT = 12;
 const ARCHIVE = 3;
+const PUBLIC = ["public_tape", "dex_boost", "pump_mover", "gecko", "pump_live"];
 
 type Row = {
   id: number;
@@ -105,6 +108,7 @@ function candidateFromDex(pair: DexPair, row: Row, held: boolean): OmoCandidate 
 async function candidateFromPump(row: Row, held: boolean): Promise<OmoCandidate | null> {
   const p = await pumpVitals(row.mint);
   if (!p) return null;
+  await persistImage(row.id, httpsImage(p.coin.image_uri));
   const mc = n(p.mcUsd);
   const liq = n(p.liqUsd);
   const socials: string[] = [];
@@ -154,17 +158,36 @@ async function recordSource(
   }
 }
 
+async function persistImage(tokenId: number, url: string | null): Promise<void> {
+  if (!url) return;
+  await pool.query(
+    `UPDATE f2_tokens SET image = COALESCE(NULLIF(image, ''), $2) WHERE id = $1`,
+    [tokenId, url],
+  );
+}
+
 export async function vitalsTick(): Promise<{ scanned: number; trades: number; deaths: number; refused: number }> {
   const due = await pool.query(
     `SELECT t.id, t.mint, t.symbol, t.name, t.phase, t.wallet_buys, t.scans_total,
             t.admission_mc, t.mc_at_discovery, t.peak_mc, t.last_mc, t.last_liq, t.last_holders, t.graduated
      FROM f2_tokens t
      LEFT JOIN ward_trades tr ON tr.token_id = t.id AND tr.status IN ('open','trim')
-     WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)
-       AND COALESCE(t.phase, 'intake') <> 'deceased'
-     ORDER BY CASE WHEN tr.id IS NOT NULL THEN 0 ELSE 1 END,
+     WHERE COALESCE(t.phase, 'intake') <> 'deceased'
+       AND (
+         tr.id IS NOT NULL
+         OR t.source = 'wallet_buy'
+         OR t.wallet_buys > 0
+         OR t.source = ANY($1::text[])
+       )
+     ORDER BY CASE
+                WHEN tr.id IS NOT NULL THEN 0
+                WHEN t.source = 'wallet_buy' OR t.wallet_buys > 0 THEN 1
+                WHEN t.last_scan_at IS NULL THEN 2
+                ELSE 3
+              END,
               t.last_scan_at ASC NULLS FIRST
      LIMIT ${HOT}`,
+    [PUBLIC],
   );
   return scanRows(due.rows as Row[], false);
 }
@@ -208,6 +231,7 @@ async function scanRows(
       pair?.liquidity?.usd ?? null,
       pair ? { dexId: pair.dexId, url: pair.url } : { reason: "no solana pair" },
     );
+    await persistImage(row.id, imageOf(pair));
 
     if (!candidate) {
       candidate = await candidateFromPump(row, held);
@@ -258,7 +282,7 @@ async function scanRows(
       continue;
     }
 
-    if (pair) {
+    if (pair && row.wallet_buys >= 1) {
       research = await researchToken(row.mint, candidate.symbol);
       await agentNote(
         "omo",

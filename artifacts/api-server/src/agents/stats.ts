@@ -1,13 +1,17 @@
 /**
- * Live pass board — SSE payload + REST.
- * Desk only shows names that cleared the gate. Everything else stays in logs.
+ * Live board — SSE payload + REST.
+ * Passes stay the book. Public tape is waiting / suggestions, never a lock.
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { athPct, gainPct, laneOf, rollDays, type DayRoll } from "../scoring/stats";
 import { capBand, type CapBand } from "../scoring/quality";
 import { isNoiseToken } from "../scoring/noise";
+import { clip } from "../scoring/image";
+import { MC_SUGGEST_MIN } from "../scoring/omo";
 import type { Momentum } from "../scoring/survival";
+
+const PUBLIC = ["public_tape", "dex_boost", "pump_mover", "gecko"];
 
 export type PassCard = {
   id: number;
@@ -36,24 +40,61 @@ export type PassCard = {
   story: string | null;
 };
 
+export type Sentiment = "hot" | "mixed" | "quiet";
+
+export type TapeName = {
+  id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  source: string;
+  last_mc: number | null;
+  last_liq: number | null;
+  peak_mc: number | null;
+  suggest_mc: number | null;
+  gain_pct: number | null;
+  ath_pct: number | null;
+  last_scan_at: string | null;
+  tape_lead: string | null;
+  story: string | null;
+  thesis: string | null;
+  sentiment: Sentiment | null;
+  socials: string[];
+  wallet_buys: number;
+  quality: number | null;
+};
+
+export type TokenStats = {
+  tokens: number;
+  waiting: number;
+  suggestions: number;
+  scanned24h: number;
+};
+
+export type PerformanceStats = {
+  live: number;
+  passed: number;
+  archived: number;
+  dead: number;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  avgSurvival: number | null;
+  hit2x: number;
+};
+
 export type LiveBoard = {
   at: string;
   live: PassCard[];
   archived: PassCard[];
   performers: PassCard[];
+  suggestions: TapeName[];
+  waiting: TapeName[];
   days: DayRoll[];
-  census: { tokens: number; passed: number };
-  totals: {
-    live: number;
-    archived: number;
-    dead: number;
-    passed: number;
-    tokens: number;
-    avgGainPct: number | null;
-    avgAthPct: number | null;
-    avgSurvival: number | null;
-    hit2x: number;
-  };
+  census: { tokens: number; passed: number; waiting: number; suggestions: number };
+  tokenStats: TokenStats;
+  performance: PerformanceStats;
+  totals: PerformanceStats & { tokens: number };
 };
 
 const SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.called_at, tr.peak_mc, tr.last_mc,
@@ -95,8 +136,62 @@ function card(row: Record<string, unknown>): PassCard {
     survival: row.survival_score != null ? Number(row.survival_score) : null,
     momentum: (row.last_momentum as Momentum | null) ?? null,
     band: (row.cap_band as CapBand | null) ?? capBand(last),
-    story: (row.last_narrative as string | null) ?? null,
+    story: clip(row.last_narrative as string | null, 140),
   };
+}
+
+function socialsOfMeta(meta: unknown): string[] {
+  if (!meta || typeof meta !== "object") return [];
+  const raw = (meta as { socials?: unknown }).socials;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((s) => String(s)).filter(Boolean).slice(0, 4);
+}
+
+function sentimentOfMeta(meta: unknown): Sentiment | null {
+  const s = meta && typeof meta === "object" ? (meta as { sentiment?: unknown }).sentiment : null;
+  if (s === "hot" || s === "mixed" || s === "quiet") return s;
+  return null;
+}
+
+function tapeName(row: Record<string, unknown>): TapeName {
+  const last = row.last_mc != null ? Number(row.last_mc) : null;
+  const peak = row.peak_mc != null ? Number(row.peak_mc) : null;
+  const suggest = row.admission_mc != null ? Number(row.admission_mc) : last;
+  const meta = row.meta;
+  return {
+    id: Number(row.id),
+    mint: String(row.mint),
+    symbol: (row.symbol as string | null) ?? null,
+    name: (row.name as string | null) ?? null,
+    image: (row.image as string | null) ?? null,
+    source: String(row.source ?? "public_tape"),
+    last_mc: last,
+    last_liq: row.last_liq != null ? Number(row.last_liq) : null,
+    peak_mc: peak,
+    suggest_mc: suggest,
+    gain_pct: gainPct(last, suggest ?? 0),
+    ath_pct: athPct(peak, suggest ?? 0),
+    last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
+    tape_lead: (row.tape_lead as string | null) ?? null,
+    story: clip(row.last_narrative as string | null, 140),
+    thesis: clip(row.last_suggestion as string | null, 140),
+    sentiment: sentimentOfMeta(meta),
+    socials: socialsOfMeta(meta),
+    wallet_buys: Number(row.wallet_buys ?? 0),
+    quality: row.last_quality != null ? Number(row.last_quality) : null,
+  };
+}
+
+function uniqueTape(rows: TapeName[]): TapeName[] {
+  const seen = new Set<number>();
+  const out: TapeName[] = [];
+  for (const c of rows) {
+    if (isNoiseToken(c.mint, c.symbol)) continue;
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
 }
 
 function uniqueByToken(cards: PassCard[]): PassCard[] {
@@ -209,38 +304,100 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     .sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999))
     .slice(0, 8);
 
+  const TAPE = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.source,
+            t.last_mc, t.last_liq, t.peak_mc, t.admission_mc, t.last_scan_at,
+            t.tape_lead, t.last_narrative, t.last_suggestion, t.last_quality,
+            t.wallet_buys, t.meta
+     FROM f2_tokens t`;
+
+  let suggestions: TapeName[] = [];
+  let waiting: TapeName[] = [];
+  try {
+    const sug = await pool.query(
+      `${TAPE}
+       WHERE t.source = ANY($1::text[])
+         AND t.last_verdict = 'buying'
+         AND COALESCE(t.phase,'intake') <> 'deceased'
+         AND COALESCE(t.wallet_buys, 0) = 0
+         AND COALESCE(t.last_mc, 0) >= $2
+         AND COALESCE(t.last_quality, 0) >= 40
+         AND NOT EXISTS (SELECT 1 FROM ward_trades tr WHERE tr.token_id = t.id)
+       ORDER BY t.last_scan_at DESC NULLS LAST
+       LIMIT 12`,
+      [PUBLIC, MC_SUGGEST_MIN],
+    );
+    suggestions = uniqueTape(sug.rows.map((r) => tapeName(r as Record<string, unknown>)));
+  } catch {
+    suggestions = [];
+  }
+  try {
+    const wait = await pool.query(
+      `${TAPE}
+       WHERE t.source = ANY($1::text[])
+         AND t.last_scan_at IS NULL
+         AND COALESCE(t.phase,'intake') <> 'deceased'
+       ORDER BY t.discovered_at DESC
+       LIMIT 10`,
+      [PUBLIC],
+    );
+    waiting = uniqueTape(wait.rows.map((r) => tapeName(r as Record<string, unknown>)));
+  } catch {
+    waiting = [];
+  }
+
   let tokens = 0;
   let passedN = liveCards.length + archCards.length;
+  let waitingN = waiting.length;
+  let scanned24h = 0;
   try {
     const cen = await pool.query(
       `SELECT
-         (SELECT COUNT(*)::int FROM f2_tokens WHERE source = 'wallet_buy' OR wallet_buys > 0) AS tokens,
-         (SELECT COUNT(*)::int FROM ward_trades) AS passed`,
+         (SELECT COUNT(*)::int FROM f2_tokens WHERE COALESCE(phase,'intake') <> 'deceased') AS tokens,
+         (SELECT COUNT(*)::int FROM ward_trades) AS passed,
+         (SELECT COUNT(*)::int FROM f2_tokens
+           WHERE source = ANY($1::text[]) AND last_scan_at IS NULL
+             AND COALESCE(phase,'intake') <> 'deceased') AS waiting,
+         (SELECT COUNT(*)::int FROM f2_tokens
+           WHERE last_scan_at > NOW() - INTERVAL '24 hours') AS scanned24h`,
+      [PUBLIC],
     );
     tokens = Number(cen.rows[0]?.tokens ?? 0);
     passedN = Number(cen.rows[0]?.passed ?? passedN);
+    waitingN = Number(cen.rows[0]?.waiting ?? waitingN);
+    scanned24h = Number(cen.rows[0]?.scanned24h ?? 0);
   } catch {
     // first boot
   }
+
+  const performance: PerformanceStats = {
+    live: liveCards.length,
+    passed: passedN,
+    archived: archCards.filter((c) => c.lane === "archived").length,
+    dead: archCards.filter((c) => c.lane === "dead").length,
+    avgGainPct: gains.length ? gains.reduce((s, n) => s + n, 0) / gains.length : null,
+    avgAthPct: aths.length ? aths.reduce((s, n) => s + n, 0) / aths.length : null,
+    avgSurvival: survs.length ? survs.reduce((s, n) => s + n, 0) / survs.length : null,
+    hit2x: aths.filter((n) => n >= 100).length,
+  };
+  const tokenStats: TokenStats = {
+    tokens,
+    waiting: waitingN,
+    suggestions: suggestions.length,
+    scanned24h,
+  };
 
   return {
     at: new Date().toISOString(),
     live: liveCards,
     archived: archCards,
     performers,
+    suggestions,
+    waiting,
     days,
-    census: { tokens, passed: passedN },
-    totals: {
-      live: liveCards.length,
-      archived: archCards.filter((c) => c.lane === "archived").length,
-      dead: archCards.filter((c) => c.lane === "dead").length,
-      passed: passedN,
-      tokens,
-      avgGainPct: gains.length ? gains.reduce((s, n) => s + n, 0) / gains.length : null,
-      avgAthPct: aths.length ? aths.reduce((s, n) => s + n, 0) / aths.length : null,
-      avgSurvival: survs.length ? survs.reduce((s, n) => s + n, 0) / survs.length : null,
-      hit2x: aths.filter((n) => n >= 100).length,
-    },
+    census: { tokens, passed: passedN, waiting: waitingN, suggestions: suggestions.length },
+    tokenStats,
+    performance,
+    totals: { ...performance, tokens },
   };
 }
 

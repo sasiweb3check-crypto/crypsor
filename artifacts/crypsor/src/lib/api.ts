@@ -115,6 +115,8 @@ export type PatientCard = {
   last_quality?: number | null;
   cap_band?: "low" | "mid" | "mega" | null;
   last_suggestion?: string | null;
+  source?: string | null;
+  meta?: { public?: boolean; source?: string; socials?: string[]; sentiment?: "hot" | "mixed" | "quiet"; boosted?: boolean; geckoUpPct?: number | null } | null;
   prognosis?: Prognosis;
 };
 
@@ -226,19 +228,56 @@ export type LiveBoard = {
   live: PassCard[];
   archived: PassCard[];
   performers?: PassCard[];
+  suggestions?: TapeName[];
+  waiting?: TapeName[];
   days: DayRoll[];
-  census?: { tokens: number; passed: number };
-  totals: {
-    live: number;
-    archived: number;
-    dead: number;
-    passed: number;
-    tokens?: number;
-    avgGainPct: number | null;
-    avgAthPct: number | null;
-    avgSurvival?: number | null;
-    hit2x: number;
-  };
+  census?: { tokens: number; passed: number; waiting?: number; suggestions?: number };
+  tokenStats?: TokenStats;
+  performance?: PerformanceStats;
+  totals: PerformanceStats & { tokens?: number };
+};
+
+export type Sentiment = "hot" | "mixed" | "quiet";
+
+export type TapeName = {
+  id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  source: string;
+  last_mc: number | null;
+  last_liq: number | null;
+  peak_mc?: number | null;
+  suggest_mc?: number | null;
+  gain_pct?: number | null;
+  ath_pct?: number | null;
+  last_scan_at: string | null;
+  tape_lead: string | null;
+  story: string | null;
+  thesis: string | null;
+  sentiment: Sentiment | null;
+  socials: string[];
+  wallet_buys: number;
+  quality: number | null;
+};
+
+export type TokenStats = {
+  tokens: number;
+  waiting: number;
+  suggestions: number;
+  scanned24h: number;
+};
+
+export type PerformanceStats = {
+  live: number;
+  passed: number;
+  archived: number;
+  dead: number;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  avgSurvival?: number | null;
+  hit2x: number;
 };
 
 export type DayPasses = {
