@@ -7,6 +7,7 @@ import { sseHandler } from "../core/bus";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { getWeights, prognosis, failsOf, type Phase } from "../scoring/ward";
+import { seedTradesFromAlerts } from "../agents/book";
 
 const router: IRouter = Router();
 
@@ -219,6 +220,51 @@ router.get("/ward", async (req, res) => {
   }
 });
 
+const TRADE_SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.entry_liq, tr.entry_holders, tr.entry_score,
+            tr.called_at, tr.peak_mc, tr.peak_at, tr.last_mc, tr.last_liq, tr.last_holders,
+            tr.status, tr.exit_action, tr.exit_take_pct, tr.exit_title, tr.exit_body,
+            tr.gain_x, tr.ath_x, tr.closed_at, tr.close_mc,
+            t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase
+     FROM ward_trades tr
+     JOIN f2_tokens t ON t.id = tr.token_id`;
+
+// ── desk (locked trades + performers) ────────────────────────────────────────
+
+router.get("/desk", async (_req, res) => {
+  try {
+    await seedTradesFromAlerts();
+    const open = await pool.query(
+      `${TRADE_SELECT} WHERE tr.status IN ('open','trim') ORDER BY tr.called_at DESC LIMIT 40`,
+    );
+    const performers = await pool.query(
+      `${TRADE_SELECT} ORDER BY COALESCE(tr.ath_x,0) DESC, tr.called_at DESC LIMIT 8`,
+    );
+    const paper = await pool.query(
+      `SELECT
+         COUNT(*)::int AS n,
+         COUNT(*) FILTER (WHERE COALESCE(ath_x,0) >= 2)::int AS wins,
+         AVG(ath_x) AS avg_ath,
+         AVG(gain_x) AS avg_gain,
+         COUNT(*) FILTER (WHERE status IN ('open','trim'))::int AS open
+       FROM ward_trades`,
+    );
+    res.json(ok({
+      open: open.rows,
+      performers: performers.rows,
+      paper: {
+        n: Number(paper.rows[0]?.n ?? 0),
+        wins: Number(paper.rows[0]?.wins ?? 0),
+        open: Number(paper.rows[0]?.open ?? 0),
+        avgAth: paper.rows[0]?.avg_ath != null ? Number(paper.rows[0].avg_ath) : null,
+        avgGain: paper.rows[0]?.avg_gain != null ? Number(paper.rows[0].avg_gain) : null,
+      },
+    }));
+  } catch (err) {
+    console.error("desk failed", err);
+    res.status(500).json(fail("desk failed"));
+  }
+});
+
 // ── patient chart ────────────────────────────────────────────────────────────
 
 router.get("/patient/:id", async (req, res) => {
@@ -296,6 +342,13 @@ router.get("/patient/:id", async (req, res) => {
       else prev.score = s.score;
     }
 
+    let trade: unknown = null;
+    try {
+      trade = (await pool.query(`${TRADE_SELECT} WHERE tr.token_id = $1`, [id])).rows[0] ?? null;
+    } catch {
+      trade = null;
+    }
+
     res.json(ok({
       token: {
         ...token,
@@ -315,6 +368,7 @@ router.get("/patient/:id", async (req, res) => {
       suggestions: (snapshots as Array<{ suggestions?: unknown }>).length
         ? (snapshots as Array<{ suggestions?: unknown }>)[snapshots.length - 1]?.suggestions ?? []
         : [],
+      trade,
       weights: getWeights(),
     }));
   } catch (err) {
@@ -327,11 +381,13 @@ router.get("/patient/:id", async (req, res) => {
 
 router.get("/alerts", async (req, res) => {
   try {
-    const kind = String(req.query.kind ?? "").trim();
+    const kind = String(req.query.kind ?? "book").trim();
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
     const params: unknown[] = [];
     let where = "WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)";
-    if (kind) {
+    if (kind === "book") {
+      where += ` AND a.kind IN ('trade','exit','trim')`;
+    } else if (kind && kind !== "all") {
       params.push(kind);
       where += ` AND a.kind = $${params.length}`;
     }
