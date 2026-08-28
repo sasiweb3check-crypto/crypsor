@@ -322,6 +322,8 @@ const SCHEMA: string[] = [
      best_ath_pct real,
      updated_at timestamptz NOT NULL DEFAULT NOW()
    )`,
+  `ALTER TABLE ward_day_stats ADD COLUMN IF NOT EXISTS hit_5x_n integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE ward_day_stats ADD COLUMN IF NOT EXISTS hit_10x_n integer NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS ward_stats_stash (
      id serial PRIMARY KEY,
      reason text NOT NULL,

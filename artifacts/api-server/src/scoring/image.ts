@@ -1,3 +1,16 @@
+/** Dex CDN thumb — always https, used when pump/Dex metadata has no image. */
+export function dexTokenImage(mint: string | null | undefined): string | null {
+  if (!mint || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return null;
+  return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
+}
+
+export function tokenImageUrl(
+  stored: string | null | undefined,
+  mint?: string | null,
+): string | null {
+  return httpsImage(stored) ?? dexTokenImage(mint);
+}
+
 /** Make a remote image URL usable in the desk. */
 export function httpsImage(url: string | null | undefined): string | null {
   if (!url) return null;

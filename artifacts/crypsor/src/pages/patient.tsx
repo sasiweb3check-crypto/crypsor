@@ -126,6 +126,7 @@ export default function PatientPage() {
       <div className="hero">
         <TokenImg
           src={t.image}
+          mint={t.mint}
           letter={t.symbol || t.name || t.mint}
           className="thumb lg hero-thumb"
         />

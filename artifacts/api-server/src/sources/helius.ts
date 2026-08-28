@@ -2,14 +2,17 @@
  * Helius — tracked-wallet buy detection (the human alpha source).
  * Enhanced transactions API: /v0/addresses/:wallet/transactions
  *
- * A transfer into the wallet is not enough. We want a swap-shaped buy
- * (token in, quote out) and we drop majors / LSTs at the mint.
+ * A transfer into the wallet is not a buy. Helius often labels airdrops
+ * and ATA creates as SWAP. We require quote/SOL spend above dust.
  */
 import { logger } from "../core/log";
 import { heliusKey } from "../core/settings";
 import { isNoiseMint, isQuoteMint } from "../scoring/noise";
 
-type HeliusTx = {
+/** Above typical ATA rent (~0.00204 SOL) so a receive + rent is not a buy. */
+export const MIN_SOL_SPEND_LAMPORTS = 3_000_000;
+
+export type HeliusTx = {
   signature?: string;
   timestamp?: number;
   type?: string;
@@ -24,23 +27,80 @@ type HeliusTx = {
     fromUserAccount?: string;
     tokenAmount?: number;
   }>;
+  accountData?: Array<{
+    account?: string;
+    nativeBalanceChange?: number;
+  }>;
 };
 
 export type WalletBuy = { wallet: string; mint: string; ts: number; sig: string; swap: boolean };
 
-function looksLikeSwap(tx: HeliusTx, wallet: string, mint: string): boolean {
-  const type = (tx.type ?? "").toUpperCase();
-  if (type.includes("SWAP")) return true;
-  const spentQuote = (tx.tokenTransfers ?? []).some((t) =>
+function spentSol(tx: HeliusTx, wallet: string): boolean {
+  const nativeOut = (tx.nativeTransfers ?? []).some((n) =>
+    n.fromUserAccount === wallet && Number(n.amount) >= MIN_SOL_SPEND_LAMPORTS,
+  );
+  if (nativeOut) return true;
+  const change = (tx.accountData ?? []).find((a) => a.account === wallet)?.nativeBalanceChange;
+  return Number(change) <= -MIN_SOL_SPEND_LAMPORTS;
+}
+
+function spentQuote(tx: HeliusTx, wallet: string): boolean {
+  return (tx.tokenTransfers ?? []).some((t) =>
     t.fromUserAccount === wallet && isQuoteMint(t.mint) && Number(t.tokenAmount) > 0,
   );
-  const spentSol = (tx.nativeTransfers ?? []).some((n) =>
-    n.fromUserAccount === wallet && Number(n.amount) > 0,
-  );
-  const gotMint = (tx.tokenTransfers ?? []).some((t) =>
+}
+
+function receivedMint(tx: HeliusTx, wallet: string, mint: string): boolean {
+  return (tx.tokenTransfers ?? []).some((t) =>
     t.toUserAccount === wallet && t.mint === mint && Number(t.tokenAmount) > 0,
   );
-  return gotMint && (spentQuote || spentSol);
+}
+
+/** True only when the wallet spent quote/SOL and received this mint. Type=SWAP is not enough. */
+export function isWalletSwapBuy(tx: HeliusTx, wallet: string, mint: string): boolean {
+  if (!wallet || !mint) return false;
+  return receivedMint(tx, wallet, mint) && (spentQuote(tx, wallet) || spentSol(tx, wallet));
+}
+
+/** @deprecated use isWalletSwapBuy */
+export const looksLikeSwap = isWalletSwapBuy;
+
+function chunks<T>(arr: T[], n: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+/** Fetch parsed txs by signature. Empty map on missing key / HTTP errors — caller must not treat that as "not a buy". */
+export async function txsBySigs(sigs: string[]): Promise<Map<string, HeliusTx>> {
+  const key = await heliusKey();
+  const uniq = [...new Set(sigs.filter(Boolean))];
+  const out = new Map<string, HeliusTx>();
+  if (!key || !uniq.length) return out;
+  for (const chunk of chunks(uniq, 20)) {
+    try {
+      const resp = await fetch(
+        `https://api.helius.xyz/v0/transactions?api-key=${key}`,
+        {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ transactions: chunk }),
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+      if (!resp.ok) {
+        logger.debug({ status: resp.status, n: chunk.length }, "helius txs-by-sig http error");
+        continue;
+      }
+      const txs = await resp.json() as HeliusTx[];
+      for (const tx of Array.isArray(txs) ? txs : []) {
+        if (tx?.signature) out.set(tx.signature, tx);
+      }
+    } catch (err) {
+      logger.debug({ err, n: chunk.length }, "helius txs-by-sig failed");
+    }
+  }
+  return out;
 }
 
 /** Detect recent memecoin buys for one wallet (last `limit` txs). */
@@ -65,7 +125,7 @@ export async function recentBuys(wallet: string, limit = 25): Promise<WalletBuy[
         if (!t.mint || isNoiseMint(t.mint) || isQuoteMint(t.mint)) continue;
         if (t.toUserAccount !== wallet) continue;
         if (!(Number(t.tokenAmount) > 0)) continue;
-        if (!looksLikeSwap(tx, wallet, t.mint)) continue;
+        if (!isWalletSwapBuy(tx, wallet, t.mint)) continue;
         const keySig = `${tx.signature}:${t.mint}`;
         if (seen.has(keySig)) continue;
         seen.add(keySig);

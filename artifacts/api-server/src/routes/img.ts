@@ -1,8 +1,9 @@
 /**
  * Same-origin token images. Dex/pump CDNs often 403 the desk; we fetch once and cache.
+ * If the stored URL fails, try the Dex Solana thumb for the mint.
  */
 import type { Request, Response } from "express";
-import { httpsImage } from "../scoring/image";
+import { dexTokenImage, httpsImage } from "../scoring/image";
 
 const ALLOW = [
   "dexscreener.com",
@@ -17,11 +18,22 @@ const ALLOW = [
   "cloudfront.net",
   "googleusercontent.com",
   "pinner.irys.xyz",
+  "irys.xyz",
+  "dweb.link",
+  "wrpcd.net",
+  "filebase.io",
+  "fotofolio.xyz",
+  "jup.ag",
+  "imgur.com",
+  "twimg.com",
+  "shdwdrive.com",
+  "cloudflare-ipfs.com",
+  "ipfs.nftstorage.link",
 ];
 
 type Hit = { buf: Buffer; type: string; at: number };
 const mem = new Map<string, Hit>();
-const MAX = 80;
+const MAX = 120;
 const TTL = 6 * 60 * 60_000;
 const MAX_BYTES = 1_200_000;
 
@@ -46,31 +58,12 @@ function prune(): void {
   }
 }
 
-export async function imageProxy(req: Request, res: Response): Promise<void> {
-  const raw = typeof req.query.u === "string" ? req.query.u : "";
-  const url = httpsImage(raw);
-  if (!url) {
-    res.status(400).end();
-    return;
-  }
-  let host = "";
-  try { host = new URL(url).hostname; } catch {
-    res.status(400).end();
-    return;
-  }
-  if (!hostOk(host)) {
-    res.status(403).end();
-    return;
-  }
-
+async function fetchImage(url: string): Promise<Hit | null> {
   const hit = mem.get(url);
-  if (hit && Date.now() - hit.at < TTL) {
-    res.setHeader("Content-Type", hit.type);
-    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
-    res.send(hit.buf);
-    return;
-  }
-
+  if (hit && Date.now() - hit.at < TTL) return hit;
+  let host = "";
+  try { host = new URL(url).hostname; } catch { return null; }
+  if (!hostOk(host)) return null;
   try {
     const resp = await fetch(url, {
       headers: {
@@ -80,26 +73,37 @@ export async function imageProxy(req: Request, res: Response): Promise<void> {
       },
       signal: AbortSignal.timeout(8_000),
     });
-    if (!resp.ok) {
-      res.status(resp.status === 404 ? 404 : 502).end();
-      return;
-    }
+    if (!resp.ok) return null;
     const type = (resp.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
-    if (!type.startsWith("image/") && type !== "application/octet-stream") {
-      res.status(415).end();
-      return;
-    }
+    if (!type.startsWith("image/") && type !== "application/octet-stream") return null;
     const buf = Buffer.from(await resp.arrayBuffer());
-    if (!buf.length || buf.length > MAX_BYTES) {
-      res.status(502).end();
-      return;
-    }
-    mem.set(url, { buf, type: type.startsWith("image/") ? type : "image/jpeg", at: Date.now() });
+    if (!buf.length || buf.length > MAX_BYTES) return null;
+    const stored: Hit = { buf, type: type.startsWith("image/") ? type : "image/jpeg", at: Date.now() };
+    mem.set(url, stored);
     prune();
-    res.setHeader("Content-Type", type.startsWith("image/") ? type : "image/jpeg");
-    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
-    res.send(buf);
+    return stored;
   } catch {
-    res.status(502).end();
+    return null;
   }
+}
+
+export async function imageProxy(req: Request, res: Response): Promise<void> {
+  const raw = typeof req.query.u === "string" ? req.query.u : "";
+  const mint = typeof req.query.m === "string" ? req.query.m.trim() : "";
+  const url = httpsImage(raw) ?? dexTokenImage(mint);
+  if (!url) {
+    res.status(400).end();
+    return;
+  }
+
+  const primary = await fetchImage(url);
+  const dex = dexTokenImage(mint);
+  const hit = primary ?? (dex && dex !== url ? await fetchImage(dex) : null);
+  if (!hit) {
+    res.status(502).end();
+    return;
+  }
+  res.setHeader("Content-Type", hit.type);
+  res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+  res.send(hit.buf);
 }

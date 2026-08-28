@@ -14,7 +14,7 @@ import {
   ageHoursOf, hasSite, imageOf, pairsForMints, researchToken, socialsOf, type DexPair,
 } from "../sources/dexscreener";
 import { pumpVitals } from "../sources/pumpfun";
-import { httpsImage } from "../scoring/image";
+import { dexTokenImage, httpsImage } from "../scoring/image";
 import {
   decide, isFakeChart, money, newbornFaded,
   nextPhase, tapeOf, type OmoCandidate, type Phase, type TokenResearch,
@@ -109,7 +109,7 @@ function candidateFromDex(pair: DexPair, row: Row, held: boolean): OmoCandidate 
 async function candidateFromPump(row: Row, held: boolean): Promise<OmoCandidate | null> {
   const p = await pumpVitals(row.mint);
   if (!p) return null;
-  await persistImage(row.id, httpsImage(p.coin.image_uri));
+  await persistImage(row.id, httpsImage(p.coin.image_uri) ?? dexTokenImage(row.mint));
   const mc = n(p.mcUsd);
   const liq = n(p.liqUsd);
   const socials: string[] = [];
@@ -233,7 +233,7 @@ async function scanRows(
       pair?.liquidity?.usd ?? null,
       pair ? { dexId: pair.dexId, url: pair.url } : { reason: "no solana pair" },
     );
-    await persistImage(row.id, imageOf(pair));
+    await persistImage(row.id, imageOf(pair) ?? dexTokenImage(row.mint));
 
     if (!candidate) {
       candidate = await candidateFromPump(row, held);

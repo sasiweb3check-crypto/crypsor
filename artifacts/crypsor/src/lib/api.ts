@@ -221,6 +221,8 @@ export type DayRoll = {
   avgGainPct: number | null;
   avgAthPct: number | null;
   hit2x: number;
+  hit5x?: number;
+  hit10x?: number;
   bestAthPct: number | null;
 };
 
@@ -287,6 +289,30 @@ export type DayPasses = {
   passes: PassCard[];
   at: string;
 };
+
+export type StatsReport = {
+  at: string;
+  epoch: string | null;
+  called: number;
+  called24h: number;
+  hit2x: number;
+  hit5x: number;
+  hit10x: number;
+  rate2x: number | null;
+  rate5x: number | null;
+  rate10x: number | null;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  bestAthPct: number | null;
+  live: number;
+  archived: number;
+  dead: number;
+  days: DayRoll[];
+  recent: PassCard[];
+  recent24h: PassCard[];
+};
+
+export type LiveSort = "hot" | "gain" | "ath" | "mc" | "new";
 
 export type DeskState = {
   open: TradeCard[];
@@ -556,7 +582,19 @@ export function gmgnUrl(mint: string): string {
   return `https://gmgn.ai/sol/token/${mint}`;
 }
 
-export function deskImg(src: string | null | undefined): string | null {
-  if (!src || !/^https:\/\//i.test(src)) return null;
-  return `${getApiBase()}api/img?u=${encodeURIComponent(src)}`;
+export function dexTokenImage(mint: string | null | undefined): string | null {
+  if (!mint || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return null;
+  return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
+}
+
+export function deskImg(src: string | null | undefined, mint?: string | null): string | null {
+  const u = (src && /^https:\/\//i.test(src) ? src : null) ?? dexTokenImage(mint);
+  if (!u) return null;
+  const m = mint ? `&m=${encodeURIComponent(mint)}` : "";
+  return `${getApiBase()}api/img?u=${encodeURIComponent(u)}${m}`;
+}
+
+export function fmtHitRate(rate: number | null | undefined): string {
+  if (rate == null || !Number.isFinite(rate)) return "—";
+  return `${rate >= 10 ? rate.toFixed(0) : rate.toFixed(1)}%`;
 }

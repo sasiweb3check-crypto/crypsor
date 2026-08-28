@@ -8,7 +8,7 @@
 import { logger } from "../core/log";
 import type { TokenResearch } from "../scoring/omo";
 import { pace } from "./pace";
-import { httpsImage } from "../scoring/image";
+import { httpsImage, dexTokenImage } from "../scoring/image";
 
 export type DexPair = {
   chainId?: string;
@@ -58,7 +58,8 @@ export function socialsOf(pair: DexPair): string[] {
 }
 
 export function imageOf(pair: DexPair | null | undefined): string | null {
-  return httpsImage(pair?.info?.imageUrl || pair?.info?.header);
+  return httpsImage(pair?.info?.imageUrl || pair?.info?.header)
+    ?? dexTokenImage(pair?.baseToken?.address);
 }
 
 export function hasSite(pair: DexPair): boolean {
