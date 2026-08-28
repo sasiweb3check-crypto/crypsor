@@ -44,6 +44,52 @@ export type TapeWindow = {
 
 export type Prognosis = { id: string; label: string };
 
+export type Check = {
+  text: string;
+  hold: boolean | null;
+};
+
+export type OmoCall = "buying" | "holding" | "stalking" | "pass";
+
+export type DecisionReasons = {
+  call?: OmoCall;
+  holds?: string[];
+  fails?: string[];
+  unknowns?: string[];
+  refusedOn?: string[];
+  checks?: Check[];
+  quality?: "live" | "fallback" | "thin";
+  qualityNote?: string | null;
+  thesis?: string;
+  flags?: string[];
+};
+
+export type VerdictCard = {
+  id: number;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  last_verdict: string | null;
+  last_reasons: DecisionReasons | null;
+  last_mc: number | null;
+  last_liq: number | null;
+  wallet_buys: number;
+  last_quality: number | null;
+  last_scan_at: string | null;
+  tape_lead: string | null;
+};
+
+export type StreamRow = {
+  id: number;
+  agent: string;
+  action: string;
+  token_id: number | null;
+  mint: string | null;
+  detail: string;
+  at: string;
+};
+
 export type PatientCard = {
   id: number;
   mint: string;
@@ -60,7 +106,7 @@ export type PatientCard = {
   last_holders: number | null;
   tape_lead: string | null;
   last_verdict: string | null;
-  last_reasons: { holds?: string[]; fails?: string[]; unknowns?: string[] } | null;
+  last_reasons: DecisionReasons | null;
   discovered_at: string;
   last_scan_at: string | null;
   deceased_at: string | null;
@@ -135,6 +181,8 @@ export type TradeCard = {
 export type DeskState = {
   open: TradeCard[];
   watch?: WatchCard[];
+  verdicts?: VerdictCard[];
+  stream?: StreamRow[];
   performers: TradeCard[];
   paper: { n: number; wins: number; open: number; avgAth: number | null; avgGain: number | null };
   page?: number;
@@ -327,12 +375,12 @@ export type AgentsState = {
 };
 
 export const PHASE_META: Record<Phase, { label: string; hint: string }> = {
-  intake: { label: "Intake", hint: "Just admitted from a tracked wallet buy" },
-  icu: { label: "ICU", hint: "Vitals slipping — about to die" },
-  ward: { label: "Ward", hint: "Stable, under observation" },
-  recovery: { label: "Recovery", hint: "Coming back from ICU" },
+  intake: { label: "Stalking", hint: "Wallet buy in, waiting for a clean hour" },
+  icu: { label: "Sellers", hint: "Sellers lead or already a chase — stand aside" },
+  ward: { label: "On", hint: "Gate passed or already on the book" },
+  recovery: { label: "Reclaim", hint: "Coming back from a sell-led hour" },
   revived: { label: "Revived", hint: "Was dead; a wallet bought again" },
-  deceased: { label: "Deceased", hint: "LP gone, dust MC, or holder collapse" },
+  deceased: { label: "Dead", hint: "Rug-zone MC, empty pool, or corpse tape" },
 };
 
 export function fmtUsd(v: number | null | undefined): string {

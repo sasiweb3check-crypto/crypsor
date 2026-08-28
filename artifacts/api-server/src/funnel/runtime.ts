@@ -1,31 +1,20 @@
 /**
- * Ward runtime — dedicated in-process agents (free-tier: one Node process).
+ * Omo desk runtime — wallet-buy discovery, then the omo read → gate → book loop.
  *
- *   intake     wallet buys only (Helius)
- *   vitals     DexScreener/pump tape + scoring + phase
- *   quality    Dex vs pump vs GMGN — fill gaps, flag disagreement
- *   holders    GMGN quality (rate-limited)
- *   snapshots  pulse (~2 min) + confirm (~5 min) series
- *   watch      agent debate; lock only on agreement + entry zone
- *   book       locked TRADE entries, ATH/gain, exit plan
- *   reporter   census + snapshot report
- *   backtest   self-improving weights from TRADE outcomes
+ *   intake   tracked-wallet buys (Helius) — the only discovery source
+ *   vitals   DexScreener tape + pump.fun callback + omo gate
+ *   book     omo exit rules on locked names
+ *   reporter census + prune
  *
- * Render Starter: this process stays up, so the intervals below are the
- * real scheduler. Vercel Hobby / Render free freeze without traffic, so
- * /keepalive + an external pinger (see docs/UPTIME.md) keep those hot.
- * Every loop is also runnable as a single bounded tick via runFullTick().
+ * Debate, dual snapshots, GMGN-required lock, and backtest weights are gone.
+ * Render Starter: this process stays up, so the intervals below are the scheduler.
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
 import { vitalsTick } from "../agents/vitals";
-import { qualityTick } from "../agents/quality";
-import { holdersTick } from "../agents/holders";
-import { snapshotsTick } from "../agents/snapshots";
 import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
-import { backtestTick, loadWeights } from "../agents/backtest";
 
 const log = logger.child({ module: "runtime" });
 
@@ -34,20 +23,11 @@ let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
 const VITALS_MS = 22_000;
-const QUALITY_MS = 55_000;
-const HOLDERS_MS = 90_000;
-const SNAPSHOT_MS = 25_000;
 const BOOK_MS = 40_000;
 const REPORT_MS = 120_000;
-const BACKTEST_MS = 10 * 60_000;
 
-let last = {
-  intake: 0, vitals: 0, quality: 0, holders: 0, snapshots: 0, book: 0, reporter: 0, backtest: 0,
-};
-let running = {
-  intake: false, vitals: false, quality: false, holders: false,
-  snapshots: false, book: false, reporter: false, backtest: false,
-};
+let last = { intake: 0, vitals: 0, book: 0, reporter: 0 };
+let running = { intake: false, vitals: false, book: false, reporter: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -62,7 +42,6 @@ export async function ensureRuntime(): Promise<void> {
   if (!bootPromise) {
     bootPromise = (async () => {
       await ensureSchema();
-      await loadWeights();
       setInterval(() => {
         if (running.intake || Date.now() - last.intake < INTAKE_MS) return;
         running.intake = true;
@@ -76,24 +55,6 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 5_000);
       setInterval(() => {
-        if (running.quality || Date.now() - last.quality < QUALITY_MS) return;
-        running.quality = true;
-        last.quality = Date.now();
-        void guarded("quality", qualityTick).finally(() => { running.quality = false; });
-      }, 8_000);
-      setInterval(() => {
-        if (running.holders || Date.now() - last.holders < HOLDERS_MS) return;
-        running.holders = true;
-        last.holders = Date.now();
-        void guarded("holders", holdersTick).finally(() => { running.holders = false; });
-      }, 8_000);
-      setInterval(() => {
-        if (running.snapshots || Date.now() - last.snapshots < SNAPSHOT_MS) return;
-        running.snapshots = true;
-        last.snapshots = Date.now();
-        void guarded("snapshots", snapshotsTick).finally(() => { running.snapshots = false; });
-      }, 10_000);
-      setInterval(() => {
         if (running.book || Date.now() - last.book < BOOK_MS) return;
         running.book = true;
         last.book = Date.now();
@@ -105,14 +66,8 @@ export async function ensureRuntime(): Promise<void> {
         last.reporter = Date.now();
         void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
       }, 15_000);
-      setInterval(() => {
-        if (running.backtest || Date.now() - last.backtest < BACKTEST_MS) return;
-        running.backtest = true;
-        last.backtest = Date.now();
-        void guarded("backtest", backtestTick).finally(() => { running.backtest = false; });
-      }, 30_000);
       started = true;
-      log.info("ward agents started (intake · vitals · quality · holders · snapshots · book · reporter · backtest)");
+      log.info("omo desk started (intake · vitals/gate · book · reporter)");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -134,12 +89,8 @@ export function agentStatus(): {
     intervalsMs: {
       intake: INTAKE_MS,
       vitals: VITALS_MS,
-      quality: QUALITY_MS,
-      holders: HOLDERS_MS,
-      snapshots: SNAPSHOT_MS,
       book: BOOK_MS,
       reporter: REPORT_MS,
-      backtest: BACKTEST_MS,
     },
   };
 }
@@ -149,9 +100,6 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
   await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
-  await guarded("quality", async () => { out.quality = await qualityTick(); });
-  await guarded("holders", async () => { out.holders = await holdersTick(); });
-  await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
   await guarded("book", async () => { out.book = await bookTick(); });
   await guarded("reporter", async () => { out.reporter = await reporterTick(); });
   return out;

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import {
-  api, fmtUsd, fmtSignedX,
-  type DeskState, type TradeCard, type WatchCard,
+  api, fmtUsd, fmtSignedX, timeAgo,
+  type DeskState, type TradeCard, type WatchCard, type VerdictCard, type StreamRow, type Check,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
@@ -22,6 +22,19 @@ function Pager({ page, pages, onPage }: { page: number; pages: number; onPage: (
   );
 }
 
+function Checks({ checks }: { checks: Check[] }) {
+  if (!checks.length) return null;
+  return (
+    <ul className="checks">
+      {checks.map((c) => (
+        <li key={c.text} className={c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"}>
+          {c.hold === true ? "holds" : c.hold === false ? "fails" : "unread"} — {c.text}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function TradeCardRow({ t, onOpen }: { t: TradeCard; onOpen: () => void }) {
   const status = t.status === "trim" ? "trim" : t.status === "exit" || t.status === "dead" ? "exit" : "open";
   return (
@@ -37,7 +50,7 @@ function TradeCardRow({ t, onOpen }: { t: TradeCard; onOpen: () => void }) {
         <div className="meta">
           {fmtUsd(t.last_mc)} now · in {fmtUsd(t.entry_mc)} · ATH {fmtSignedX(t.ath_x)}
         </div>
-        <div className="plan">{t.exit_title || "Watch the lock"}</div>
+        <div className="plan">{t.exit_title || "Hold the lock"}</div>
       </div>
       <Mult x={t.gain_x} />
     </button>
@@ -53,25 +66,30 @@ function WatchRow({ w, onOpen }: { w: WatchCard; onOpen: () => void }) {
       <div className="card-main">
         <div className="sym">
           ${w.symbol || w.name || w.mint.slice(0, 6)}
-          <span className="st trim">watch</span>
+          <span className="st trim">stalk</span>
         </div>
         <div className="meta">
-          {fmtUsd(w.last_mc)} · liq {fmtUsd(w.last_liq)} · score {w.last_score ?? "—"}
+          {fmtUsd(w.last_mc)} · liq {fmtUsd(w.last_liq)}
         </div>
-        <div className="headline">{w.headline || "Agents are still debating this entry."}</div>
-        <div className="votes">
-          {(w.votes ?? []).map((v) => (
-            <span key={v.agent} className={`vote ${v.vote}`}>{v.agent} {v.vote}</span>
-          ))}
-          {!(w.votes ?? []).length && (
-            <>
-              <span className="vote yes">{w.yes_votes} yes</span>
-              <span className="vote no">{w.no_votes} no</span>
-              <span className="vote hold">{w.hold_votes} hold</span>
-            </>
-          )}
-        </div>
+        <div className="headline">{w.headline || "Waiting for buyers to take the live hour."}</div>
       </div>
+    </button>
+  );
+}
+
+function VerdictRow({ v, onOpen }: { v: VerdictCard; onOpen: () => void }) {
+  const r = v.last_reasons;
+  const call = (r?.call || v.last_verdict || "pass").toLowerCase();
+  return (
+    <button type="button" className={`verdict-card call-${call}`} onClick={onOpen}>
+      <div className="verdict-top">
+        <b>${v.symbol || v.name || v.mint.slice(0, 6)}</b>
+        <span className={`st ${call === "buying" || call === "holding" ? "open" : call === "stalking" ? "trim" : "exit"}`}>{call}</span>
+        <em>{timeAgo(v.last_scan_at)}</em>
+      </div>
+      <div className="meta">{fmtUsd(v.last_mc)} · liq {fmtUsd(v.last_liq)} · {v.wallet_buys} wallets</div>
+      {r?.qualityNote && <div className="quality-note">{r.qualityNote}</div>}
+      <Checks checks={r?.checks ?? []} />
     </button>
   );
 }
@@ -99,6 +117,8 @@ export default function WardPage() {
   const d = board.data;
   const wr = d && d.paper.n > 0 ? Math.round((d.paper.wins / d.paper.n) * 100) : null;
   const watch = d?.watch ?? [];
+  const verdicts = d?.verdicts ?? [];
+  const stream = d?.stream ?? [];
 
   return (
     <div className="page">
@@ -106,6 +126,11 @@ export default function WardPage() {
         <div className="brand">Crypsor <span>Desk</span></div>
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
+
+      <p className="blurb">
+        Wallet buys in. DexScreener tape, pump.fun callback if Dex is blank. Same gate as omo — buy, stalk, or pass.
+        Names around $2k MC are already rugged and never suggested.
+      </p>
 
       <div className="stats">
         <div className="stat">
@@ -122,13 +147,22 @@ export default function WardPage() {
         </div>
         <div className="stat">
           <div className="stat-val" style={{ color: "var(--gold)" }}>{watch.length}</div>
-          <div className="stat-label">Watching</div>
+          <div className="stat-label">Stalking</div>
         </div>
       </div>
 
+      {verdicts.length > 0 && (
+        <>
+          <div className="section-h">How it decided</div>
+          {verdicts.map((v) => (
+            <VerdictRow key={v.id} v={v} onOpen={() => nav(`/p/${v.id}`)} />
+          ))}
+        </>
+      )}
+
       {watch.length > 0 && (
         <>
-          <div className="section-h">Watchlist — agents debating</div>
+          <div className="section-h">Stalking — livable, hour not clean</div>
           {watch.map((w) => (
             <WatchRow key={w.token_id} w={w} onOpen={() => nav(`/p/${w.token_id}`)} />
           ))}
@@ -155,14 +189,29 @@ export default function WardPage() {
       {board.error && <div className="empty err">{board.error}</div>}
       {!board.loading && (d?.open.length ?? 0) === 0 && !board.error && (
         <div className="empty">
-          Nothing locked. Candidates sit on the watchlist until vitals, quality, holders, and snapshots agree on the entry.
+          Nothing locked. A tracked wallet has to buy, then the omo gate has to pass — buyers on the hour, livable MC, real 1h volume, pool deep enough. ~$2k MC names are refused as already rugged.
         </div>
       )}
       {(d?.open ?? []).map((t) => (
         <TradeCardRow key={t.id} t={t} onOpen={() => nav(`/p/${t.token_id}`)} />
       ))}
       <Pager page={d?.page ?? page} pages={d?.pages ?? 1} onPage={setPage} />
-      {wr != null && <p className="blurb">Paper hit rate {wr}% on ATH ≥ 2×. GMGN is one tap on the token page.</p>}
+
+      {stream.length > 0 && (
+        <>
+          <div className="section-h">Live stream</div>
+          <ol className="stream">
+            {stream.slice(0, 16).map((s: StreamRow) => (
+              <li key={s.id}>
+                <span className="t">{timeAgo(s.at)}</span>
+                <b className={`k-${s.action.toLowerCase()}`}>{s.action}</b>
+                <span>{s.detail}</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+      {wr != null && <p className="blurb">Paper hit rate {wr}% on ATH ≥ 2×.</p>}
     </div>
   );
 }

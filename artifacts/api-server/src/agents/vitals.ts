@@ -1,17 +1,27 @@
 /**
- * VITALS + WARD agents — DexScreener tape (omo 5m/1h/6h) + pump.fun bonding
- * fallback. Scores every living patient, writes the chart, moves phase.
+ * READ + GATE tick — omo decision loop on wallet-buy names.
+ *
+ *   DexScreener public tape (primary)
+ *   pump.fun /coins/{mint} callback if Dex is blank
+ *   second pass on every pool for names we actually grade
+ *
+ * Missing data fails the related rule and is logged. We never invent a pass.
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
-import { pairsForMints, type DexPair } from "../sources/dexscreener";
+import {
+  ageHoursOf, hasSite, pairsForMints, researchToken, socialsOf, type DexPair,
+} from "../sources/dexscreener";
 import { pumpVitals } from "../sources/pumpfun";
-import { judge, nextPhase, type Phase, type Reading, type TapeWindow } from "../scoring/ward";
+import {
+  decide, describeCandidate, describeResearch, isFakeChart, money, newbornFaded,
+  nextPhase, tapeOf, type OmoCandidate, type Phase, type TokenResearch,
+} from "../scoring/omo";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
 import { considerEntry } from "./watch";
 
-const BATCH = 16;
+const BATCH = 12;
 
 type Row = {
   id: number;
@@ -30,21 +40,117 @@ type Row = {
   graduated: boolean;
 };
 
-function windowFrom(p: DexPair | undefined, key: "m5" | "h1" | "h6"): TapeWindow {
-  const tx = p?.txns?.[key];
+function n(v: number | null | undefined): number {
+  return Number.isFinite(v) ? Number(v) : 0;
+}
+
+async function alreadyHeld(tokenId: number): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT 1 FROM ward_trades WHERE token_id = $1 AND status IN ('open','trim') LIMIT 1`,
+    [tokenId],
+  );
+  return r.rows.length > 0;
+}
+
+function candidateFromDex(pair: DexPair, row: Row, held: boolean): OmoCandidate {
+  const liq = n(pair.liquidity?.usd);
+  const mc = n(pair.marketCap ?? pair.fdv);
+  const fdv = n(pair.fdv ?? pair.marketCap);
+  const buys1h = n(pair.txns?.h1?.buys);
+  const sells1h = n(pair.txns?.h1?.sells);
+  const vol1h = n(pair.volume?.h1);
+  const vol5m = n(pair.volume?.m5);
+  const vol6h = n(pair.volume?.h6);
+  const vol24h = n(pair.volume?.h24);
+  const chg1h = n(pair.priceChange?.h1);
+  const chg6h = n(pair.priceChange?.h6);
+  const chg24h = n(pair.priceChange?.h24);
+  const ageHours = ageHoursOf(pair);
+  const raw = {
+    vol1h, vol5m, vol6h, vol24h, buys1h, sells1h, chg1h, chg6h, chg24h,
+    liquidityUsd: liq, fdv, ageHours,
+  };
   return {
-    buys: tx?.buys ?? null,
-    sells: tx?.sells ?? null,
-    volUsd: p?.volume?.[key] ?? null,
-    changePct: p?.priceChange?.[key] ?? null,
+    symbol: (pair.baseToken?.symbol || row.symbol || row.mint.slice(0, 6)).replace(/^\$/, ""),
+    name: pair.baseToken?.name || row.name || row.symbol || "unknown",
+    mint: row.mint,
+    priceUsd: Number(pair.priceUsd) || 0,
+    liquidityUsd: liq,
+    mcUsd: mc,
+    fdv,
+    vol24h, vol1h, vol5m, vol6h,
+    chg5m: n(pair.priceChange?.m5),
+    chg1h, chg6h, chg24h,
+    buys1h, sells1h,
+    buys5m: n(pair.txns?.m5?.buys),
+    sells5m: n(pair.txns?.m5?.sells),
+    buys6h: n(pair.txns?.h6?.buys),
+    sells6h: n(pair.txns?.h6?.sells),
+    ageHours,
+    socials: socialsOf(pair),
+    hasSite: hasSite(pair),
+    walletBuys: row.wallet_buys,
+    held,
+    fakeChart: isFakeChart(raw),
+    newbornFaded: newbornFaded(raw),
+    source: "dex",
+    flags: [],
   };
 }
 
-function emptyTape(): TapeWindow {
-  return { buys: null, sells: null, volUsd: null, changePct: null };
+async function candidateFromPump(row: Row, held: boolean): Promise<OmoCandidate | null> {
+  const p = await pumpVitals(row.mint);
+  if (!p) return null;
+  const mc = n(p.mcUsd);
+  const liq = n(p.liqUsd);
+  const socials: string[] = [];
+  if (p.coin.twitter) socials.push("twitter");
+  if (p.coin.telegram) socials.push("telegram");
+  const created = p.coin.created_timestamp ?? 0;
+  const ageHours = created ? Math.max(0, (Date.now() - created) / 3_600_000) : 0;
+  return {
+    symbol: (p.coin.symbol || row.symbol || row.mint.slice(0, 6)).replace(/^\$/, ""),
+    name: p.coin.name || row.name || "unknown",
+    mint: row.mint,
+    priceUsd: 0,
+    liquidityUsd: liq,
+    mcUsd: mc,
+    fdv: mc,
+    vol24h: 0, vol1h: 0, vol5m: 0, vol6h: 0,
+    chg5m: 0, chg1h: 0, chg6h: 0, chg24h: 0,
+    buys1h: 0, sells1h: 0, buys5m: 0, sells5m: 0, buys6h: 0, sells6h: 0,
+    ageHours,
+    socials,
+    hasSite: Boolean(p.coin.website),
+    walletBuys: row.wallet_buys,
+    held,
+    fakeChart: false,
+    newbornFaded: false,
+    source: "pump",
+    flags: ["dex_missing", "using_pump_fallback", "missing_tape"],
+  };
 }
 
-export async function vitalsTick(): Promise<{ scanned: number; trades: number; deaths: number }> {
+async function recordSource(
+  tokenId: number,
+  source: string,
+  ok: boolean,
+  mc: number | null,
+  liq: number | null,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO ward_source_reads (token_id, source, ok, mc_usd, liq_usd, extra)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [tokenId, source, ok, mc, liq, JSON.stringify(extra)],
+    );
+  } catch {
+    // table lands on first schema pass
+  }
+}
+
+export async function vitalsTick(): Promise<{ scanned: number; trades: number; deaths: number; refused: number }> {
   const due = await pool.query(
     `SELECT id, mint, symbol, name, phase, wallet_buys, scans_total,
             admission_mc, mc_at_discovery, peak_mc, last_mc, last_liq, last_holders, graduated
@@ -61,130 +167,155 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
      LIMIT ${BATCH}`,
   );
   const rows = due.rows as Row[];
-  if (!rows.length) return { scanned: 0, trades: 0, deaths: 0 };
+  if (!rows.length) return { scanned: 0, trades: 0, deaths: 0, refused: 0 };
 
   const pairs = await pairsForMints(rows.map((r) => r.mint));
   let trades = 0;
   let deaths = 0;
+  let refused = 0;
 
   for (const row of rows) {
+    const held = await alreadyHeld(row.id);
     const pair = pairs.get(row.mint);
-    let mc = pair?.marketCap ?? pair?.fdv ?? null;
-    let liq = pair?.liquidity?.usd ?? null;
-    let price = pair?.priceUsd ? Number(pair.priceUsd) : null;
-    let graduated = row.graduated || Boolean(pair && pair.dexId && pair.dexId !== "pumpfun");
+    let candidate: OmoCandidate | null = pair ? candidateFromDex(pair, row, held) : null;
+    let research: TokenResearch | null = null;
 
-    if (mc == null || liq == null) {
-      try {
-        const cached = await pool.query(
-          `SELECT source, mc_usd, liq_usd FROM ward_source_reads
-           WHERE token_id = $1 AND ok = true AND at > NOW() - INTERVAL '15 minutes'
-           ORDER BY at DESC LIMIT 8`,
-          [row.id],
+    await recordSource(
+      row.id, "dex", Boolean(pair),
+      pair ? (pair.marketCap ?? pair.fdv ?? null) : null,
+      pair?.liquidity?.usd ?? null,
+      pair ? { dexId: pair.dexId, url: pair.url } : { reason: "no solana pair" },
+    );
+
+    if (!candidate) {
+      candidate = await candidateFromPump(row, held);
+      await recordSource(
+        row.id, "pump", Boolean(candidate),
+        candidate?.mcUsd || null, candidate?.liquidityUsd || null,
+        { fallback: true },
+      );
+      if (candidate) {
+        await agentNote("omo", "READ", `checked fomo/dex for $${candidate.symbol}; Dex blank, so the pump.fun callback is in. data quality is less`, {
+          tokenId: row.id, mint: row.mint,
+        });
+      }
+    } else if ((!candidate.socials.length && !candidate.hasSite) || candidate.mcUsd <= 0) {
+      const pump = await candidateFromPump(row, held);
+      await recordSource(
+        row.id, "pump", Boolean(pump),
+        pump?.mcUsd || null, pump?.liquidityUsd || null,
+        { callback: true },
+      );
+      if (pump) {
+        if (!candidate.socials.length) candidate.socials = pump.socials;
+        if (!candidate.hasSite) candidate.hasSite = pump.hasSite;
+        if (candidate.mcUsd <= 0 && pump.mcUsd > 0) candidate.mcUsd = pump.mcUsd;
+        if (candidate.liquidityUsd <= 0 && pump.liquidityUsd > 0) candidate.liquidityUsd = pump.liquidityUsd;
+        candidate.source = "mixed";
+        candidate.flags = [...candidate.flags, "pump_callback"];
+      }
+    }
+
+    if (!candidate) {
+      await agentNote("omo", "READ", `Dex and pump.fun both blank for ${row.mint.slice(0, 6)}… — no outside story gets added`, {
+        tokenId: row.id, mint: row.mint,
+      });
+      await pool.query(
+        `UPDATE f2_tokens SET last_scan_at = NOW(), last_verdict = 'unread',
+           last_reasons = $2, last_quality = 0
+         WHERE id = $1`,
+        [row.id, JSON.stringify({
+          call: "pass",
+          quality: "thin",
+          qualityNote: "DexScreener and pump.fun both missed. Data quality is less. Will not invent a tape.",
+          refusedOn: ["tape unread"],
+          checks: [{ text: "no public pair — could not be verified", hold: null }],
+        })],
+      );
+      refused += 1;
+      continue;
+    }
+
+    if (pair) {
+      research = await researchToken(row.mint, candidate.symbol);
+      if (research) {
+        await agentNote(
+          "omo",
+          "READ",
+          `pulled second pass on ${candidate.symbol} — ${describeResearch(research)}`,
+          { tokenId: row.id, mint: row.mint },
         );
-        for (const r of cached.rows as Array<{ source: string; mc_usd: number | null; liq_usd: number | null }>) {
-          if (mc == null && r.mc_usd != null) mc = r.mc_usd;
-          if (liq == null && r.liq_usd != null) liq = r.liq_usd;
-        }
-      } catch {
-        // table may not exist on the very first boot before schema ALTER lands
+      } else {
+        await agentNote("omo", "READ", `second pass on ${candidate.symbol} came back empty — Dex had no extra pools`, {
+          tokenId: row.id, mint: row.mint,
+        });
       }
     }
 
-    if (mc == null || liq == null) {
-      const p = await pumpVitals(row.mint);
-      if (p) {
-        mc = mc ?? p.mcUsd;
-        liq = liq ?? p.liqUsd;
-        graduated = p.graduated || graduated;
-        const c = p.coin;
-        if (!row.symbol && c.symbol) {
-          await pool.query("UPDATE f2_tokens SET symbol = COALESCE(symbol,$2), name = COALESCE(name,$3), image = COALESCE(image,$4) WHERE id = $1",
-            [row.id, c.symbol, c.name ?? null, c.image_uri ?? null]);
-        }
-      }
-    }
+    const d = decide(candidate, research ?? undefined);
+    const phase = nextPhase((row.phase as Phase) || "intake", d);
+    const ticker = candidate.symbol;
+    const mc = candidate.mcUsd || null;
+    const liq = candidate.liquidityUsd || null;
+    const graduated = row.graduated || Boolean(pair && pair.dexId && pair.dexId !== "pumpfun");
 
-    const last = await pool.query(
-      "SELECT holders FROM f2_scans WHERE token_id = $1 ORDER BY at DESC LIMIT 1",
-      [row.id],
-    );
-    const prevHolders = (last.rows[0]?.holders as number | null) ?? row.last_holders;
-
-    const reading: Reading = {
-      mcUsd: mc,
-      liqUsd: liq,
-      priceUsd: Number.isFinite(price) ? price : null,
-      holders: row.last_holders,
-      prevHolders,
-      prevLiq: row.last_liq,
-      top10Pct: null,
-      bundlerHoldPct: null,
-      sniperHoldPct: null,
-      botHoldPct: null,
-      smartCount: null,
-      kolCount: null,
-      whaleHoldPct: null,
-      m5: windowFrom(pair, "m5"),
-      h1: windowFrom(pair, "h1"),
-      h6: windowFrom(pair, "h6"),
-      admissionMc: row.admission_mc ?? row.mc_at_discovery,
-      walletBuys: row.wallet_buys,
-      graduated,
-      scansTotal: row.scans_total,
+    const reasons = {
+      call: d.call,
+      holds: d.checks.filter((c) => c.hold === true).map((c) => c.text),
+      fails: d.checks.filter((c) => c.hold === false).map((c) => c.text),
+      unknowns: d.checks.filter((c) => c.hold === null).map((c) => c.text),
+      refusedOn: d.refusedOn,
+      rules: d.rules,
+      checks: d.checks,
+      quality: d.quality,
+      qualityNote: d.qualityNote,
+      thesis: d.thesis,
+      source: candidate.source,
+      flags: candidate.flags,
+      inputs: {
+        mcUsd: candidate.mcUsd,
+        liquidityUsd: candidate.liquidityUsd,
+        vol1h: candidate.vol1h,
+        vol6h: research?.vol6h ?? candidate.vol6h,
+        buys1h: candidate.buys1h,
+        sells1h: candidate.sells1h,
+        chg1h: candidate.chg1h,
+        chg6h: research?.chg6h ?? candidate.chg6h,
+        ageHours: candidate.ageHours,
+      },
     };
-
-    // carry last intel from previous scan if present
-    const intel = await pool.query(
-      `SELECT top10_pct, bundler_pct, sniper_pct, bot_pct, smart_count, kol_count, holders, whale_pct
-       FROM f2_scans WHERE token_id = $1 AND (top10_pct IS NOT NULL OR holders IS NOT NULL)
-       ORDER BY at DESC LIMIT 1`,
-      [row.id],
-    );
-    if (intel.rows[0]) {
-      const i = intel.rows[0];
-      reading.top10Pct = i.top10_pct;
-      reading.bundlerHoldPct = i.bundler_pct;
-      reading.sniperHoldPct = i.sniper_pct;
-      reading.botHoldPct = i.bot_pct;
-      reading.smartCount = i.smart_count;
-      reading.kolCount = i.kol_count;
-      reading.whaleHoldPct = i.whale_pct;
-      reading.holders = i.holders ?? reading.holders;
-    }
-
-    const verdict = judge(reading);
-    const phase = nextPhase((row.phase as Phase) || "intake", verdict, row.scans_total);
-    const peak = Math.max(row.peak_mc ?? 0, mc ?? 0) || null;
 
     await pool.query(
       `INSERT INTO f2_scans (
          token_id, mc_usd, liq_usd, price_usd, holders, top10_pct,
-         buys_5m, sells_5m, vol_5m, bundler_pct, sniper_pct, bot_pct,
-         smart_count, kol_count, whale_pct, pass, fail_reasons, tape, score, phase
+         buys_5m, sells_5m, vol_5m, pass, fail_reasons, tape, score, phase, quality, sources
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
        )`,
       [
-        row.id, mc, liq, reading.priceUsd, reading.holders, reading.top10Pct,
-        reading.m5.buys, reading.m5.sells, reading.m5.volUsd,
-        reading.bundlerHoldPct, reading.sniperHoldPct, reading.botHoldPct,
-        reading.smartCount, reading.kolCount, reading.whaleHoldPct,
-        verdict.fails.length === 0, JSON.stringify(verdict.fails),
+        row.id, mc, liq, candidate.priceUsd || null, row.last_holders, null,
+        candidate.buys5m || null, candidate.sells5m || null, candidate.vol5m || null,
+        d.tradeOk, JSON.stringify(d.refusedOn),
         JSON.stringify({
-          lead: verdict.tapeLead,
-          holds: verdict.holds,
-          fails: verdict.fails,
-          unknowns: verdict.unknowns,
-          factors: verdict.factors,
-          m5: reading.m5,
-          h1: reading.h1,
-          h6: reading.h6,
-          chase: verdict.chase,
-          dead: verdict.dead,
-          tradeOk: verdict.tradeOk,
+          lead: d.tapeLead,
+          call: d.call,
+          holds: reasons.holds,
+          fails: reasons.fails,
+          unknowns: reasons.unknowns,
+          checks: d.checks,
+          rules: d.rules,
+          m5: tapeOf(candidate.buys5m, candidate.sells5m, candidate.vol5m, candidate.chg5m),
+          h1: tapeOf(candidate.buys1h, candidate.sells1h, candidate.vol1h, candidate.chg1h),
+          h6: tapeOf(candidate.buys6h, candidate.sells6h, candidate.vol6h, candidate.chg6h),
+          chase: d.chase,
+          dead: d.dead,
+          tradeOk: d.tradeOk,
+          quality: d.quality,
+          thesis: d.thesis,
         }),
-        verdict.score, phase,
+        d.score, phase,
+        d.quality === "live" ? 80 : d.quality === "fallback" ? 40 : 15,
+        JSON.stringify({ used: { mc: candidate.source, liq: candidate.source }, flags: candidate.flags }),
       ],
     );
 
@@ -202,34 +333,52 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
          last_reasons = $8,
          tape_lead = $9,
          phase = $10,
-         stage = CASE WHEN $10 = 'deceased' THEN 'killed' ELSE 'tracking' END,
+         stage = CASE
+           WHEN $10 = 'deceased' THEN 'killed'
+           WHEN $11 THEN 'called'
+           ELSE 'tracking' END,
          kill_reason = CASE WHEN $10 = 'deceased' THEN $7 ELSE kill_reason END,
          deceased_at = CASE WHEN $10 = 'deceased' AND phase IS DISTINCT FROM 'deceased' THEN NOW() ELSE deceased_at END,
          revived_at = CASE WHEN $10 = 'revived' AND phase IS DISTINCT FROM 'revived' THEN NOW() ELSE revived_at END,
-         graduated = $11,
-         admission_mc = COALESCE(admission_mc, $3)
+         graduated = $12,
+         admission_mc = COALESCE(admission_mc, $3),
+         last_quality = $13,
+         last_suggestion = $14,
+         symbol = COALESCE(symbol, $15),
+         name = COALESCE(name, $16)
        WHERE id = $1`,
       [
-        row.id, verdict.fails.length === 0, mc, liq, reading.holders,
-        verdict.score, verdict.fails[0] ?? verdict.holds[0] ?? "observed",
-        JSON.stringify({ holds: verdict.holds, fails: verdict.fails, unknowns: verdict.unknowns }),
-        verdict.tapeLead, phase, graduated,
+        row.id, d.tradeOk, mc, liq, row.last_holders,
+        d.score, d.call, JSON.stringify(reasons), d.tapeLead, phase, d.tradeOk, graduated,
+        d.quality === "live" ? 80 : d.quality === "fallback" ? 40 : 15,
+        d.thesis, candidate.symbol, candidate.name,
       ],
     );
 
-    const ticker = row.symbol || row.mint.slice(0, 6);
     const prev = row.phase || "intake";
+    if (d.call === "pass" || d.call === "stalking") {
+      const kind = d.call === "pass" ? "REFUSED" : "READ";
+      await agentNote(
+        "omo",
+        kind,
+        d.call === "pass"
+          ? `refused ${ticker} — ${d.refusedOn.slice(0, 2).join(", ") || d.thesis}`
+          : `dug into $${ticker} — ${describeCandidate(candidate).slice(0, 280)}`,
+        { tokenId: row.id, mint: row.mint },
+      );
+      if (d.call === "pass") refused += 1;
+    }
 
     if (phase !== prev) {
-      await agentNote("ward", "PHASE", `$${ticker} ${prev} → ${phase} (score ${verdict.score})`, {
+      await agentNote("ward", "PHASE", `$${ticker} ${prev} → ${phase} (${d.call})`, {
         tokenId: row.id, mint: row.mint,
       });
       if (phase === "icu") {
         await raiseAlert({
           tokenId: row.id, kind: "critical",
-          title: `ICU $${ticker}`,
-          body: `Score ${verdict.score}. ${verdict.fails.slice(0, 3).join("; ") || "vitals slipping"}.`,
-          payload: { mint: row.mint, score: verdict.score, fails: verdict.fails },
+          title: `PASS $${ticker}`,
+          body: d.thesis,
+          payload: { mint: row.mint, call: d.call, refusedOn: d.refusedOn },
           telegram: true,
         });
       }
@@ -237,32 +386,30 @@ export async function vitalsTick(): Promise<{ scanned: number; trades: number; d
         deaths += 1;
         await raiseAlert({
           tokenId: row.id, kind: "deceased",
-          title: `DECEASED $${ticker}`,
-          body: `Score ${verdict.score}. ${verdict.fails[0] ?? "vitals flatlined"}. Peak MC $${Math.round(peak ?? 0)}.`,
-          payload: { mint: row.mint, score: verdict.score },
-          telegram: true,
-        });
-      }
-      if (phase === "revived") {
-        await raiseAlert({
-          tokenId: row.id, kind: "revived",
-          title: `REVIVED $${ticker}`,
-          body: `Buyers back. Score ${verdict.score}. MC ${mc != null ? `$${Math.round(mc)}` : "—"}.`,
-          payload: { mint: row.mint, score: verdict.score },
+          title: `DEAD $${ticker}`,
+          body: `${d.thesis} Peak ${money(row.peak_mc ?? mc ?? 0)}.`,
+          payload: { mint: row.mint, call: d.call },
           telegram: true,
         });
       }
     }
 
-    if (prev !== "deceased" && mc != null && mc > 0 && (verdict.tradeOk || verdict.score >= 62) && !verdict.dead) {
+    if (prev !== "deceased" && mc != null && mc > 0 && (d.call === "buying" || d.call === "stalking") && !d.dead) {
       const outcome = await considerEntry({
         tokenId: row.id, mint: row.mint, symbol: ticker, phase,
-        reading, verdict, mc, liq,
+        call: d.call, thesis: d.thesis, checks: d.checks, refusedOn: d.refusedOn,
+        quality: d.quality, qualityNote: d.qualityNote, score: d.score,
+        tapeLead: d.tapeLead, mc, liq, walletBuys: candidate.walletBuys,
       });
-      if (outcome === "lock") trades += 1;
+      if (outcome === "lock") {
+        trades += 1;
+        await agentNote("omo", "DID", `opened $${ticker} — ${d.thesis}`, {
+          tokenId: row.id, mint: row.mint,
+        });
+      }
     }
   }
 
-  emitSse("vitals:tick", { scanned: rows.length, trades, deaths });
-  return { scanned: rows.length, trades, deaths };
+  emitSse("vitals:tick", { scanned: rows.length, trades, deaths, refused });
+  return { scanned: rows.length, trades, deaths, refused };
 }
