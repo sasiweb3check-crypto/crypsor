@@ -4,6 +4,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "../core/db";
 import { sseHandler } from "../core/bus";
+import { cached, cacheBackend, cacheGet, cacheSet } from "../core/cache";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { getWeights, prognosis, failsOf, type Phase } from "../scoring/ward";
@@ -15,6 +16,12 @@ const ok = (data: unknown) => ({ ok: true, data });
 const fail = (error: string) => ({ ok: false, error });
 
 const PHASES = ["intake", "icu", "ward", "recovery", "revived", "deceased"] as const;
+
+function pageParams(req: Request, fallback = 8, max = 40): { page: number; limit: number; offset: number } {
+  const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+  const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? String(fallback)), 10) || fallback, 1), max);
+  return { page, limit, offset: (page - 1) * limit };
+}
 
 router.use((_req, _res, next) => {
   void ensureRuntime().finally(() => next());
@@ -49,6 +56,7 @@ router.get("/healthz", async (_req, res) => {
       helius: Boolean(await heliusKey()),
       census,
       lastScanAt,
+      cache: cacheBackend(),
       agents: agentStatus(),
     }));
   } catch (err) {
@@ -230,35 +238,68 @@ const TRADE_SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.entry_liq, tr.e
 
 // ── desk (locked trades + performers) ────────────────────────────────────────
 
-router.get("/desk", async (_req, res) => {
+router.get("/desk", async (req, res) => {
   try {
-    await seedTradesFromAlerts();
-    const open = await pool.query(
-      `${TRADE_SELECT} WHERE tr.status IN ('open','trim') ORDER BY tr.called_at DESC LIMIT 40`,
-    );
-    const performers = await pool.query(
-      `${TRADE_SELECT} ORDER BY COALESCE(tr.ath_x,0) DESC, tr.called_at DESC LIMIT 8`,
-    );
-    const paper = await pool.query(
-      `SELECT
-         COUNT(*)::int AS n,
-         COUNT(*) FILTER (WHERE COALESCE(ath_x,0) >= 2)::int AS wins,
-         AVG(ath_x) AS avg_ath,
-         AVG(gain_x) AS avg_gain,
-         COUNT(*) FILTER (WHERE status IN ('open','trim'))::int AS open
-       FROM ward_trades`,
-    );
-    res.json(ok({
-      open: open.rows,
-      performers: performers.rows,
-      paper: {
-        n: Number(paper.rows[0]?.n ?? 0),
-        wins: Number(paper.rows[0]?.wins ?? 0),
-        open: Number(paper.rows[0]?.open ?? 0),
-        avgAth: paper.rows[0]?.avg_ath != null ? Number(paper.rows[0].avg_ath) : null,
-        avgGain: paper.rows[0]?.avg_gain != null ? Number(paper.rows[0].avg_gain) : null,
-      },
-    }));
+    const { page, limit, offset } = pageParams(req, 8, 40);
+    const payload = await cached(`desk:${page}:${limit}`, 4_000, async () => {
+      await seedTradesFromAlerts();
+      const open = await pool.query(
+        `${TRADE_SELECT} WHERE tr.status IN ('open','trim') ORDER BY tr.called_at DESC LIMIT $1 OFFSET $2`,
+        [limit, offset],
+      );
+      const total = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM ward_trades WHERE status IN ('open','trim')`,
+      );
+      const performers = await pool.query(
+        `${TRADE_SELECT} ORDER BY COALESCE(tr.ath_x,0) DESC, tr.called_at DESC LIMIT 8`,
+      );
+      const paper = await pool.query(
+        `SELECT
+           COUNT(*)::int AS n,
+           COUNT(*) FILTER (WHERE COALESCE(ath_x,0) >= 2)::int AS wins,
+           AVG(ath_x) AS avg_ath,
+           AVG(gain_x) AS avg_gain,
+           COUNT(*) FILTER (WHERE status IN ('open','trim'))::int AS open
+         FROM ward_trades`,
+      );
+      let watch: unknown[] = [];
+      try {
+        const w = await pool.query(
+          `SELECT w.token_id, w.status, w.yes_votes, w.no_votes, w.hold_votes, w.agreed, w.entry_ok,
+                  w.headline, w.votes, w.last_mc, w.last_liq, w.last_score, w.seen_at, w.updated_at,
+                  t.mint, t.symbol, t.name, t.image, t.phase, t.wallet_buys, t.last_holders
+           FROM ward_watch w
+           JOIN f2_tokens t ON t.id = w.token_id
+           WHERE w.status = 'watching'
+             AND NOT EXISTS (SELECT 1 FROM ward_trades tr WHERE tr.token_id = w.token_id)
+           ORDER BY w.yes_votes DESC, w.updated_at DESC
+           LIMIT 12`,
+        );
+        watch = w.rows;
+      } catch {
+        watch = [];
+      }
+      const n = Number(total.rows[0]?.n ?? 0);
+      return {
+        open: open.rows,
+        watch,
+        performers: performers.rows,
+        paper: {
+          n: Number(paper.rows[0]?.n ?? 0),
+          wins: Number(paper.rows[0]?.wins ?? 0),
+          open: Number(paper.rows[0]?.open ?? 0),
+          avgAth: paper.rows[0]?.avg_ath != null ? Number(paper.rows[0].avg_ath) : null,
+          avgGain: paper.rows[0]?.avg_gain != null ? Number(paper.rows[0].avg_gain) : null,
+        },
+        page,
+        limit,
+        total: n,
+        pages: Math.max(1, Math.ceil(n / limit)),
+        cache: cacheBackend(),
+      };
+    });
+    res.setHeader("Cache-Control", "private, max-age=3");
+    res.json(ok(payload));
   } catch (err) {
     console.error("desk failed", err);
     res.status(500).json(fail("desk failed"));
@@ -271,6 +312,12 @@ router.get("/patient/:id", async (req, res) => {
   try {
     const id = parseInt(String(req.params.id), 10);
     if (!Number.isFinite(id)) { res.status(400).json(fail("bad id")); return; }
+    const hit = await cacheGet(`patient:${id}`);
+    if (hit) {
+      res.setHeader("Cache-Control", "private, max-age=3");
+      res.json(ok(hit));
+      return;
+    }
 
     const tr = await pool.query(
       `SELECT t.*, c.id AS call_id, c.called_at, c.alert_mc, c.peak_mc AS call_peak_mc,
@@ -312,9 +359,9 @@ router.get("/patient/:id", async (req, res) => {
     let sources: unknown[] = [];
     try {
       const snap = await pool.query(
-        `SELECT at, band, mc_usd, liq_usd, holders, top10_pct, score, phase, quality,
+        `SELECT at, band, kind, mc_usd, liq_usd, holders, top10_pct, score, phase, quality,
                 tape_lead, mc_slope, liq_slope, holder_slope, flags, suggestions
-         FROM ward_snapshots WHERE token_id = $1 ORDER BY at ASC LIMIT 48`,
+         FROM ward_snapshots WHERE token_id = $1 ORDER BY at ASC LIMIT 64`,
         [id],
       );
       snapshots = snap.rows;
@@ -343,13 +390,32 @@ router.get("/patient/:id", async (req, res) => {
     }
 
     let trade: unknown = null;
+    let watch: unknown = null;
     try {
       trade = (await pool.query(`${TRADE_SELECT} WHERE tr.token_id = $1`, [id])).rows[0] ?? null;
     } catch {
       trade = null;
     }
+    try {
+      watch = (await pool.query(
+        `SELECT status, yes_votes, no_votes, hold_votes, agreed, entry_ok, headline, votes,
+                last_mc, last_liq, last_score, seen_at, updated_at, locked_at
+         FROM ward_watch WHERE token_id = $1`,
+        [id],
+      )).rows[0] ?? null;
+    } catch {
+      watch = null;
+    }
 
-    res.json(ok({
+    const snapRows = snapshots as Array<{ kind?: string; at?: string }>;
+    const latestOf = (kind: string) => {
+      for (let i = snapRows.length - 1; i >= 0; i--) {
+        if (snapRows[i]?.kind === kind) return snapRows[i];
+      }
+      return null;
+    };
+
+    const body = {
       token: {
         ...token,
         phase,
@@ -364,13 +430,19 @@ router.get("/patient/:id", async (req, res) => {
       alerts: alerts.rows,
       notes: notes.rows,
       snapshots,
+      pulse: latestOf("pulse"),
+      confirm: latestOf("confirm"),
       sources,
-      suggestions: (snapshots as Array<{ suggestions?: unknown }>).length
+      suggestions: snapRows.length
         ? (snapshots as Array<{ suggestions?: unknown }>)[snapshots.length - 1]?.suggestions ?? []
         : [],
       trade,
+      watch,
       weights: getWeights(),
-    }));
+    };
+    await cacheSet(`patient:${id}`, body, 3_000);
+    res.setHeader("Cache-Control", "private, max-age=3");
+    res.json(ok(body));
   } catch (err) {
     console.error("patient failed", err);
     res.status(500).json(fail("patient failed"));
@@ -382,27 +454,46 @@ router.get("/patient/:id", async (req, res) => {
 router.get("/alerts", async (req, res) => {
   try {
     const kind = String(req.query.kind ?? "book").trim();
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "80"), 10) || 80, 1), 200);
-    const params: unknown[] = [];
-    let where = "WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)";
-    if (kind === "book") {
-      where += ` AND a.kind IN ('trade','exit','trim')`;
-    } else if (kind && kind !== "all") {
-      params.push(kind);
-      where += ` AND a.kind = $${params.length}`;
-    }
-    params.push(limit);
-    const r = await pool.query(
-      `SELECT a.id, a.token_id, a.kind, a.title, a.body, a.payload, a.telegram_sent, a.at,
-              t.mint, t.symbol, t.name, t.image, t.phase, t.survival_score
-       FROM ward_alerts a
-       JOIN f2_tokens t ON t.id = a.token_id
-       ${where}
-       ORDER BY a.at DESC
-       LIMIT $${params.length}`,
-      params,
-    );
-    res.json(ok(r.rows));
+    const { page, limit, offset } = pageParams(req, 12, 80);
+    const payload = await cached(`alerts:${kind}:${page}:${limit}`, 4_000, async () => {
+      const params: unknown[] = [];
+      let where = "WHERE (t.source = 'wallet_buy' OR t.wallet_buys > 0)";
+      if (kind === "book") {
+        where += ` AND a.kind IN ('trade','exit','trim','watch')`;
+      } else if (kind && kind !== "all") {
+        params.push(kind);
+        where += ` AND a.kind = $${params.length}`;
+      }
+      const countParams = [...params];
+      const total = await pool.query(
+        `SELECT COUNT(*)::int AS n
+         FROM ward_alerts a
+         JOIN f2_tokens t ON t.id = a.token_id
+         ${where}`,
+        countParams,
+      );
+      params.push(limit, offset);
+      const r = await pool.query(
+        `SELECT a.id, a.token_id, a.kind, a.title, a.body, a.payload, a.telegram_sent, a.at,
+                t.mint, t.symbol, t.name, t.image, t.phase, t.survival_score
+         FROM ward_alerts a
+         JOIN f2_tokens t ON t.id = a.token_id
+         ${where}
+         ORDER BY a.at DESC
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params,
+      );
+      const n = Number(total.rows[0]?.n ?? 0);
+      return {
+        items: r.rows,
+        page,
+        limit,
+        total: n,
+        pages: Math.max(1, Math.ceil(n / limit)),
+      };
+    });
+    res.setHeader("Cache-Control", "private, max-age=3");
+    res.json(ok(payload));
   } catch (err) {
     console.error("alerts failed", err);
     res.status(500).json(fail("alerts failed"));

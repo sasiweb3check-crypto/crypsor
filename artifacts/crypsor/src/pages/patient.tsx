@@ -1,14 +1,14 @@
 import { useRoute, useLocation } from "wouter";
 import {
-  api, fmtUsd, fmtSignedX, timeAgo, shortMint, shortWallet,
-  type PatientChart, type TapeWindow, type TradeCard,
+  api, fmtUsd, fmtSignedX, timeAgo, shortMint, shortWallet, gmgnUrl,
+  type PatientChart, type TapeWindow, type TradeCard, type SnapshotRow, type AgentVote,
 } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
 
 function Spark({ points, admit }: { points: Array<{ t: number; v: number }>; admit: number | null }) {
   if (points.length < 2) return <div className="empty">Chart warming.</div>;
   const W = 640;
-  const H = 140;
+  const H = 160;
   const P = 10;
   const vs = points.map((p) => p.v);
   const min = Math.min(...vs, admit ?? Infinity);
@@ -38,14 +38,37 @@ function TapeBlock({ label, w }: { label: string; w?: TapeWindow | null }) {
   );
 }
 
+function slopeLabel(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const pct = v * 100;
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+}
+
+function SnapBox({ title, s }: { title: string; s?: SnapshotRow | null }) {
+  return (
+    <div className="snap-box">
+      <b>{title}</b>
+      {s ? (
+        <>
+          <em>{fmtUsd(s.mc_usd)}</em>
+          <p>
+            MC {slopeLabel(s.mc_slope)} · liq {slopeLabel(s.liq_slope)} · hold {slopeLabel(s.holder_slope)}
+            {s.tape_lead ? ` · ${s.tape_lead}` : ""}
+          </p>
+        </>
+      ) : <p>Waiting for this series.</p>}
+    </div>
+  );
+}
+
 export default function PatientPage() {
   const [, params] = useRoute("/p/:id");
   const [, nav] = useLocation();
   const id = parseInt(params?.id ?? "0", 10);
-  const { connected, tick } = useSse(["vitals:tick", "alert:new"]);
+  const { connected, tick } = useSse();
   const q = usePoll<PatientChart>(
     () => api(`api/patient/${id}`),
-    connected ? 18_000 : 10_000,
+    connected ? 45_000 : 10_000,
     [id, tick],
   );
 
@@ -54,9 +77,9 @@ export default function PatientPage() {
     return (
       <div className="page">
         <header className="topbar">
-          <button type="button" className="back" onClick={() => nav("/")}>← Trades</button>
+          <button type="button" className="back" onClick={() => nav("/")}>← Desk</button>
         </header>
-        <div className="empty">{q.error ?? "Opening…"}</div>
+        {q.error ? <div className="empty err">{q.error}</div> : <div className="skel" />}
       </div>
     );
   }
@@ -70,21 +93,35 @@ export default function PatientPage() {
   const entry = trade?.entry_mc ?? t.admission_mc;
   const gain = trade?.gain_x ?? t.xFromAdmit;
   const ath = trade?.ath_x ?? t.peakX;
+  const votes = (d.watch?.votes ?? []) as AgentVote[];
+
+  const copyMint = () => {
+    void navigator.clipboard?.writeText(t.mint);
+  };
 
   return (
     <div className="page">
       <header className="topbar">
-        <button type="button" className="back" onClick={() => nav("/")}>← Trades</button>
+        <button type="button" className="back" onClick={() => nav("/")}>← Desk</button>
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
 
       <div className="hero">
         {t.image && (
-          <img src={t.image} alt="" className="thumb" style={{ width: 56, height: 56, borderRadius: 18 }} />
+          <img src={t.image} alt="" className="thumb" style={{ width: 64, height: 64, borderRadius: 20 }} />
         )}
         <div className="hero-copy">
           <h1>${t.symbol || t.name || shortMint(t.mint)}</h1>
-          <div className="mint">{t.mint}</div>
+          <div className="mint">
+            {t.mint}
+            <button type="button" className="copy-btn" onClick={copyMint}>Copy</button>
+          </div>
+          <div className="hero-cta">
+            <a className="cta-gmgn" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
+            <a className="link" href={`https://dexscreener.com/solana/${t.mint}`} target="_blank" rel="noreferrer">DexScreener</a>
+            <a className="link" href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump.fun</a>
+            <button type="button" className="link" onClick={() => nav("/alerts")}>Book</button>
+          </div>
         </div>
       </div>
 
@@ -92,7 +129,7 @@ export default function PatientPage() {
         <div className={`big-score ${(gain ?? 1) >= 1 ? "" : "down"}`}>
           {fmtSignedX(gain)}
           <small>
-            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : "watching — not locked"}
+            {trade ? `vs lock ${fmtUsd(trade.entry_mc)} · ATH ${fmtSignedX(ath)}` : d.watch ? "on watchlist — not locked" : "watching — not locked"}
           </small>
         </div>
       </div>
@@ -102,6 +139,19 @@ export default function PatientPage() {
           <div className="k">{trade.exit_action ?? "hold"}{trade.exit_take_pct ? ` · ${trade.exit_take_pct}%` : ""}</div>
           <h3>{trade.exit_title}</h3>
           {trade.exit_body && <p>{trade.exit_body}</p>}
+        </div>
+      )}
+
+      {d.watch && !trade && (
+        <div className="alert kind-watch">
+          <div className="k">debate · {d.watch.yes_votes} yes / {d.watch.no_votes} no / {d.watch.hold_votes} hold</div>
+          <h3>{d.watch.headline || "Agents have not agreed on this entry"}</h3>
+          <p>{d.watch.entry_ok ? "Entry zone is acceptable." : "Entry is not satisfying yet — stays on watch."}</p>
+          <div className="votes">
+            {votes.map((v) => (
+              <span key={v.agent} className={`vote ${v.vote}`} title={v.reason}>{v.agent} {v.vote}</span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -121,8 +171,27 @@ export default function PatientPage() {
         <TapeBlock label="6h" w={last?.tape?.h6} />
       </div>
 
+      <div className="section-h">Snapshots · pulse 2m / confirm 5m</div>
+      <div className="snap-pair">
+        <SnapBox title="Pulse · 2m" s={d.pulse} />
+        <SnapBox title="Confirm · 5m" s={d.confirm} />
+      </div>
+
       <div className="section-h">{trade ? "Since lock" : "Market cap"}</div>
       <Spark points={spark} admit={entry ?? null} />
+
+      {(d.suggestions ?? []).length > 0 && (
+        <>
+          <div className="section-h">Suggestions</div>
+          {(d.suggestions ?? []).slice(0, 3).map((s) => (
+            <div key={s.id} className={`alert kind-${s.severity}`}>
+              <div className="k">{s.severity}</div>
+              <h3>{s.title}</h3>
+              <p>{s.body}</p>
+            </div>
+          ))}
+        </>
+      )}
 
       <div className="section-h">Wallets</div>
       <div className="list">
@@ -133,13 +202,6 @@ export default function PatientPage() {
             <span className="blurb">{timeAgo(a.at)}</span>
           </div>
         ))}
-      </div>
-
-      <div className="links">
-        <a className="link" href={`https://dexscreener.com/solana/${t.mint}`} target="_blank" rel="noreferrer">DexScreener</a>
-        <a className="link" href={`https://gmgn.ai/sol/token/${t.mint}`} target="_blank" rel="noreferrer">GMGN</a>
-        <a className="link" href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump.fun</a>
-        <a className="link" href={`https://solscan.io/token/${t.mint}`} target="_blank" rel="noreferrer">Solscan</a>
       </div>
     </div>
   );

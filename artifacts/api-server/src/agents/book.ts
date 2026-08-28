@@ -88,7 +88,7 @@ export async function bookTick(): Promise<{ open: number; changed: number }> {
     const peak = Math.max(row.peak_mc ?? 0, row.token_peak ?? 0, lastMc ?? 0) || row.entry_mc;
     const snap = await pool.query(
       `SELECT liq_slope, holder_slope, tape_lead, suggestions, flags
-       FROM ward_snapshots WHERE token_id = $1 ORDER BY at DESC LIMIT 1`,
+       FROM ward_snapshots WHERE token_id = $1 ORDER BY CASE COALESCE(kind,'confirm') WHEN 'confirm' THEN 0 ELSE 1 END, at DESC LIMIT 1`,
       [row.token_id],
     );
     const s = snap.rows[0] as {

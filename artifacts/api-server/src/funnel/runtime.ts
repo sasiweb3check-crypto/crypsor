@@ -5,7 +5,8 @@
  *   vitals     DexScreener/pump tape + scoring + phase
  *   quality    Dex vs pump vs GMGN — fill gaps, flag disagreement
  *   holders    GMGN quality (rate-limited)
- *   snapshots  low/mid cap time-series + suggestions
+ *   snapshots  pulse (~2 min) + confirm (~5 min) series
+ *   watch      agent debate; lock only on agreement + entry zone
  *   book       locked TRADE entries, ATH/gain, exit plan
  *   reporter   census + snapshot report
  *   backtest   self-improving weights from TRADE outcomes
@@ -35,7 +36,7 @@ const INTAKE_MS = 40_000;
 const VITALS_MS = 22_000;
 const QUALITY_MS = 55_000;
 const HOLDERS_MS = 90_000;
-const SNAPSHOT_MS = 50_000;
+const SNAPSHOT_MS = 25_000;
 const BOOK_MS = 40_000;
 const REPORT_MS = 120_000;
 const BACKTEST_MS = 10 * 60_000;

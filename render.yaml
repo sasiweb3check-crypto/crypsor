@@ -44,6 +44,7 @@ services:
       - key: TELEGRAM_PUSH_ENABLED
         value: "true"
       # Same-origin deploy: do NOT set VITE_API_URL (desk calls /api on this host).
+      # REDIS_URL is optional. One instance uses in-memory TTL + SSE — do not add Redis.
       # Split-host only:
       # - key: CORS_ORIGIN
       #   sync: false

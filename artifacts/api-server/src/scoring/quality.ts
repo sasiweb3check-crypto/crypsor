@@ -17,11 +17,19 @@ export function capBand(mc: number | null | undefined): CapBand | null {
   return "mega";
 }
 
-export function snapshotCadenceMs(band: CapBand, phase: string): number {
-  if (phase === "icu" || phase === "intake") return 3 * 60_000;
-  if (band === "low") return 4 * 60_000;
-  if (band === "mid") return 12 * 60_000;
-  return 45 * 60_000;
+export type SnapshotKind = "pulse" | "confirm";
+
+/** pulse ≈ 2 min, confirm ≈ 5 min. Mega caps only confirm, slowly, unless ICU. */
+export function snapshotCadenceMs(band: CapBand, phase: string, kind: SnapshotKind = "confirm"): number {
+  const hot = phase === "icu" || phase === "intake";
+  if (kind === "pulse") {
+    if (band === "mega" && !hot) return 10 * 60_000;
+    return hot ? 90_000 : 2 * 60_000;
+  }
+  if (band === "mega" && !hot) return 15 * 60_000;
+  if (hot) return 4 * 60_000;
+  if (band === "low") return 5 * 60_000;
+  return 5 * 60_000;
 }
 
 export type SourceName = "dex" | "pump" | "gmgn";

@@ -4,6 +4,9 @@
  */
 import { EventEmitter } from "node:events";
 import type { Request, Response } from "express";
+import { cacheBust } from "./cache";
+
+const BUST_EVENTS = new Set(["alert:new", "watch:update", "desk:update", "vitals:tick"]);
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(100);
@@ -28,6 +31,7 @@ export function sseHandler(req: Request, res: Response): void {
 
 export function emitSse(event: string, data: unknown): void {
   bus.emit(event, data);
+  if (BUST_EVENTS.has(event)) cacheBust();
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) {
     try { res.write(payload); } catch { clients.delete(res); }

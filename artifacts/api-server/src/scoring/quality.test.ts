@@ -49,9 +49,11 @@ describe("cap bands", () => {
     assert.equal(capBand(null), null);
   });
 
-  it("snapshots low caps more often than mid", () => {
-    assert.ok(snapshotCadenceMs("low", "ward") < snapshotCadenceMs("mid", "ward"));
-    assert.ok(snapshotCadenceMs("mid", "icu") < snapshotCadenceMs("mid", "ward"));
+  it("pulse is faster than confirm; ICU is faster than a quiet mega", () => {
+    assert.ok(snapshotCadenceMs("low", "ward", "pulse") < snapshotCadenceMs("low", "ward", "confirm"));
+    assert.ok(snapshotCadenceMs("mid", "icu", "confirm") < snapshotCadenceMs("mega", "ward", "confirm"));
+    assert.equal(snapshotCadenceMs("low", "ward", "pulse"), 2 * 60_000);
+    assert.equal(snapshotCadenceMs("low", "ward", "confirm"), 5 * 60_000);
   });
 });
 

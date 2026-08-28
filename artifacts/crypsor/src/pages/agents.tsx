@@ -6,8 +6,9 @@ const DESK = [
   { id: "vitals", title: "Vitals", copy: "DexScreener + pump.fun tape. Scores survival and moves phase." },
   { id: "quality", title: "Quality", copy: "Cross-checks Dex, pump.fun coin, and GMGN. Fills gaps. Flags >25% disagreement." },
   { id: "holders", title: "Holders", copy: "GMGN quality on a free-tier budget — hold share, not bot counts." },
-  { id: "snapshots", title: "Snapshots", copy: "Low/mid cap time-series in the background. Feeds the exit plan." },
-  { id: "book", title: "Book", copy: "Locks TRADE at entry MC. Tracks gain, ATH, and tells you when to trim or flatten." },
+  { id: "snapshots", title: "Snapshots", copy: "Two series: pulse every ~2 minutes and confirm every ~5. A lock needs both not dumping." },
+  { id: "watch", title: "Watch / debate", copy: "Vitals, quality, holders, and snapshots vote. Unsatisfying entries stay on the watchlist — they are not locked." },
+  { id: "book", title: "Book", copy: "Locks TRADE at entry MC only after agreement. Tracks gain, ATH, and tells you when to trim or flatten." },
   { id: "reporter", title: "Reporter", copy: "Census + prune. Not shown on the desk." },
   { id: "backtest", title: "Backtest", copy: "Paper 2× after TRADE. Nudges factor weights toward what survived." },
   { id: "alerts", title: "Alerts", copy: "Telegram + live desk for admit, trade, ICU, death, revival." },
@@ -15,7 +16,7 @@ const DESK = [
 
 export default function AgentsPage() {
   const { connected, tick } = useSse(["agent:note"]);
-  const q = usePoll<AgentsState>(() => api("api/agents"), connected ? 20_000 : 10_000, [tick]);
+  const q = usePoll<AgentsState>(() => api("api/agents"), connected ? 45_000 : 10_000, [tick]);
   const d = q.data;
   const paper = d?.paper;
   const wr = paper && paper.judged > 0 ? Math.round((paper.wins / paper.judged) * 100) : null;
@@ -27,7 +28,7 @@ export default function AgentsPage() {
         <div className={`live-dot ${connected ? "on" : ""}`} />
       </header>
       <p className="blurb">
-        Scoring, quality, and phases run here. The desk only shows locked trades.
+        Scoring, quality, debate, and phases run here. The desk only shows locks and the watchlist.
       </p>
 
       <div className="stats">
