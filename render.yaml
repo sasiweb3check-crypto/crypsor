@@ -16,6 +16,7 @@ services:
     runtime: node
     plan: starter
     region: oregon
+    branch: main
     numInstances: 1
     autoDeployTrigger: commit
     healthCheckPath: /api/healthz
