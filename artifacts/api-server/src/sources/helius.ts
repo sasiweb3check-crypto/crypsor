@@ -8,59 +8,17 @@
 import { logger } from "../core/log";
 import { heliusKey } from "../core/settings";
 import { isNoiseMint, isQuoteMint } from "../scoring/noise";
+import { isWalletSwapBuy, MIN_SOL_SPEND_LAMPORTS, type SwapTx } from "../scoring/swap-buy";
 
-/** Above typical ATA rent (~0.00204 SOL) so a receive + rent is not a buy. */
-export const MIN_SOL_SPEND_LAMPORTS = 3_000_000;
+export { isWalletSwapBuy, MIN_SOL_SPEND_LAMPORTS };
 
-export type HeliusTx = {
+export type HeliusTx = SwapTx & {
   signature?: string;
   timestamp?: number;
   type?: string;
-  nativeTransfers?: Array<{
-    fromUserAccount?: string;
-    toUserAccount?: string;
-    amount?: number;
-  }>;
-  tokenTransfers?: Array<{
-    mint?: string;
-    toUserAccount?: string;
-    fromUserAccount?: string;
-    tokenAmount?: number;
-  }>;
-  accountData?: Array<{
-    account?: string;
-    nativeBalanceChange?: number;
-  }>;
 };
 
 export type WalletBuy = { wallet: string; mint: string; ts: number; sig: string; swap: boolean };
-
-function spentSol(tx: HeliusTx, wallet: string): boolean {
-  const nativeOut = (tx.nativeTransfers ?? []).some((n) =>
-    n.fromUserAccount === wallet && Number(n.amount) >= MIN_SOL_SPEND_LAMPORTS,
-  );
-  if (nativeOut) return true;
-  const change = (tx.accountData ?? []).find((a) => a.account === wallet)?.nativeBalanceChange;
-  return Number(change) <= -MIN_SOL_SPEND_LAMPORTS;
-}
-
-function spentQuote(tx: HeliusTx, wallet: string): boolean {
-  return (tx.tokenTransfers ?? []).some((t) =>
-    t.fromUserAccount === wallet && isQuoteMint(t.mint) && Number(t.tokenAmount) > 0,
-  );
-}
-
-function receivedMint(tx: HeliusTx, wallet: string, mint: string): boolean {
-  return (tx.tokenTransfers ?? []).some((t) =>
-    t.toUserAccount === wallet && t.mint === mint && Number(t.tokenAmount) > 0,
-  );
-}
-
-/** True only when the wallet spent quote/SOL and received this mint. Type=SWAP is not enough. */
-export function isWalletSwapBuy(tx: HeliusTx, wallet: string, mint: string): boolean {
-  if (!wallet || !mint) return false;
-  return receivedMint(tx, wallet, mint) && (spentQuote(tx, wallet) || spentSol(tx, wallet));
-}
 
 /** @deprecated use isWalletSwapBuy */
 export const looksLikeSwap = isWalletSwapBuy;

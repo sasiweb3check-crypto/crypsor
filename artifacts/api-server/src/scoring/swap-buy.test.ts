@@ -1,19 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isWalletSwapBuy, MIN_SOL_SPEND_LAMPORTS, type HeliusTx } from "./helius.ts";
+import { isWalletSwapBuy, MIN_SOL_SPEND_LAMPORTS, type SwapTx } from "../scoring/swap-buy.ts";
 
 const WALLET = "Wallet1111111111111111111111111111111111111";
 const MINT = "Nvda111111111111111111111111111111111111111";
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-function tx(over: Partial<HeliusTx> & Pick<HeliusTx, "tokenTransfers">): HeliusTx {
-  return { signature: "sig", timestamp: 1, type: "UNKNOWN", ...over };
+function tx(over: Partial<SwapTx> & Pick<SwapTx, "tokenTransfers">): SwapTx {
+  return { ...over };
 }
 
 describe("isWalletSwapBuy", () => {
-  it("rejects a receive / airdrop even when Helius labels it SWAP", () => {
+  it("rejects a receive / airdrop even when labeled SWAP", () => {
     const receive = tx({
-      type: "SWAP",
       tokenTransfers: [{ mint: MINT, toUserAccount: WALLET, tokenAmount: 1_000 }],
       nativeTransfers: [],
     });
@@ -22,7 +21,6 @@ describe("isWalletSwapBuy", () => {
 
   it("rejects ATA-rent dust SOL with a token in", () => {
     const dust = tx({
-      type: "SWAP",
       tokenTransfers: [{ mint: MINT, toUserAccount: WALLET, tokenAmount: 50 }],
       nativeTransfers: [{ fromUserAccount: WALLET, amount: 2_039_280 }],
     });
@@ -32,7 +30,6 @@ describe("isWalletSwapBuy", () => {
 
   it("accepts SOL spent above dust plus the mint in", () => {
     const buy = tx({
-      type: "UNKNOWN",
       tokenTransfers: [{ mint: MINT, toUserAccount: WALLET, tokenAmount: 100 }],
       nativeTransfers: [{ fromUserAccount: WALLET, amount: 50_000_000 }],
     });
@@ -41,7 +38,6 @@ describe("isWalletSwapBuy", () => {
 
   it("accepts USDC spent plus the mint in", () => {
     const buy = tx({
-      type: "TRANSFER",
       tokenTransfers: [
         { mint: USDC, fromUserAccount: WALLET, tokenAmount: 12.5 },
         { mint: MINT, toUserAccount: WALLET, tokenAmount: 800 },
@@ -58,9 +54,8 @@ describe("isWalletSwapBuy", () => {
     assert.equal(isWalletSwapBuy(buy, WALLET, MINT), true);
   });
 
-  it("rejects a SWAP that received a different mint", () => {
+  it("rejects spend that received a different mint", () => {
     const other = tx({
-      type: "SWAP",
       tokenTransfers: [{ mint: MINT, toUserAccount: WALLET, tokenAmount: 1 }],
       nativeTransfers: [{ fromUserAccount: WALLET, amount: 50_000_000 }],
     });
