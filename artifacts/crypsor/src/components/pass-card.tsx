@@ -138,7 +138,7 @@ export function TapeRow({
         {waiting && t.story && <p className="story-clip">{t.story}</p>}
       </div>
       <div className="pass-side">
-        {waiting ? <em>queue</em> : <Gain pct={t.ath_pct} />}
+        {waiting ? <em>queue</em> : <Gain pct={t.ath_pct ?? null} />}
       </div>
     </button>
   );
