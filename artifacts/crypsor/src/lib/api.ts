@@ -209,6 +209,7 @@ export type PassCard = {
   momentum?: "up" | "flat" | "down" | "unread" | null;
   band?: "low" | "mid" | "mega" | null;
   story?: string | null;
+  hotness?: number | null;
 };
 
 export type DayRoll = {
@@ -225,6 +226,7 @@ export type DayRoll = {
 
 export type LiveBoard = {
   at: string;
+  epoch?: string | null;
   live: PassCard[];
   archived: PassCard[];
   performers?: PassCard[];
@@ -552,4 +554,9 @@ export function shortWallet(addr: string): string {
 
 export function gmgnUrl(mint: string): string {
   return `https://gmgn.ai/sol/token/${mint}`;
+}
+
+export function deskImg(src: string | null | undefined): string | null {
+  if (!src || !/^https:\/\//i.test(src)) return null;
+  return `${getApiBase()}api/img?u=${encodeURIComponent(src)}`;
 }

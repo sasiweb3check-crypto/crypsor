@@ -254,6 +254,8 @@ const SCHEMA: string[] = [
    )`,
   `ALTER TABLE ward_memory ADD COLUMN IF NOT EXISTS hour jsonb NOT NULL DEFAULT '{}'::jsonb`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_momentum text`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS hotness integer`,
+  `CREATE INDEX IF NOT EXISTS idx_f2_tokens_hotness ON f2_tokens (hotness DESC NULLS LAST)`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,
@@ -319,6 +321,12 @@ const SCHEMA: string[] = [
      hit_2x_n integer NOT NULL DEFAULT 0,
      best_ath_pct real,
      updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE TABLE IF NOT EXISTS ward_stats_stash (
+     id serial PRIMARY KEY,
+     reason text NOT NULL,
+     payload jsonb,
+     at timestamptz NOT NULL DEFAULT NOW()
    )`,
 ];
 
