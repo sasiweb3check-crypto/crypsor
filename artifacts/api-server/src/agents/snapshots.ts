@@ -3,14 +3,20 @@
  *   pulse   every ~2 minutes (fast tape / MC / holders)
  *   confirm every ~5 minutes (same vitals, used to agree or veto a lock)
  *
- * Mega caps skip pulse unless they are in ICU. Suggestions come from
- * slope vs the previous snapshot of the SAME kind, not a mixed pair.
+ * Missing prints are flagged, never sloped. Last-known values may be shown
+ * as stale. Agent memory ratchets on dumps and unread fields so the next
+ * tick cannot pretend the last miss did not happen.
  */
 import { pool } from "../core/db";
 import {
   capBand, snapshotCadenceMs, snapshotSuggestions, slope,
   type Suggestion,
 } from "../scoring/quality";
+import {
+  emptyMemory, fillOf, parseMemory, remember,
+  type AgentMemory, type Fill,
+} from "../scoring/memory";
+import { tellStory } from "../scoring/narrative";
 import { agentNote } from "./log";
 
 const BATCH = 24;
@@ -32,15 +38,28 @@ type Row = {
   last_reasons: unknown;
 };
 
-async function lastOfKind(tokenId: number, kind: Kind): Promise<{
+type PrevSnap = {
   at: number;
   mc_usd: number | null;
   liq_usd: number | null;
   holders: number | null;
   score: number | null;
-} | null> {
+  mc_slope: number | null;
+  fill: { mc: Fill; liq: Fill; holders: Fill } | null;
+  tape_lead: string | null;
+};
+
+function asFill(raw: unknown): { mc: Fill; liq: Fill; holders: Fill } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const ok = (v: unknown): v is Fill => v === "live" || v === "stale" || v === "missing";
+  if (!ok(o.mc) || !ok(o.liq) || !ok(o.holders)) return null;
+  return { mc: o.mc, liq: o.liq, holders: o.holders };
+}
+
+async function lastOfKind(tokenId: number, kind: Kind): Promise<PrevSnap | null> {
   const r = await pool.query(
-    `SELECT at, mc_usd, liq_usd, holders, score
+    `SELECT at, mc_usd, liq_usd, holders, score, filled, tape_lead, mc_slope
      FROM ward_snapshots WHERE token_id = $1 AND kind = $2
      ORDER BY at DESC LIMIT 1`,
     [tokenId, kind],
@@ -52,19 +71,46 @@ async function lastOfKind(tokenId: number, kind: Kind): Promise<{
     liq_usd: r.rows[0].liq_usd,
     holders: r.rows[0].holders,
     score: r.rows[0].score,
+    mc_slope: r.rows[0].mc_slope ?? null,
+    fill: asFill(r.rows[0].filled),
+    tape_lead: r.rows[0].tape_lead ?? null,
   };
 }
 
-async function writeKind(row: Row, kind: Kind): Promise<boolean> {
-  const band = capBand(row.last_mc);
-  if (!band) return false;
-  if (band === "mega" && row.phase !== "icu" && kind === "pulse") return false;
-  if (band === "mega" && row.phase !== "icu" && kind === "confirm") {
-    // mega confirm is slower; cadence helper already stretches it
+async function loadMemory(tokenId: number): Promise<AgentMemory> {
+  try {
+    const r = await pool.query(
+      `SELECT caution, pulse, confirm FROM ward_memory WHERE token_id = $1`,
+      [tokenId],
+    );
+    if (!r.rows[0]) return emptyMemory();
+    return parseMemory(r.rows[0]);
+  } catch {
+    return emptyMemory();
   }
+}
+
+async function saveMemory(tokenId: number, mem: AgentMemory, narrative: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO ward_memory (token_id, caution, pulse, confirm, narrative, updated_at)
+     VALUES ($1,$2,$3,$4,$5, NOW())
+     ON CONFLICT (token_id) DO UPDATE SET
+       caution = EXCLUDED.caution,
+       pulse = EXCLUDED.pulse,
+       confirm = EXCLUDED.confirm,
+       narrative = EXCLUDED.narrative,
+       updated_at = NOW()`,
+    [tokenId, JSON.stringify(mem.caution), JSON.stringify(mem.pulse), JSON.stringify(mem.confirm), narrative],
+  );
+  await pool.query(`UPDATE f2_tokens SET last_narrative = $2 WHERE id = $1`, [tokenId, narrative]);
+}
+
+async function writeKind(row: Row, kind: Kind): Promise<boolean> {
+  const band = capBand(row.last_mc) ?? "low";
+  if (capBand(row.last_mc) === "mega" && row.phase !== "icu" && kind === "pulse") return false;
 
   const prev = await lastOfKind(row.id, kind);
-  const cadence = snapshotCadenceMs(band === "mega" ? "mega" : band, row.phase || "ward", kind);
+  const cadence = snapshotCadenceMs(band, row.phase || "ward", kind);
   if (prev && Date.now() - prev.at < cadence) return false;
 
   const scan = await pool.query(
@@ -79,20 +125,43 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
   } | undefined;
   if (!s) return false;
 
+  const fill = {
+    mc: fillOf(s.mc_usd, row.last_mc),
+    liq: fillOf(s.liq_usd, row.last_liq),
+    holders: fillOf(s.holders, row.last_holders),
+  };
+  const displayMc = s.mc_usd ?? row.last_mc;
+  const displayLiq = s.liq_usd ?? row.last_liq;
+  const displayHolders = s.holders ?? row.last_holders;
+
+  const prevLiveMc = prev?.fill?.mc === "live" ? prev.mc_usd : null;
+  const prevLiveLiq = prev?.fill?.liq === "live" ? prev.liq_usd : null;
+  const prevLiveHold = prev?.fill?.holders === "live" ? prev.holders : null;
+  const mcSlope = fill.mc === "live" ? slope(s.mc_usd, prevLiveMc) : null;
+  const liqSlope = fill.liq === "live" ? slope(s.liq_usd, prevLiveLiq) : null;
+  const holderSlope = fill.holders === "live" ? slope(s.holders, prevLiveHold) : null;
+
   const tape = s.tape ?? {};
   const reasons = (row.last_reasons ?? {}) as { fails?: string[]; unknowns?: string[] };
-  const flags = s.sources?.flags ?? [];
+  const flags = [...(s.sources?.flags ?? [])];
+  if (fill.mc === "stale") flags.push("stale_mc");
+  if (fill.mc === "missing") flags.push("missing_mc");
+  if (fill.liq === "stale") flags.push("stale_liq");
+  if (fill.liq === "missing") flags.push("missing_liq");
+  if (fill.holders === "stale") flags.push("stale_holders");
+  if (fill.holders === "missing") flags.push("missing_holders");
+
   const suggestions: Suggestion[] = snapshotSuggestions({
     band: band === "mega" ? "mid" : band,
     phase: s.phase || row.phase || "intake",
     score: s.score ?? row.survival_score,
     prevScore: prev?.score ?? null,
-    mc: s.mc_usd ?? row.last_mc,
-    prevMc: prev?.mc_usd ?? null,
-    liq: s.liq_usd ?? row.last_liq,
-    prevLiq: prev?.liq_usd ?? null,
-    holders: s.holders ?? row.last_holders,
-    prevHolders: prev?.holders ?? null,
+    mc: fill.mc === "live" ? s.mc_usd : displayMc,
+    prevMc: prevLiveMc,
+    liq: fill.liq === "live" ? s.liq_usd : displayLiq,
+    prevLiq: prevLiveLiq,
+    holders: fill.holders === "live" ? s.holders : displayHolders,
+    prevHolders: prevLiveHold,
     top10Pct: s.top10_pct,
     tapeLead: (tape.lead as string | undefined) ?? row.tape_lead,
     chase: Boolean(tape.chase) || (reasons.fails ?? []).includes("chase"),
@@ -104,20 +173,55 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
     unknowns: reasons.unknowns ?? [],
   });
 
-  const mcSlope = slope(s.mc_usd ?? row.last_mc, prev?.mc_usd ?? null);
-  const liqSlope = slope(s.liq_usd ?? row.last_liq, prev?.liq_usd ?? null);
-  const holderSlope = slope(s.holders ?? row.last_holders, prev?.holders ?? null);
-  const headline = suggestions[0]?.title ?? "observed";
+  const dump = (mcSlope ?? 0) < -0.12;
+  const exodus = (holderSlope ?? 0) < -0.08;
+  const disagree = flags.includes("mc_disagree") || flags.includes("liq_disagree");
+  let mem = await loadMemory(row.id);
+  mem = remember(mem, {
+    kind,
+    fill,
+    dump: fill.mc === "live" && dump,
+    exodus: fill.holders === "live" && exodus,
+    disagree,
+    quality: s.quality ?? row.last_quality,
+  });
+
+  const locked = (await pool.query("SELECT 1 FROM ward_trades WHERE token_id = $1 LIMIT 1", [row.id])).rows.length > 0;
+  const otherKind: Kind = kind === "pulse" ? "confirm" : "pulse";
+  const other = await lastOfKind(row.id, otherKind);
+  const ticker = row.symbol || row.mint.slice(0, 6);
+  const narrative = tellStory({
+    symbol: ticker,
+    kind,
+    phase: s.phase || row.phase || "intake",
+    tapeLead: (tape.lead as string | undefined) ?? row.tape_lead,
+    mc: displayMc,
+    mcSlope,
+    liq: displayLiq,
+    liqSlope,
+    holders: displayHolders,
+    holderSlope,
+    quality: s.quality ?? row.last_quality,
+    fill,
+    other: other
+      ? { kind: otherKind, mc: other.mc_usd, mcSlope: other.mc_slope, tapeLead: other.tape_lead }
+      : null,
+    memory: mem,
+    walletBuys: row.wallet_buys,
+    locked,
+  });
+  const headline = suggestions[0]?.title ?? (fill.mc === "live" ? "observed" : "incomplete print");
+  const incomplete = fill.mc !== "live" || fill.liq !== "live" || fill.holders !== "live";
 
   await pool.query(
     `INSERT INTO ward_snapshots (
        token_id, band, kind, mc_usd, liq_usd, holders, top10_pct, score, phase, quality,
-       tape_lead, mc_slope, liq_slope, holder_slope, sources, flags, suggestions
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+       tape_lead, mc_slope, liq_slope, holder_slope, sources, flags, suggestions,
+       narrative, incomplete, filled
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
     [
       row.id, band, kind,
-      s.mc_usd ?? row.last_mc, s.liq_usd ?? row.last_liq,
-      s.holders ?? row.last_holders, s.top10_pct,
+      displayMc, displayLiq, displayHolders, s.top10_pct,
       s.score ?? row.survival_score, s.phase || row.phase,
       s.quality ?? row.last_quality,
       (tape.lead as string | undefined) ?? row.tape_lead,
@@ -125,17 +229,22 @@ async function writeKind(row: Row, kind: Kind): Promise<boolean> {
       JSON.stringify(s.sources ?? {}),
       JSON.stringify(flags),
       JSON.stringify(suggestions),
+      narrative, incomplete, JSON.stringify(fill),
     ],
   );
   await pool.query(
     `UPDATE f2_tokens SET last_snapshot_at = NOW(), last_suggestion = $2, cap_band = $3 WHERE id = $1`,
     [row.id, `${kind}: ${headline}`, band],
   );
-  const ticker = row.symbol || row.mint.slice(0, 6);
+  try {
+    await saveMemory(row.id, mem, narrative);
+  } catch {
+    // ward_memory lands on first schema pass
+  }
   await agentNote(
     "snapshots",
-    suggestions[0]?.severity === "act" ? "ALERT" : kind === "pulse" ? "PULSE" : "CONFIRM",
-    `$${ticker} ${kind} ${band} · ${headline}${suggestions.length > 1 ? ` (+${suggestions.length - 1})` : ""}`,
+    suggestions[0]?.severity === "act" ? "ALERT" : incomplete ? "GAP" : kind === "pulse" ? "PULSE" : "CONFIRM",
+    `$${ticker} ${kind} ${incomplete ? "incomplete" : band} · ${headline}`,
     { tokenId: row.id, mint: row.mint },
   );
   return true;

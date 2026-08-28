@@ -45,14 +45,17 @@ function slopeLabel(v: number | null | undefined): string {
 }
 
 function SnapBox({ title, s }: { title: string; s?: SnapshotRow | null }) {
+  const incomplete = Boolean(s?.incomplete) || (s?.filled && Object.values(s.filled).some((v) => v && v !== "live"));
   return (
-    <div className="snap-box">
-      <b>{title}</b>
+    <div className={`snap-box ${incomplete ? "incomplete" : ""}`}>
+      <b>{title}{incomplete ? <span className="gap">incomplete</span> : null}</b>
       {s ? (
         <>
           <em>{fmtUsd(s.mc_usd)}</em>
           <p>
-            MC {slopeLabel(s.mc_slope)} · liq {slopeLabel(s.liq_slope)} · hold {slopeLabel(s.holder_slope)}
+            MC {s.filled?.mc === "live" ? slopeLabel(s.mc_slope) : "unread"}
+            {" · "}liq {s.filled?.liq === "live" ? slopeLabel(s.liq_slope) : "unread"}
+            {" · "}hold {s.filled?.holders === "live" ? slopeLabel(s.holder_slope) : "unread"}
             {s.tape_lead ? ` · ${s.tape_lead}` : ""}
           </p>
         </>
@@ -124,6 +127,20 @@ export default function PatientPage() {
           </div>
         </div>
       </div>
+
+      {(d.narrative || d.pulse?.narrative) && (
+        <div className="story">
+          <div className="k">How we read this</div>
+          <p>{d.narrative || d.pulse?.narrative || d.confirm?.narrative}</p>
+          {(d.memory?.caution?.notes?.length ?? 0) > 0 && (
+            <ul className="memory-notes">
+              {(d.memory!.caution!.notes ?? []).slice(-6).reverse().map((n, i) => (
+                <li key={`${i}-${n.slice(0, 24)}`}>{n}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="stat">
         <div className={`big-score ${(gain ?? 1) >= 1 ? "" : "down"}`}>

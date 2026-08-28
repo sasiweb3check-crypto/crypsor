@@ -238,6 +238,19 @@ const SCHEMA: string[] = [
   `ALTER TABLE ward_snapshots ADD COLUMN IF NOT EXISTS kind text`,
   `UPDATE ward_snapshots SET kind = 'confirm' WHERE kind IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_ward_snapshots_kind ON ward_snapshots (token_id, kind, at DESC)`,
+  `ALTER TABLE ward_snapshots ADD COLUMN IF NOT EXISTS narrative text`,
+  `ALTER TABLE ward_snapshots ADD COLUMN IF NOT EXISTS incomplete boolean`,
+  `ALTER TABLE ward_snapshots ADD COLUMN IF NOT EXISTS filled jsonb`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_narrative text`,
+
+  `CREATE TABLE IF NOT EXISTS ward_memory (
+     token_id integer PRIMARY KEY REFERENCES f2_tokens(id),
+     caution jsonb NOT NULL DEFAULT '{}'::jsonb,
+     pulse jsonb NOT NULL DEFAULT '{}'::jsonb,
+     confirm jsonb NOT NULL DEFAULT '{}'::jsonb,
+     narrative text,
+     updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,

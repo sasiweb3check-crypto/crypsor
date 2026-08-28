@@ -217,6 +217,9 @@ export type SnapshotRow = {
   holder_slope: number | null;
   flags: string[] | null;
   suggestions: Suggestion[] | null;
+  narrative?: string | null;
+  incomplete?: boolean | null;
+  filled?: { mc?: string; liq?: string; holders?: string } | null;
 };
 
 export type SourceReadRow = {
@@ -257,6 +260,12 @@ export type PatientChart = {
   suggestions?: Suggestion[];
   trade?: TradeCard | null;
   watch?: WatchCard | null;
+  narrative?: string | null;
+  memory?: {
+    caution?: { notes?: string[]; dumps?: number; missingHolders?: number; missingMc?: number };
+    narrative?: string | null;
+    updated_at?: string;
+  } | null;
   weights: Record<string, number>;
 };
 

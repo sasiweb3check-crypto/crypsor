@@ -360,7 +360,8 @@ router.get("/patient/:id", async (req, res) => {
     try {
       const snap = await pool.query(
         `SELECT at, band, kind, mc_usd, liq_usd, holders, top10_pct, score, phase, quality,
-                tape_lead, mc_slope, liq_slope, holder_slope, flags, suggestions
+                tape_lead, mc_slope, liq_slope, holder_slope, flags, suggestions,
+                narrative, incomplete, filled
          FROM ward_snapshots WHERE token_id = $1 ORDER BY at ASC LIMIT 64`,
         [id],
       );
@@ -407,13 +408,32 @@ router.get("/patient/:id", async (req, res) => {
       watch = null;
     }
 
-    const snapRows = snapshots as Array<{ kind?: string; at?: string }>;
+    let memory: Record<string, unknown> | null = null;
+    try {
+      memory = (await pool.query(
+        `SELECT caution, pulse, confirm, narrative, updated_at FROM ward_memory WHERE token_id = $1`,
+        [id],
+      )).rows[0] ?? null;
+    } catch {
+      memory = null;
+    }
+
+    const snapRows = snapshots as Array<{ kind?: string; at?: string; narrative?: string; suggestions?: unknown }>;
     const latestOf = (kind: string) => {
       for (let i = snapRows.length - 1; i >= 0; i--) {
         if (snapRows[i]?.kind === kind) return snapRows[i];
       }
       return null;
     };
+    const pulse = latestOf("pulse");
+    const confirm = latestOf("confirm");
+    const narrative = String(
+      memory?.narrative
+        ?? pulse?.narrative
+        ?? confirm?.narrative
+        ?? token.last_narrative
+        ?? "",
+    ) || null;
 
     const body = {
       token: {
@@ -430,12 +450,14 @@ router.get("/patient/:id", async (req, res) => {
       alerts: alerts.rows,
       notes: notes.rows,
       snapshots,
-      pulse: latestOf("pulse"),
-      confirm: latestOf("confirm"),
+      pulse,
+      confirm,
       sources,
       suggestions: snapRows.length
-        ? (snapshots as Array<{ suggestions?: unknown }>)[snapshots.length - 1]?.suggestions ?? []
+        ? snapRows[snapshots.length - 1]?.suggestions ?? []
         : [],
+      narrative,
+      memory,
       trade,
       watch,
       weights: getWeights(),

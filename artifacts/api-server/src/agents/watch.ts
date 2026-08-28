@@ -6,6 +6,7 @@ import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { cacheBust } from "../core/cache";
 import { debateEntry, type DebateInput, type DebateResult } from "../scoring/debate";
+import { cautionLevel, parseMemory } from "../scoring/memory";
 import { agentNote } from "./log";
 import { lockTrade } from "./book";
 import { raiseAlert, tradeTelegram } from "./alerts";
@@ -50,9 +51,11 @@ async function debateInputs(tokenId: number, reading: Reading, verdict: Verdict,
   let confirmHolderSlope: number | null = null;
   let pulseTape: string | null = null;
   let confirmTape: string | null = null;
+  let incompletePulse = false;
+  let incompleteConfirm = false;
   try {
     const snaps = await pool.query(
-      `SELECT DISTINCT ON (kind) kind, mc_slope, holder_slope, tape_lead
+      `SELECT DISTINCT ON (kind) kind, mc_slope, holder_slope, tape_lead, incomplete, flags
        FROM ward_snapshots
        WHERE token_id = $1 AND kind IN ('pulse','confirm')
        ORDER BY kind, at DESC`,
@@ -60,20 +63,42 @@ async function debateInputs(tokenId: number, reading: Reading, verdict: Verdict,
     );
     for (const s of snaps.rows as Array<{
       kind: string; mc_slope: number | null; holder_slope: number | null; tape_lead: string | null;
+      incomplete: boolean | null; flags: string[] | null;
     }>) {
+      const stale = Boolean(s.incomplete) || (s.flags ?? []).some((f) => f.startsWith("stale_") || f.startsWith("missing_"));
       if (s.kind === "pulse") {
-        pulseMcSlope = s.mc_slope;
-        pulseHolderSlope = s.holder_slope;
+        pulseMcSlope = stale ? null : s.mc_slope;
+        pulseHolderSlope = stale ? null : s.holder_slope;
         pulseTape = s.tape_lead;
+        incompletePulse = stale;
       }
       if (s.kind === "confirm") {
-        confirmMcSlope = s.mc_slope;
-        confirmHolderSlope = s.holder_slope;
+        confirmMcSlope = stale ? null : s.mc_slope;
+        confirmHolderSlope = stale ? null : s.holder_slope;
         confirmTape = s.tape_lead;
+        incompleteConfirm = stale;
       }
     }
   } catch {
     // snapshots table / kind column may land on first schema pass
+  }
+
+  let memoryLevel: DebateInput["memoryLevel"] = "clear";
+  let memoryDumps = 0;
+  let memoryMissingHolders = 0;
+  try {
+    const memRow = await pool.query(
+      `SELECT caution, pulse, confirm FROM ward_memory WHERE token_id = $1`,
+      [tokenId],
+    );
+    if (memRow.rows[0]) {
+      const mem = parseMemory(memRow.rows[0]);
+      memoryLevel = cautionLevel(mem);
+      memoryDumps = mem.caution.dumps;
+      memoryMissingHolders = mem.caution.missingHolders;
+    }
+  } catch {
+    // ward_memory lands on first schema pass
   }
 
   return {
@@ -99,6 +124,11 @@ async function debateInputs(tokenId: number, reading: Reading, verdict: Verdict,
     confirmHolderSlope,
     pulseTape,
     confirmTape,
+    memoryLevel,
+    memoryDumps,
+    memoryMissingHolders,
+    incompletePulse,
+    incompleteConfirm,
   };
 }
 
@@ -149,12 +179,7 @@ export async function considerEntry(opts: {
 
   const debate = debateEntry(await debateInputs(opts.tokenId, opts.reading, opts.verdict, opts.phase));
 
-  if (debate.action === "pass") {
-    await agentNote("watch", "PASS", `$${opts.symbol} ${debate.headline}`, {
-      tokenId: opts.tokenId, mint: opts.mint,
-    });
-    return "skip";
-  }
+  if (debate.action === "pass") return "skip";
 
   await upsertWatch(opts.tokenId, debate, opts.mc, opts.liq, opts.verdict.score);
   emitSse("watch:update", { tokenId: opts.tokenId, action: debate.action, headline: debate.headline });
