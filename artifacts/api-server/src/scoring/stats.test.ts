@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { athPct, gainPct, laneOf, rollDays } from "./stats.ts";
+import { athPct, gainPct, hitsAt, hitRate, laneOf, rollDays } from "./stats.ts";
 
 describe("pass stats", () => {
   it("prints gain and ATH % off the pass market cap", () => {
@@ -30,9 +30,20 @@ describe("pass stats", () => {
     assert.equal(days[0].live, 1);
     assert.equal(days[0].dead, 1);
     assert.equal(days[0].hit2x, 0);
+    assert.equal(days[0].hit5x, 0);
     assert.equal(days[1].day, "2026-08-27");
     assert.equal(days[1].hit2x, 1);
     assert.equal(days[1].bestAthPct, 210);
     assert.equal(days[1].archived, 1);
+  });
+
+  it("counts 2x / 5x / 10x off ATH vs entry", () => {
+    assert.equal(hitsAt(99, 2), false);
+    assert.equal(hitsAt(100, 2), true);
+    assert.equal(hitsAt(400, 5), true);
+    assert.equal(hitsAt(899, 10), false);
+    assert.equal(hitsAt(900, 10), true);
+    assert.equal(hitRate(3, 10), 30);
+    assert.equal(hitRate(0, 0), null);
   });
 });

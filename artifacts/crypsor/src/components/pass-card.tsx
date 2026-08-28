@@ -10,27 +10,30 @@ export function Gain({ pct, className = "mult" }: { pct: number | null; classNam
 }
 
 export function TokenImg({
-  src, letter, className = "thumb lg",
+  src, mint, letter, className = "thumb lg",
 }: {
   src: string | null | undefined;
+  mint?: string | null;
   letter: string;
   className?: string;
 }) {
-  const proxied = deskImg(src);
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const urls = [deskImg(src, mint), mint ? deskImg(null, mint) : null]
+    .filter((u, i, a): u is string => Boolean(u) && a.indexOf(u) === i);
+  const [failed, setFailed] = useState<string[]>([]);
+  const url = urls.find((u) => !failed.includes(u));
   const mark = (letter || "?").slice(0, 1).toUpperCase();
-  if (!proxied || failedSrc === proxied) {
+  if (!url) {
     return <span className={`${className} blank`} aria-hidden>{mark}</span>;
   }
   return (
     <img
-      src={proxied}
+      src={url}
       alt=""
       className={className}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
-      onError={() => setFailedSrc(proxied)}
+      onError={() => setFailed((prev) => (prev.includes(url) ? prev : [...prev, url]))}
     />
   );
 }
@@ -80,7 +83,7 @@ export function PassRow({
   return (
     <div className={`trade rich ${lane}`}>
       <button type="button" className="thumb-hit" onClick={onOpen}>
-        <TokenImg src={p.image} letter={letterOf(p)} className="thumb lg" />
+        <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} className="thumb lg" />
       </button>
       <button type="button" className="card-main" onClick={onOpen}>
         <div className="sym">
@@ -112,7 +115,7 @@ export function PerformerCard({ p, onOpen }: { p: Pass; onOpen: () => void }) {
   return (
     <div className="performer-card">
       <button type="button" className="performer-open" onClick={onOpen}>
-        <TokenImg src={p.image} letter={letterOf(p)} />
+        <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} />
         <b>${p.symbol || p.mint.slice(0, 4)}</b>
         <Gain pct={p.ath_pct} className="inline-gain" />
         <em>{p.hotness != null ? `hot ${Math.round(p.hotness)}` : "ATH vs entry"}</em>
