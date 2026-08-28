@@ -9,7 +9,7 @@ import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { getWeights, prognosis, failsOf, callOf, type Phase } from "../scoring/ward";
 import { seedTradesFromAlerts } from "../agents/book";
-import { buildLiveBoard, passesOnDay } from "../agents/stats";
+import { buildLiveBoard, passesOnDay, buildStatsReport, parseHotFloor, parseLiveSort } from "../agents/stats";
 import { imageProxy } from "./img";
 
 const router: IRouter = Router();
@@ -246,6 +246,17 @@ const TRADE_SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.entry_liq, tr.e
 
 // ── desk (locked trades + performers) ────────────────────────────────────────
 
+router.get("/stats/report", async (_req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const payload = await cached("stats:report", 4_000, () => buildStatsReport());
+    res.json(ok(payload));
+  } catch (err) {
+    console.error("stats report failed", err);
+    res.status(500).json(fail("stats report failed"));
+  }
+});
+
 router.get("/stats", async (req, res) => {
   try {
     const day = String(req.query.day ?? "").slice(0, 10);
@@ -255,9 +266,11 @@ router.get("/stats", async (req, res) => {
       res.json(ok({ day, passes, at: new Date().toISOString() }));
       return;
     }
-    const payload = await cached("stats:live", 2_000, async () => {
+    const hot = parseHotFloor(req.query.hot);
+    const sort = parseLiveSort(req.query.sort);
+    const payload = await cached(`stats:live:${hot}:${sort}`, 2_000, async () => {
       await seedTradesFromAlerts();
-      return buildLiveBoard();
+      return buildLiveBoard({ hotFloor: hot, sort });
     });
     res.json(ok(payload));
   } catch (err) {

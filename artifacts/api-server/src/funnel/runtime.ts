@@ -18,6 +18,7 @@ import { snapshotsTick } from "../agents/snapshots";
 import { bookTick } from "../agents/book";
 import { reporterTick } from "../agents/reporter";
 import { stashFreshCounts } from "../agents/stash";
+import { scrubReceives } from "../agents/scrub";
 
 const log = logger.child({ module: "runtime" });
 
@@ -52,6 +53,7 @@ export async function ensureRuntime(): Promise<void> {
     bootPromise = (async () => {
       await ensureSchema();
       await stashFreshCounts();
+      void guarded("intake", () => scrubReceives());
       last.discover = Date.now() - DISCOVER_MS + 18_000;
       last.vitals = Date.now() - VITALS_MS + 8_000;
       setInterval(() => {
@@ -104,6 +106,9 @@ export async function ensureRuntime(): Promise<void> {
         log.warn("vitals watchdog — loop was quiet, kicking a print");
         void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
       }, 30_000);
+      setInterval(() => {
+        void guarded("intake", () => scrubReceives());
+      }, 10 * 60_000);
       started = true;
       log.info("desk started 24/7 (intake · discover · vitals · snapshots · archive · book · reporter)");
     })().catch((err) => {
@@ -140,6 +145,7 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   await ensureRuntime();
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
+  await guarded("intake", async () => { out.scrub = await scrubReceives(); });
   await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
   await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
   await guarded("archive", async () => { out.archive = await archiveTick(); });

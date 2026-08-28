@@ -4,11 +4,12 @@
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
-import { athPct, gainPct, laneOf, rollDays, type DayRoll } from "../scoring/stats";
+import { athPct, gainPct, laneOf, rollDays, hitRate, hitsAt, type DayRoll } from "../scoring/stats";
 import { capBand, type CapBand } from "../scoring/quality";
 import { isNoiseToken } from "../scoring/noise";
 import { MC_SUGGEST_MIN } from "../scoring/omo";
 import { HOT_FLOOR } from "../scoring/hotness";
+import { tokenImageUrl } from "../scoring/image";
 import { statsEpoch } from "./stash";
 import type { Momentum } from "../scoring/survival";
 
@@ -83,6 +84,76 @@ export type PerformanceStats = {
   hit2x: number;
 };
 
+export const LIVE_SORTS = ["hot", "gain", "ath", "mc", "new"] as const;
+export type LiveSort = (typeof LIVE_SORTS)[number];
+
+export type BoardOpts = {
+  hotFloor?: number;
+  sort?: LiveSort;
+};
+
+const LIVE_ORDER: Record<LiveSort, string> = {
+  hot: "t.hotness DESC NULLS LAST, t.last_scan_at DESC NULLS LAST",
+  gain: `CASE WHEN COALESCE(tr.entry_mc, t.admission_mc, 0) > 0
+          THEN COALESCE(tr.last_mc, t.last_mc, 0) / COALESCE(tr.entry_mc, t.admission_mc)
+          ELSE 0 END DESC NULLS LAST`,
+  ath: `CASE WHEN COALESCE(tr.entry_mc, t.admission_mc, 0) > 0
+         THEN COALESCE(tr.peak_mc, t.peak_mc, t.last_mc, 0) / COALESCE(tr.entry_mc, t.admission_mc)
+         ELSE 0 END DESC NULLS LAST`,
+  mc: "COALESCE(t.last_mc, t.admission_mc, 0) DESC",
+  new: "COALESCE(t.last_scan_at, t.discovered_at) DESC NULLS LAST",
+};
+
+export function parseLiveSort(raw: unknown): LiveSort {
+  const s = String(raw ?? "hot").toLowerCase();
+  return (LIVE_SORTS as readonly string[]).includes(s) ? s as LiveSort : "hot";
+}
+
+export function parseHotFloor(raw: unknown): number {
+  const n = parseInt(String(raw ?? HOT_FLOOR), 10);
+  if (!Number.isFinite(n)) return HOT_FLOOR;
+  return Math.min(90, Math.max(HOT_FLOOR, n));
+}
+
+export type HitRates = {
+  called: number;
+  called24h: number;
+  hit2x: number;
+  hit5x: number;
+  hit10x: number;
+  rate2x: number | null;
+  rate5x: number | null;
+  rate10x: number | null;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  bestAthPct: number | null;
+  live: number;
+  archived: number;
+  dead: number;
+};
+
+export type StatsReport = {
+  at: string;
+  epoch: string | null;
+  called: number;
+  called24h: number;
+  hit2x: number;
+  hit5x: number;
+  hit10x: number;
+  rate2x: number | null;
+  rate5x: number | null;
+  rate10x: number | null;
+  avgGainPct: number | null;
+  avgAthPct: number | null;
+  bestAthPct: number | null;
+  live: number;
+  archived: number;
+  dead: number;
+  days: DayRoll[];
+  recent: PassCard[];
+  recent24h: PassCard[];
+};
+
 export type LiveBoard = {
   at: string;
   epoch: string | null;
@@ -98,9 +169,11 @@ export type LiveBoard = {
   totals: PerformanceStats & { tokens: number };
 };
 
+const IMG = `COALESCE(NULLIF(t.image, ''), 'https://dd.dexscreener.com/ds-data/tokens/solana/' || t.mint || '.png') AS image`;
+
 const SELECT = `SELECT tr.id, tr.token_id, tr.entry_mc, tr.called_at, tr.peak_mc, tr.last_mc,
             tr.gain_x, tr.ath_x, tr.gain_pct, tr.ath_pct, tr.status, tr.last_liq,
-            t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase, t.tape_lead,
+            t.mint, t.symbol, t.name, ${IMG}, t.wallet_buys, t.phase, t.tape_lead,
             t.survival_score, t.last_momentum, t.cap_band, t.hotness
      FROM ward_trades tr
      JOIN f2_tokens t ON t.id = tr.token_id`;
@@ -119,7 +192,7 @@ function card(row: Record<string, unknown>): PassCard {
     mint: String(row.mint),
     symbol: (row.symbol as string | null) ?? null,
     name: (row.name as string | null) ?? null,
-    image: (row.image as string | null) ?? null,
+    image: tokenImageUrl((row.image as string | null) ?? null, String(row.mint)),
     passed_at: new Date(row.called_at as string).toISOString(),
     pass_mc: passMc,
     last_mc: last,
@@ -159,7 +232,7 @@ export async function rollupDays(): Promise<void> {
     await pool.query(
       `INSERT INTO ward_day_stats (
          day, passed_n, live_n, archived_n, dead_n,
-         avg_gain_pct, avg_ath_pct, hit_2x_n, best_ath_pct, updated_at
+         avg_gain_pct, avg_ath_pct, hit_2x_n, hit_5x_n, hit_10x_n, best_ath_pct, updated_at
        )
        SELECT
          (tr.called_at AT TIME ZONE 'UTC')::date,
@@ -170,6 +243,8 @@ export async function rollupDays(): Promise<void> {
          AVG(tr.gain_pct),
          AVG(tr.ath_pct),
          COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct,0) >= 100)::int,
+         COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct,0) >= 400)::int,
+         COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct,0) >= 900)::int,
          MAX(tr.ath_pct),
          NOW()
        FROM ward_trades tr
@@ -183,6 +258,8 @@ export async function rollupDays(): Promise<void> {
          avg_gain_pct = EXCLUDED.avg_gain_pct,
          avg_ath_pct = EXCLUDED.avg_ath_pct,
          hit_2x_n = EXCLUDED.hit_2x_n,
+         hit_5x_n = EXCLUDED.hit_5x_n,
+         hit_10x_n = EXCLUDED.hit_10x_n,
          best_ath_pct = EXCLUDED.best_ath_pct,
          updated_at = NOW()`,
     );
@@ -191,13 +268,16 @@ export async function rollupDays(): Promise<void> {
   }
 }
 
-export async function buildLiveBoard(): Promise<LiveBoard> {
+export async function buildLiveBoard(opts: BoardOpts = {}): Promise<LiveBoard> {
   const epoch = await statsEpoch();
   const epochIso = epoch?.toISOString() ?? null;
   const since = epoch ?? new Date(0);
+  const hotFloor = parseHotFloor(opts.hotFloor ?? HOT_FLOOR);
+  const sort = parseLiveSort(opts.sort ?? "hot");
+  const order = LIVE_ORDER[sort];
 
   const hot = await pool.query(
-    `SELECT t.id AS token_id, t.mint, t.symbol, t.name, t.image, t.wallet_buys, t.phase,
+    `SELECT t.id AS token_id, t.mint, t.symbol, t.name, ${IMG}, t.wallet_buys, t.phase,
             t.tape_lead, t.survival_score, t.last_momentum, t.cap_band, t.hotness,
             t.last_mc AS token_last_mc, t.peak_mc AS token_peak_mc, t.admission_mc,
             t.last_liq AS token_last_liq, t.last_scan_at,
@@ -210,9 +290,9 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
      WHERE COALESCE(t.hotness, 0) >= $1
        AND COALESCE(t.phase, 'intake') <> 'deceased'
        AND COALESCE(t.last_mc, t.admission_mc, 0) >= $3
-     ORDER BY t.hotness DESC NULLS LAST, t.last_scan_at DESC NULLS LAST
-     LIMIT 24`,
-    [HOT_FLOOR, since, MC_SUGGEST_MIN],
+     ORDER BY ${order}
+     LIMIT 40`,
+    [hotFloor, since, MC_SUGGEST_MIN],
   );
 
   const liveCards = uniqueByToken(hot.rows.map((r) => {
@@ -258,38 +338,9 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
      WHERE tr.called_at >= $1`,
     [since],
   );
-  let days: DayRoll[] = rollDays(dayRows.rows as Array<{
+  const days: DayRoll[] = rollDays(dayRows.rows as Array<{
     day: string; status: string; phase: string | null; gain_pct: number | null; ath_pct: number | null;
   }>);
-  try {
-    const stored = await pool.query(
-      `SELECT day::text, passed_n, live_n, archived_n, dead_n,
-              avg_gain_pct, avg_ath_pct, hit_2x_n, best_ath_pct
-       FROM ward_day_stats
-       WHERE day >= $1::date
-       ORDER BY day DESC
-       LIMIT 21`,
-      [since],
-    );
-    if (stored.rows.length) {
-      days = stored.rows.map((r: {
-        day: string; passed_n: number; live_n: number; archived_n: number; dead_n: number;
-        avg_gain_pct: number | null; avg_ath_pct: number | null; hit_2x_n: number; best_ath_pct: number | null;
-      }) => ({
-        day: String(r.day).slice(0, 10),
-        passed: Number(r.passed_n),
-        live: Number(r.live_n),
-        archived: Number(r.archived_n),
-        dead: Number(r.dead_n),
-        avgGainPct: r.avg_gain_pct != null ? Number(r.avg_gain_pct) : null,
-        avgAthPct: r.avg_ath_pct != null ? Number(r.avg_ath_pct) : null,
-        hit2x: Number(r.hit_2x_n),
-        bestAthPct: r.best_ath_pct != null ? Number(r.best_ath_pct) : null,
-      }));
-    }
-  } catch {
-    // use rolled days
-  }
 
   const passCards = uniqueByToken(livePass.rows.map((r) => card(r as Record<string, unknown>)));
   const archCards = uniqueByToken(archived.rows.map((r) => card(r as Record<string, unknown>)));
@@ -298,7 +349,7 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
   const aths = allPct.map((c) => c.ath_pct).filter((n): n is number => n != null);
   const survs = liveCards.map((c) => c.survival).filter((n): n is number => n != null);
   const performers = [...liveCards]
-    .filter((c) => (c.ath_pct ?? 0) > 0 || (c.hotness ?? 0) >= HOT_FLOOR)
+    .filter((c) => (c.ath_pct ?? 0) > 0 || (c.hotness ?? 0) >= hotFloor)
     .sort((a, b) => (b.ath_pct ?? -999) - (a.ath_pct ?? -999) || (b.hotness ?? 0) - (a.hotness ?? 0))
     .slice(0, 8);
 
@@ -321,7 +372,7 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     avgGainPct: gains.length ? gains.reduce((s, n) => s + n, 0) / gains.length : null,
     avgAthPct: aths.length ? aths.reduce((s, n) => s + n, 0) / aths.length : null,
     avgSurvival: survs.length ? survs.reduce((s, n) => s + n, 0) / survs.length : null,
-    hit2x: aths.filter((n) => n >= 100).length,
+    hit2x: aths.filter((n) => hitsAt(n, 2)).length,
   };
   const tokenStats: TokenStats = {
     tokens: liveCards.length,
@@ -343,6 +394,82 @@ export async function buildLiveBoard(): Promise<LiveBoard> {
     tokenStats,
     performance,
     totals: { ...performance, tokens: liveCards.length },
+  };
+}
+
+export async function buildStatsReport(): Promise<StatsReport> {
+  const epoch = await statsEpoch();
+  const epochIso = epoch?.toISOString() ?? null;
+  const since = epoch ?? new Date(0);
+
+  const agg = await pool.query(
+    `SELECT
+       COUNT(*)::int AS called,
+       COUNT(*) FILTER (WHERE tr.called_at > NOW() - INTERVAL '24 hours')::int AS called24h,
+       COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct, 0) >= 100)::int AS hit2x,
+       COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct, 0) >= 400)::int AS hit5x,
+       COUNT(*) FILTER (WHERE COALESCE(tr.ath_pct, 0) >= 900)::int AS hit10x,
+       AVG(tr.gain_pct) AS avg_gain,
+       AVG(tr.ath_pct) AS avg_ath,
+       MAX(tr.ath_pct) AS best_ath,
+       COUNT(*) FILTER (WHERE tr.status IN ('open','trim') AND COALESCE(t.phase,'ward') <> 'deceased')::int AS live,
+       COUNT(*) FILTER (WHERE tr.status = 'exit')::int AS archived,
+       COUNT(*) FILTER (WHERE tr.status = 'dead' OR t.phase = 'deceased')::int AS dead
+     FROM ward_trades tr
+     JOIN f2_tokens t ON t.id = tr.token_id
+     WHERE tr.called_at >= $1`,
+    [since],
+  );
+  const r = agg.rows[0] as {
+    called: number; called24h: number; hit2x: number; hit5x: number; hit10x: number;
+    avg_gain: number | null; avg_ath: number | null; best_ath: number | null;
+    live: number; archived: number; dead: number;
+  };
+  const called = Number(r?.called ?? 0);
+  const hit2x = Number(r?.hit2x ?? 0);
+  const hit5x = Number(r?.hit5x ?? 0);
+  const hit10x = Number(r?.hit10x ?? 0);
+
+  const dayRows = await pool.query(
+    `SELECT (tr.called_at AT TIME ZONE 'UTC')::date::text AS day,
+            tr.status, t.phase, tr.gain_pct, tr.ath_pct
+     FROM ward_trades tr
+     JOIN f2_tokens t ON t.id = tr.token_id
+     WHERE tr.called_at >= $1`,
+    [since],
+  );
+  const days = rollDays(dayRows.rows as Array<{
+    day: string; status: string; phase: string | null; gain_pct: number | null; ath_pct: number | null;
+  }>);
+
+  const recent = await pool.query(
+    `${SELECT} WHERE tr.called_at >= $1 ORDER BY tr.called_at DESC LIMIT 40`,
+    [since],
+  );
+  const recent24h = await pool.query(
+    `${SELECT} WHERE tr.called_at > NOW() - INTERVAL '24 hours' ORDER BY tr.called_at DESC LIMIT 40`,
+  );
+
+  return {
+    at: new Date().toISOString(),
+    epoch: epochIso,
+    called,
+    called24h: Number(r?.called24h ?? 0),
+    hit2x,
+    hit5x,
+    hit10x,
+    rate2x: hitRate(hit2x, called),
+    rate5x: hitRate(hit5x, called),
+    rate10x: hitRate(hit10x, called),
+    avgGainPct: r?.avg_gain != null ? Number(r.avg_gain) : null,
+    avgAthPct: r?.avg_ath != null ? Number(r.avg_ath) : null,
+    bestAthPct: r?.best_ath != null ? Number(r.best_ath) : null,
+    live: Number(r?.live ?? 0),
+    archived: Number(r?.archived ?? 0),
+    dead: Number(r?.dead ?? 0),
+    days,
+    recent: uniqueByToken(recent.rows.map((row) => card(row as Record<string, unknown>))),
+    recent24h: uniqueByToken(recent24h.rows.map((row) => card(row as Record<string, unknown>))),
   };
 }
 
