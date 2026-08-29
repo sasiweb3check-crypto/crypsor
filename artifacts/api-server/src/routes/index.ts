@@ -7,7 +7,7 @@ import { sseHandler } from "../core/bus";
 import { cached, cacheBackend } from "../core/cache";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
-import { listTokens, getToken, type TokenStatus } from "../agents/board";
+import { listTokens, getToken, listNotices, type TokenStatus } from "../agents/board";
 import { imageProxy } from "./img";
 
 const router: IRouter = Router();
@@ -215,9 +215,12 @@ router.put("/settings", async (req, res) => {
 router.get("/alerts", async (_req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, token_id AS "tokenId", kind, title, body, at
+      `SELECT id, token_id AS "tokenId", kind, title, body, at,
+              COALESCE(lane, payload->>'lane', 'early') AS lane,
+              score
        FROM ward_alerts
        WHERE kind IN ('admit', 'confirm', 'rung')
+         AND COALESCE(lane, payload->>'lane', 'early') = 'early'
        ORDER BY id DESC
        LIMIT 12`,
     );
@@ -225,6 +228,17 @@ router.get("/alerts", async (_req, res) => {
     res.json(ok(r.rows));
   } catch (err) {
     res.status(500).json(fail("alerts failed"));
+  }
+});
+
+router.get("/notices", async (_req, res) => {
+  try {
+    const payload = await cached("notices:high", 2_000, () => listNotices());
+    res.setHeader("Cache-Control", "no-store");
+    res.json(ok(payload));
+  } catch (err) {
+    console.error("notices failed", err);
+    res.status(500).json(fail("notices failed"));
   }
 });
 

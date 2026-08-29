@@ -1,6 +1,7 @@
 import { Route, Switch, Link, Router as WouterRouter, useLocation } from "wouter";
 import DeskPage from "./pages/ward";
 import TokenPage from "./pages/patient";
+import NoticesPage from "./pages/notices";
 import SettingsPage from "./pages/settings";
 import Toasts from "./components/toasts";
 
@@ -11,6 +12,7 @@ function Nav() {
     <nav className="nav">
       <span className="brand">Crypsor</span>
       <Link href="/" className={on("/") ? "on" : ""}>Desk</Link>
+      <Link href="/notices" className={loc.startsWith("/notices") ? "on" : ""}>Notices</Link>
       <Link href="/settings" className={on("/settings") ? "on" : ""}>Settings</Link>
     </nav>
   );
@@ -25,6 +27,7 @@ export default function App() {
         <Switch>
           <Route path="/" component={DeskPage} />
           <Route path="/p/:id" component={TokenPage} />
+          <Route path="/notices" component={NoticesPage} />
           <Route path="/settings" component={SettingsPage} />
           <Route>
             <div className="page"><div className="empty">Page not found</div></div>

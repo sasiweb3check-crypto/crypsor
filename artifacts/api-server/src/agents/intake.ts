@@ -8,7 +8,7 @@ import { recentBuys } from "../sources/helius";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
 import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
 import { isNoiseToken } from "../scoring/noise";
-import { fmtMc, labelOf, statusOf } from "../scoring/desk";
+import { fmtMc, statusOf } from "../scoring/desk";
 import { httpsImage } from "../scoring/image";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
@@ -146,23 +146,25 @@ async function admit(
   const nowMc = row.last_mc ?? detected;
   const prevBuys = row.prev_buys ?? 0;
   const extraWallet = !row.inserted && row.wallet_buys > prevBuys;
-  if (row.inserted || extraWallet) {
-    const deskLabel = labelOf({ lastMc: nowMc, detectedMc: detected, walletBuys: row.wallet_buys });
-    try {
-      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, deskLabel]);
-    } catch {
-      // desk_label lands after schema pass
-    }
-    await insertDeskMemory({
+  const stamp = (row.inserted || extraWallet)
+    ? await insertDeskMemory({
       tokenId: row.id,
       mc: nowMc,
       liq: row.last_liq != null ? Number(row.last_liq) : null,
       detected,
       wallets: row.wallet_buys,
-    });
+    })
+    : null;
+  if (stamp) {
+    try {
+      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, stamp.label]);
+    } catch {
+      // desk_label lands after schema pass
+    }
   }
 
   if (row.inserted) {
+    const screen = (stamp?.lane ?? "high") === "early";
     await agentNote("intake", "ADMIT", `$${ticker} buy via ${who} @ ${fmtMc(detected)}`, {
       tokenId: row.id, mint,
     });
@@ -170,15 +172,19 @@ async function admit(
       tokenId: row.id,
       kind: "admit",
       title: `BUY $${ticker}`,
-      body: `${who} bought. Detected MC ${fmtMc(detected)}.`,
-      payload: { mint, wallet, sig, mc: detected },
-      telegram: true,
+      body: `${who} bought. Detected MC ${fmtMc(detected)}. Score ${stamp?.score ?? "—"}.`,
+      payload: { mint, wallet, sig, mc: detected, score: stamp?.score ?? null },
+      lane: stamp?.lane ?? "high",
+      score: stamp?.score ?? null,
+      screen,
+      telegram: screen,
     });
     emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
     return true;
   }
 
   if (extraWallet && row.wallet_buys >= 2) {
+    const screen = (stamp?.lane ?? "high") === "early";
     await agentNote("intake", "CONFIRM", `$${ticker} wallet ${row.wallet_buys} via ${who}`, {
       tokenId: row.id, mint,
     });
@@ -186,9 +192,12 @@ async function admit(
       tokenId: row.id,
       kind: "confirm",
       title: `${nth(row.wallet_buys)} wallet $${ticker}`,
-      body: `${who} bought. ${row.wallet_buys} wallets. Detected ${fmtMc(detected)} · now ${fmtMc(nowMc)}.`,
-      payload: { mint, wallet, sig, mc: nowMc, wallets: row.wallet_buys },
-      telegram: true,
+      body: `${who} bought. ${row.wallet_buys} wallets. Detected ${fmtMc(detected)} · now ${fmtMc(nowMc)}. Score ${stamp?.score ?? "—"}.`,
+      payload: { mint, wallet, sig, mc: nowMc, wallets: row.wallet_buys, score: stamp?.score ?? null },
+      lane: stamp?.lane ?? "high",
+      score: stamp?.score ?? null,
+      screen,
+      telegram: screen,
     });
     emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
   }

@@ -1,6 +1,6 @@
 /**
  * Wallet-buy desk — detected MC is frozen at the buy.
- * Gain is last print vs that freeze. No scoring.
+ * Gain is last print vs that freeze. Snapshot score is frozen at each print.
  */
 
 export const MC_DEAD = 5_000;
@@ -109,4 +109,99 @@ export function fmtMc(v: number | null | undefined): string {
   if (v >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
   if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
   return `$${Math.round(v)}`;
+}
+
+export type AlertLane = "early" | "high";
+
+export type ScorePoint = {
+  mc: number | null | undefined;
+  liq: number | null | undefined;
+  detected: number | null | undefined;
+  wallets: number;
+  label: DeskLabel;
+  survived: boolean;
+  score?: number | null;
+};
+
+export const SCORE_BUCKETS = ["0-19", "20-39", "40-59", "60-79", "80-100"] as const;
+export type ScoreBucketName = (typeof SCORE_BUCKETS)[number];
+
+export function alertLane(detectedMc: number | null | undefined): AlertLane {
+  return inEarlyBand(detectedMc) ? "early" : "high";
+}
+
+/** Desk toasts + Telegram. High-MC prints stay off the screen. */
+export function screenAlert(lane: AlertLane): boolean {
+  return lane === "early";
+}
+
+export function scoreBucket(score: number | null | undefined): ScoreBucketName | null {
+  if (score == null || !Number.isFinite(score)) return null;
+  if (score < 20) return "0-19";
+  if (score < 40) return "20-39";
+  if (score < 60) return "40-59";
+  if (score < 80) return "60-79";
+  return "80-100";
+}
+
+export function pctDelta(now: number | null | undefined, prev: number | null | undefined): number | null {
+  if (now == null || prev == null || !Number.isFinite(now) || !Number.isFinite(prev) || prev === 0) {
+    return null;
+  }
+  return ((now - prev) / prev) * 100;
+}
+
+function clampScore(n: number): number {
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+/**
+ * Score this print against the previous snapshot. Frozen until the next print.
+ * Uses label + detected band + diffs (MC / liq / wallets) + last frozen score.
+ */
+export function scoreAtPoint(now: ScorePoint, prev: ScorePoint | null): number {
+  if (!now.survived || now.label === "dead") return 0;
+
+  let s = 22;
+  if (now.label === "watch") s = 28;
+  else if (now.label === "heat") s = 44;
+  else if (now.label === "late") s = 32;
+  else if (now.label === "call") s = 64;
+  else if (now.label === "runner") s = 84;
+
+  if (inEarlyBand(now.detected)) s += 8;
+  else if (now.detected != null && now.detected > EARLY_MAX) s -= 6;
+
+  const x = multipleOf(now.mc, now.detected);
+  if (x != null) {
+    if (x >= 1) s += 6;
+    if (x >= 1.5) s += 6;
+    if (x < 0.6) s -= 12;
+  }
+
+  if (prev) {
+    const mcD = pctDelta(now.mc, prev.mc);
+    if (mcD != null) {
+      if (mcD >= 15) s += 10;
+      else if (mcD >= 5) s += 5;
+      else if (mcD <= -35) s -= 18;
+      else if (mcD <= -15) s -= 8;
+    }
+    const liqD = pctDelta(now.liq, prev.liq);
+    if (liqD != null) {
+      if (liqD <= -40) s -= 15;
+      else if (liqD >= 20) s += 4;
+    }
+    const w = (now.wallets || 0) - (prev.wallets || 0);
+    if (w > 0) s += Math.min(20, w * 12);
+    if (prev.survived && now.mc != null && prev.mc != null && now.mc >= prev.mc) s += 4;
+
+    const prevScore = prev.score;
+    if (prevScore != null && Number.isFinite(prevScore)) {
+      if (prevScore >= 60 && mcD != null && mcD >= 5) s += 6;
+      if (prevScore >= 60 && mcD != null && mcD <= -15) s -= 10;
+    }
+  }
+
+  return clampScore(s);
 }

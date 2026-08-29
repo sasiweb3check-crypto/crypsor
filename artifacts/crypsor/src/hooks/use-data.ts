@@ -41,6 +41,7 @@ type AlertToast = {
   body: string;
   tokenId: number;
   at: string;
+  lane?: string;
 };
 
 type Shared = {
@@ -146,6 +147,7 @@ export function useAlertToasts(): {
         () => { /* connection handled by useSse */ },
         (a) => {
           if (!a?.title || !TOAST_KINDS.has(a.kind)) return;
+          if (a.lane === "high") return;
           setToasts((prev) => [{ ...a, id: a.id ?? Date.now() }, ...prev].slice(0, 6));
         },
       );

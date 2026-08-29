@@ -62,6 +62,14 @@ export default function TokenPage() {
           <div className="k">ATH vs buy</div>
           <div className="v">{fmtGainPct(t.ath_pct)}</div>
         </div>
+        <div className="num">
+          <div className="k">Frozen score</div>
+          <div className="v">{t.score ?? "—"}</div>
+          <div className="muted">
+            {t.prev_score != null ? `was ${t.prev_score}` : "at last print"}
+            {t.score != null && t.prev_score != null ? ` · ${t.score - t.prev_score >= 0 ? "+" : ""}${t.score - t.prev_score}` : ""}
+          </div>
+        </div>
       </div>
 
       <div className="h">Wallets</div>
@@ -79,8 +87,9 @@ export default function TokenPage() {
         <div key={s.at} className="line">
           <b>{fmtUsd(s.mc_usd)}</b>
           <Gain pct={s.gain_pct} />
+          {s.score != null ? <span className="lb watch">{s.score}{s.score_delta != null ? ` ${s.score_delta >= 0 ? "+" : ""}${s.score_delta}` : ""}</span> : null}
           <LabelChip label={s.label} />
-          <span className="muted">{s.survived === false ? "dead" : s.wallets ? `${s.wallets}w` : ""} · {timeAgo(s.at)}</span>
+          <span className="muted">{s.survived === false ? "dead" : s.wallets ? `${s.wallets}w` : ""}{s.mc_delta_pct != null ? ` · MC ${fmtGainPct(s.mc_delta_pct)}` : ""} · {timeAgo(s.at)}</span>
         </div>
       ))}
 

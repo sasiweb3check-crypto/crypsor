@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { api, type GainMatrix, type TokenBoard, type TokenStatus } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
-import { TokenRow, PerformerCard } from "../components/pass-card";
+import { TokenRow, PerformerCard, ScoreStrip } from "../components/pass-card";
 
 const FILTERS: Array<{ id: "all" | TokenStatus; label: string }> = [
   { id: "all", label: "All" },
@@ -77,6 +77,7 @@ export default function DeskPage() {
       ) : null}
 
       {early && d?.matrix ? <MatrixStrip matrix={d.matrix} /> : null}
+      {early && d?.scoreStats ? <ScoreStrip stats={d.scoreStats} /> : null}
 
       <form
         className="toolbar"
