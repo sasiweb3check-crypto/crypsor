@@ -35,6 +35,10 @@ type PrevRow = {
   buys_5m?: number | null;
   sells_5m?: number | null;
   holders?: number | null;
+  top10_pct?: number | null;
+  top10_excl_lp?: number | null;
+  cluster_n?: number | null;
+  holders_rug?: boolean | null;
   boosts?: number | null;
   replies?: number | null;
   price_chg_m5?: number | null;
@@ -56,6 +60,11 @@ export type MemoryPrint = {
   priceChgH1?: number | null;
   holders?: number | null;
   top10Pct?: number | null;
+  top10ExclLp?: number | null;
+  top20Pct?: number | null;
+  lpPct?: number | null;
+  clusterN?: number | null;
+  holdersRug?: boolean | null;
   boosts?: number | null;
   replies?: number | null;
   live?: boolean | null;
@@ -93,6 +102,10 @@ function pointFromPrev(prev: PrevRow, fallback: DeskLabel): ScorePoint {
     buys5m: prev.buys_5m ?? null,
     sells5m: prev.sells_5m ?? null,
     holders: prev.holders ?? null,
+    top10Pct: prev.top10_pct ?? null,
+    top10ExclLp: prev.top10_excl_lp ?? null,
+    clusterN: prev.cluster_n ?? null,
+    holdersRug: prev.holders_rug ?? null,
     boosts: prev.boosts ?? null,
     replies: prev.replies ?? null,
     priceChgM5: prev.price_chg_m5 ?? null,
@@ -117,6 +130,11 @@ function pointFromPrint(opts: MemoryPrint, stamp: ReturnType<typeof deskStamp>):
     priceChgH1: opts.priceChgH1 ?? null,
     holders: opts.holders ?? null,
     top10Pct: opts.top10Pct ?? null,
+    top10ExclLp: opts.top10ExclLp ?? null,
+    top20Pct: opts.top20Pct ?? null,
+    lpPct: opts.lpPct ?? null,
+    clusterN: opts.clusterN ?? null,
+    holdersRug: opts.holdersRug ?? null,
     boosts: opts.boosts ?? null,
     replies: opts.replies ?? null,
     live: opts.live ?? null,
@@ -132,6 +150,10 @@ function pointFromPrint(opts: MemoryPrint, stamp: ReturnType<typeof deskStamp>):
 
 async function prevMemory(tokenId: number): Promise<PrevRow | null> {
   const selects = [
+    `SELECT mc_usd, liq_usd, detected_mc, wallets, label, survived, score,
+            vol_5m, vol_h1, buys_5m, sells_5m, holders, boosts, replies, price_chg_m5,
+            top10_pct, top10_excl_lp, cluster_n, holders_rug
+     FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 1`,
     `SELECT mc_usd, liq_usd, detected_mc, wallets, label, survived, score,
             vol_5m, vol_h1, buys_5m, sells_5m, holders, boosts, replies, price_chg_m5
      FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 1`,
@@ -175,7 +197,9 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
     rug: survival.rug,
   });
   const stamp = { ...base, label };
-  const entry = entryOf({ lastMc: opts.mc, score, survived: stamp.survived, rug: survival.rug });
+  const entry = entryOf({
+    lastMc: opts.mc, score, survived: stamp.survived, rug: survival.rug, holdersRug: survival.holders_rug,
+  });
   const prevScore = prev?.score ?? null;
   const scoreDelta = prevScore != null ? score - prevScore : null;
   const mcDelta = pctDelta(opts.mc, prev?.mc_usd);
@@ -184,6 +208,7 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
   const tags = [...broken.tags];
   if (survival.rug_possible) tags.push("rug_possible");
   if (survival.dump === "clean") tags.push("clean_dump");
+  if (survival.holders_rug) tags.push("holders_rug");
   const catalyst = broken.catalyst || catalystOf({
     lastMc: opts.mc,
     detectedMc: opts.detected,
@@ -193,10 +218,13 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
     liq: opts.liq,
     holders: opts.holders,
     prevHolders: prev?.holders,
+    top10ExclLp: opts.top10ExclLp,
+    holdersRug: survival.holders_rug,
     tags,
   });
   const ratio = buyRatio(opts.buys5m, opts.sells5m);
   const survivalJson = JSON.stringify(survival);
+  const measuredRug = opts.holdersRug != null ? survival.holders_rug : null;
 
   try {
     await pool.query(
@@ -204,8 +232,8 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
          (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived,
           score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
           vol_5m, catalyst, factors, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
-          survival, rug)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
+          survival, rug, top10_pct, top10_excl_lp, cluster_n, holders_rug)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
       [
         opts.tokenId,
         opts.mc,
@@ -236,6 +264,10 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
         opts.priceChgM5 ?? null,
         survivalJson,
         survival.rug,
+        opts.top10Pct ?? null,
+        opts.top10ExclLp ?? null,
+        opts.clusterN ?? null,
+        measuredRug,
       ],
     );
   } catch {
@@ -244,28 +276,48 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
         `INSERT INTO desk_memory
            (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived,
             score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
-            vol_5m, catalyst)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+            vol_5m, catalyst, factors, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
+            survival, rug)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
         [
           opts.tokenId, opts.mc, opts.liq, opts.detected, stamp.gain,
           opts.wallets, stamp.status, stamp.label, stamp.survived,
           score, prevScore, scoreDelta, mcDelta, liqDelta, walletDelta, lane,
-          opts.vol5m ?? null, catalyst,
+          opts.vol5m ?? null, catalyst, JSON.stringify(broken.factors),
+          opts.volH1 ?? null, opts.buys5m ?? null, opts.sells5m ?? null, opts.holders ?? null,
+          ratio, opts.boosts ?? null, opts.replies ?? null, opts.priceChgM5 ?? null,
+          survivalJson, survival.rug,
         ],
       );
     } catch {
       try {
         await pool.query(
           `INSERT INTO desk_memory
-             (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+             (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived,
+              score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
+              vol_5m, catalyst)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
           [
             opts.tokenId, opts.mc, opts.liq, opts.detected, stamp.gain,
             opts.wallets, stamp.status, stamp.label, stamp.survived,
+            score, prevScore, scoreDelta, mcDelta, liqDelta, walletDelta, lane,
+            opts.vol5m ?? null, catalyst,
           ],
         );
       } catch {
-        // table appears after schema pass
+        try {
+          await pool.query(
+            `INSERT INTO desk_memory
+               (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [
+              opts.tokenId, opts.mc, opts.liq, opts.detected, stamp.gain,
+              opts.wallets, stamp.status, stamp.label, stamp.survived,
+            ],
+          );
+        } catch {
+          // table appears after schema pass
+        }
       }
     }
   }
@@ -273,17 +325,33 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
   try {
     await pool.query(
       `UPDATE f2_tokens SET desk_score = $2, desk_prev_score = $3, desk_score_at = NOW(),
-         last_holders = COALESCE($4, last_holders), last_rug = $5, last_survival = $6 WHERE id = $1`,
-      [opts.tokenId, score, prevScore, opts.holders ?? null, survival.rug, survivalJson],
+         last_holders = COALESCE($4, last_holders), last_rug = $5, last_survival = $6,
+         last_top10_pct = COALESCE($7, last_top10_pct),
+         last_top10_excl_lp = COALESCE($8, last_top10_excl_lp),
+         last_cluster_n = COALESCE($9, last_cluster_n),
+         last_holders_rug = COALESCE($10, last_holders_rug)
+       WHERE id = $1`,
+      [
+        opts.tokenId, score, prevScore, opts.holders ?? null, survival.rug, survivalJson,
+        opts.top10Pct ?? null, opts.top10ExclLp ?? null, opts.clusterN ?? null, measuredRug,
+      ],
     );
   } catch {
     try {
       await pool.query(
-        `UPDATE f2_tokens SET desk_score = $2, desk_prev_score = $3, desk_score_at = NOW() WHERE id = $1`,
-        [opts.tokenId, score, prevScore],
+        `UPDATE f2_tokens SET desk_score = $2, desk_prev_score = $3, desk_score_at = NOW(),
+           last_holders = COALESCE($4, last_holders), last_rug = $5, last_survival = $6 WHERE id = $1`,
+        [opts.tokenId, score, prevScore, opts.holders ?? null, survival.rug, survivalJson],
       );
     } catch {
-      // columns land after schema pass
+      try {
+        await pool.query(
+          `UPDATE f2_tokens SET desk_score = $2, desk_prev_score = $3, desk_score_at = NOW() WHERE id = $1`,
+          [opts.tokenId, score, prevScore],
+        );
+      } catch {
+        // columns land after schema pass
+      }
     }
   }
 

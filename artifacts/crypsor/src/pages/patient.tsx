@@ -40,8 +40,10 @@ export default function TokenPage() {
           <div className="hero-cta">
             <a className="chip on" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
             <span className="score-pip">{t.score ?? "—"}</span>
-            {t.rug === "dump" || t.rug === "rug" || t.rug === "caution"
-              ? <span className={`risk ${t.rug}`}>{t.rug === "rug" ? "rug possible" : t.rug === "dump" ? "clean dump" : "caution"}</span>
+            {t.holders_rug || t.rug === "dump" || t.rug === "rug" || t.rug === "caution"
+              ? <span className={`risk ${t.holders_rug || t.rug === "rug" ? "rug" : t.rug}`}>
+                  {t.holders_rug ? "holders rug possible" : t.rug === "rug" ? "rug possible" : t.rug === "dump" ? "clean dump" : "caution"}
+                </span>
               : null}
           </div>
         </div>
@@ -77,7 +79,7 @@ export default function TokenPage() {
         <div className="num">
           <div className="k">Entry</div>
           <div className="v">{t.entry_mc != null ? fmtUsd(t.entry_mc) : "—"}</div>
-          <div className="muted">{t.entry_mc != null ? "score ≥ 40, no dump" : "not suggested"}</div>
+          <div className="muted">{t.entry_mc != null ? "score ≥ 40, no dump / holders rug" : "not suggested"}</div>
         </div>
         <div className="num">
           <div className="k">Liquidity</div>
@@ -89,17 +91,25 @@ export default function TokenPage() {
         </div>
         <div className="num">
           <div className="k">Holders</div>
-          <div className="v">{latest?.holders ?? "—"}</div>
+          <div className="v">{t.holders ?? latest?.holders ?? "—"}</div>
+        </div>
+        <div className="num">
+          <div className="k">Top 10 excl LP</div>
+          <div className={`v ${t.holders_rug || (t.top10_excl_lp != null && t.top10_excl_lp >= 50) ? "dn" : ""}`}>
+            {t.top10_excl_lp != null ? `${t.top10_excl_lp.toFixed(1)}%` : latest?.top10_excl_lp != null ? `${latest.top10_excl_lp.toFixed(1)}%` : "—"}
+          </div>
         </div>
       </div>
 
       {(latest?.catalyst) ? (
         <p className="note"><b>Catalyst. </b>{latest.catalyst}</p>
       ) : null}
-      {latest?.rug === "dump" || latest?.rug === "rug" || latest?.survival?.rug_possible ? (
+      {latest?.rug === "dump" || latest?.rug === "rug" || latest?.holders_rug || latest?.survival?.rug_possible ? (
         <p className="note err">
-          <b>{latest.rug === "rug" ? "Rug possible. " : "Dump vs last snapshot. "}</b>
-          MC, liquidity, and holders on the chart below are the caution — surviving score will use this path.
+          <b>{latest.holders_rug ? "Holders rug possible. " : latest.rug === "rug" ? "Rug possible. " : "Dump vs last snapshot. "}</b>
+          {latest.holders_rug && (latest.top10_excl_lp != null || t.top10_excl_lp != null)
+            ? `Top 10 excl LP ${(latest.top10_excl_lp ?? t.top10_excl_lp)?.toFixed(1)}%. Mint/freeze revoked and LP burned do not clear this.`
+            : "MC, liquidity, and holders on the chart below are the caution — surviving score will use this path."}
         </p>
       ) : null}
       {latest?.factors && Object.keys(latest.factors).length > 0 ? (
@@ -129,12 +139,13 @@ export default function TokenPage() {
           <b>{fmtUsd(s.mc_usd)}</b>
           <Gain pct={s.gain_pct} />
           {s.score != null ? <span className="score-pip">{s.score}{s.score_delta != null ? ` ${s.score_delta >= 0 ? "+" : ""}${s.score_delta}` : ""}</span> : null}
-          {s.rug && s.rug !== "none" ? <span className={`risk ${s.rug}`}>{s.rug === "rug" ? "rug possible" : s.rug}</span> : null}
+          {s.rug && s.rug !== "none" ? <span className={`risk ${s.rug}`}>{s.holders_rug ? "holders rug possible" : s.rug === "rug" ? "rug possible" : s.rug}</span> : null}
           <span className="muted">
             {s.survived === false ? "dead" : ""}
             {s.vol_5m ? ` · vol ${fmtUsd(s.vol_5m)}` : ""}
             {s.liq_usd ? ` · liq ${fmtUsd(s.liq_usd)}` : ""}
             {s.holders ? ` · ${s.holders}h` : ""}
+            {s.top10_excl_lp != null ? ` · top10 excl ${s.top10_excl_lp.toFixed(1)}%` : ""}
             {s.buy_ratio != null ? ` · ${(s.buy_ratio * 100).toFixed(0)}% buys` : ""}
             {s.boosts ? ` · boost ${s.boosts}` : ""}
             {s.mc_delta_pct != null ? ` · MC ${fmtGainPct(s.mc_delta_pct)}` : ""}

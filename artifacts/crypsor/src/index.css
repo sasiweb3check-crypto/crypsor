@@ -223,6 +223,7 @@ button { cursor: pointer; }
 .st.dead { color: var(--muted); }
 .st.score { color: var(--blue); }
 .st.admit { color: var(--blue); }
+.st.rug { color: var(--red); }
 .lb {
   font-size: 11px;
   text-transform: uppercase;

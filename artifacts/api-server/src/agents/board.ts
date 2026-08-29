@@ -32,6 +32,9 @@ export type TokenCard = {
   rug: RugKind;
   entry_mc: number | null;
   holders: number | null;
+  holders_rug: boolean;
+  top10_excl_lp: number | null;
+  cluster_n: number | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -65,10 +68,15 @@ export type DeskMemory = {
   price_chg_m5: number | null;
   rug: string | null;
   survival: Record<string, unknown> | null;
+  top10_pct: number | null;
+  top10_excl_lp: number | null;
+  cluster_n: number | null;
+  holders_rug: boolean | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
             t.detected_mc, t.admission_mc, t.last_mc, t.peak_mc, t.last_liq, t.last_holders,
+            t.last_top10_excl_lp, t.last_cluster_n, t.last_holders_rug,
             t.discovered_at, t.last_scan_at, t.desk_score, t.desk_prev_score, t.desk_score_at, t.last_rug
      FROM f2_tokens t`;
 
@@ -90,6 +98,9 @@ function card(row: Record<string, unknown>): TokenCard {
   const rug = (row.last_rug === "rug" || row.last_rug === "dump" || row.last_rug === "caution")
     ? row.last_rug as RugKind
     : "none";
+  const holdersRug = row.last_holders_rug === true;
+  const top10Excl = row.last_top10_excl_lp != null ? Number(row.last_top10_excl_lp) : null;
+  const clusterN = row.last_cluster_n != null ? Number(row.last_cluster_n) : null;
   const status = statusOf(last, detected);
   return {
     id: Number(row.id),
@@ -110,8 +121,11 @@ function card(row: Record<string, unknown>): TokenCard {
     prev_score: row.desk_prev_score != null ? Number(row.desk_prev_score) : null,
     score_at: row.desk_score_at ? new Date(row.desk_score_at as string).toISOString() : null,
     rug,
-    entry_mc: entryOf({ lastMc: last, score, survived: status !== "dead", rug }),
+    entry_mc: entryOf({ lastMc: last, score, survived: status !== "dead", rug, holdersRug }),
     holders: row.last_holders != null ? Number(row.last_holders) : null,
+    holders_rug: holdersRug,
+    top10_excl_lp: top10Excl,
+    cluster_n: clusterN,
     discovered_at: new Date(row.discovered_at as string).toISOString(),
     last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
   };
@@ -230,7 +244,7 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     early: earlyN,
     active: banded.filter((c) => c.status !== "dead").length,
     high: banded.filter((c) =>
-      c.status !== "dead" && (c.score ?? 0) >= 40 && c.rug !== "dump" && c.rug !== "rug"
+      c.status !== "dead" && (c.score ?? 0) >= 40 && c.rug !== "dump" && c.rug !== "rug" && !c.holders_rug
     ).length,
     score40: banded.filter((c) => (c.score ?? 0) >= 40).length,
     score60: banded.filter((c) => (c.score ?? 0) >= 60).length,
@@ -244,7 +258,7 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
   if (scoreMin > 0) filtered = filtered.filter((c) => (c.score ?? 0) >= scoreMin);
   if (gainMin >= 2) filtered = filtered.filter((c) => c.gain_pct != null && 1 + c.gain_pct / 100 >= gainMin);
   if (status === "active" && scoreMin >= 40) {
-    filtered = filtered.filter((c) => c.rug !== "dump" && c.rug !== "rug");
+    filtered = filtered.filter((c) => c.rug !== "dump" && c.rug !== "rug" && !c.holders_rug);
   }
 
   const ranked = [...filtered].sort((a, b) => {
@@ -255,7 +269,7 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
   });
 
   const performers = [...filtered]
-    .filter((c) => c.status !== "dead" && c.rug !== "dump" && c.rug !== "rug")
+    .filter((c) => c.status !== "dead" && c.rug !== "dump" && c.rug !== "rug" && !c.holders_rug)
     .sort((a, b) => (b.gain_pct ?? -999) - (a.gain_pct ?? -999))
     .slice(0, 8);
 
@@ -322,6 +336,10 @@ function mapMemory(s: Record<string, unknown>): DeskMemory {
     survival: s.survival && typeof s.survival === "object" && !Array.isArray(s.survival)
       ? s.survival as Record<string, unknown>
       : null,
+    top10_pct: n("top10_pct"),
+    top10_excl_lp: n("top10_excl_lp"),
+    cluster_n: n("cluster_n"),
+    holders_rug: s.holders_rug == null ? null : Boolean(s.holders_rug),
   };
 }
 
@@ -354,7 +372,7 @@ export async function getToken(id: number): Promise<{
       `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
               score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
               catalyst, factors, vol_5m, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
-              survival, rug
+              survival, rug, top10_pct, top10_excl_lp, cluster_n, holders_rug
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );
@@ -364,13 +382,25 @@ export async function getToken(id: number): Promise<{
       const mem = await pool.query(
         `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
                 score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
-                catalyst
+                catalyst, factors, vol_5m, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
+                survival, rug
          FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
         [id],
       );
       memory = mem.rows.map((row) => mapMemory(row as Record<string, unknown>));
     } catch {
-      memory = [];
+      try {
+        const mem = await pool.query(
+          `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
+                  score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
+                  catalyst
+           FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+          [id],
+        );
+        memory = mem.rows.map((row) => mapMemory(row as Record<string, unknown>));
+      } catch {
+        memory = [];
+      }
     }
   }
   return {
@@ -442,7 +472,7 @@ export async function listNotices(): Promise<NoticeBoard> {
               a.at, t.symbol, t.mint
        FROM ward_alerts a
        LEFT JOIN f2_tokens t ON t.id = a.token_id
-       WHERE a.kind IN ('admit', 'rung', 'score')
+       WHERE a.kind IN ('admit', 'rung', 'score', 'rug')
        ORDER BY a.id DESC
        LIMIT 80`,
     );

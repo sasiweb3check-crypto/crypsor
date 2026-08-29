@@ -146,6 +146,60 @@ describe("snapshot score", () => {
     assert.ok(entryOf({ lastMc: 400_000, score: b.score, survived: true, rug: "none" }) === 400_000);
   });
 
+  it("flags a holders rug on the first print from clustered supply", () => {
+    const now = pt({
+      mc: 18_000,
+      detected: 12_900,
+      holders: 293,
+      top10Pct: 76.38,
+      top10ExclLp: 59.90,
+      top20Pct: 80.77,
+      clusterN: 8,
+    });
+    const s = survivalOf(now, null);
+    assert.equal(s.holders_rug, true);
+    assert.equal(s.rug, "rug");
+    assert.equal(s.dump, "holders");
+    assert.equal(s.rug_possible, true);
+    assert.match(s.reason ?? "", /top10 excl LP 59\.9%/);
+    assert.equal(entryOf({ lastMc: 18_000, score: 70, survived: true, rug: s.rug, holdersRug: true }), null);
+    const text = catalystOf({ lastMc: 18_000, detectedMc: 12_900, holdersRug: true, top10ExclLp: 59.90, tags: ["holders_rug"] });
+    assert.match(text, /holders rug possible · top10 excl LP 59\.9%/);
+  });
+
+  it("crushes the holders factor on concentration instead of counting 293 wallets as safe", () => {
+    const healthy = scoreBreakdown(pt({ mc: 18_000, detected: 12_900, holders: 293 }), null);
+    const clustered = scoreBreakdown(pt({
+      mc: 18_000, detected: 12_900, holders: 293,
+      top10Pct: 76.38, top10ExclLp: 59.90, top20Pct: 80.77, clusterN: 8,
+    }), null);
+    assert.ok((clustered.factors.holders ?? 100) <= 12, `holders factor ${clustered.factors.holders}`);
+    assert.ok((healthy.factors.holders ?? 0) > (clustered.factors.holders ?? 0));
+    assert.ok(clustered.tags.includes("holders_rug"));
+  });
+
+  it("does not give entry to a hot tape when holders are clustered", () => {
+    const b = scoreBreakdown(pt({
+      mc: 400_000,
+      detected: 400_000,
+      liq: 45_000,
+      vol5m: 28_000,
+      buys5m: 90,
+      sells5m: 22,
+      priceChgM5: 7,
+      holders: 293,
+      top10ExclLp: 59.90,
+      top10Pct: 76.38,
+      clusterN: 8,
+    }), null);
+    const s = survivalOf(pt({
+      mc: 400_000, detected: 400_000, holders: 293,
+      top10ExclLp: 59.90, top10Pct: 76.38, clusterN: 8,
+    }), null);
+    assert.equal(s.rug, "rug");
+    assert.equal(entryOf({ lastMc: 400_000, score: b.score, survived: true, rug: s.rug, holdersRug: s.holders_rug }), null);
+  });
+
   it("flags a clean dump vs the previous snapshot for surviving score later", () => {
     const prev = pt({ mc: 40_000, detected: 12_900, liq: 12_000, holders: 400, vol5m: 3_000 });
     const now = pt({
