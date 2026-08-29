@@ -260,6 +260,16 @@ const SCHEMA: string[] = [
      WHERE detected_mc IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_f2_tokens_wallet_buys_scan
      ON f2_tokens (last_scan_at ASC NULLS FIRST) WHERE wallet_buys > 0`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS notified_rung integer`,
+  `UPDATE f2_tokens SET notified_rung = CASE
+      WHEN COALESCE(detected_mc, admission_mc, 0) <= 0 OR last_mc IS NULL THEN 1
+      WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 20 THEN 20
+      WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 10 THEN 10
+      WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 5 THEN 5
+      WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 2 THEN 2
+      ELSE 1
+    END
+    WHERE notified_rung IS NULL`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,

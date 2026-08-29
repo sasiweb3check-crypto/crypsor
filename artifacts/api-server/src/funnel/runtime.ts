@@ -56,7 +56,7 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("scrub", scrubReceives).finally(() => { running.scrub = false; });
       }, 30_000);
       started = true;
-      log.info("desk started — wallet buys · 15m MC scan");
+      log.info("desk started — wallet buys · 50s MC while young/running · 15m otherwise");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -75,7 +75,7 @@ export function agentStatus(): {
     started,
     last: { ...last },
     running: { ...running },
-    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scrub: SCRUB_MS },
+    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scanFast: 50_000, scrub: SCRUB_MS },
   };
 }
 

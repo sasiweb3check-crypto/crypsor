@@ -98,7 +98,8 @@ export default function SettingsPage() {
 
       <div className="h">Scan</div>
       <p className="note">
-        Intake polls tracked wallets. Market cap is printed every 15 minutes. Names under $5k MC go to Archived.
+        Intake polls tracked wallets. Young or running names print MC about every minute; the rest every 15 minutes. Under $5k MC goes to Archived.
+        Telegram: first buy, each extra tracked wallet, and 2× / 5× / 10× / 20× vs the detected buy MC.
         On Render Starter the process stays up. If the host is Free, ping <code>/api/keepalive</code> every minute.
       </p>
     </div>
