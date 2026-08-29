@@ -411,6 +411,23 @@ const SCHEMA: string[] = [
      payload jsonb,
      at timestamptz NOT NULL DEFAULT NOW()
    )`,
+  `CREATE TABLE IF NOT EXISTS scout_jobs (
+     id serial PRIMARY KEY,
+     mint text NOT NULL,
+     status text NOT NULL DEFAULT 'queued',
+     phase text,
+     detail text,
+     progress_n integer,
+     progress_of integer,
+     token jsonb,
+     wallets jsonb,
+     fills_n integer,
+     notes jsonb,
+     error text,
+     created_at timestamptz NOT NULL DEFAULT NOW(),
+     updated_at timestamptz NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_scout_jobs_created ON scout_jobs (created_at DESC)`,
 ];
 
 let ensured = false;

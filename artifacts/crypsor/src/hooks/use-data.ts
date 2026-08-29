@@ -85,6 +85,7 @@ function acquire(
       for (const fn of s.connListeners) fn(false);
     };
     es.addEventListener("desk:update", () => bump(s));
+    es.addEventListener("scout:update", () => bump(s));
     es.addEventListener("alert:new", (e) => {
       bump(s);
       try {

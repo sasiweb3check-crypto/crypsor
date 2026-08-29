@@ -178,6 +178,10 @@ export function gmgnUrl(mint: string): string {
   return `https://gmgn.ai/sol/token/${mint}`;
 }
 
+export function gmgnWalletUrl(wallet: string): string {
+  return `https://gmgn.ai/sol/address/${wallet}`;
+}
+
 export function fmtUsd(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   if (v >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
@@ -207,3 +211,68 @@ export function shortMint(mint: string): string {
 export function shortWallet(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
+
+export type ScoutWalletRow = {
+  wallet: string;
+  status: "hold" | "partial" | "sold_all";
+  balance: number;
+  investedUsd: number;
+  proceedsUsd: number;
+  remainingUsd: number;
+  remainingTokens: number;
+  avgBuy: number | null;
+  avgSell: number | null;
+  realizedRoi: number | null;
+  overallRoi: number | null;
+  profitUsd: number;
+  winrate: number | null;
+  cycles: number;
+  closedCycles: number;
+  avgHoldMs: number | null;
+  legs: number;
+  buys: number;
+  sells: number;
+  minBuyMc: number | null;
+  buyMcs: number[];
+  firstAt: number | null;
+  lastAt: number | null;
+  lpLike: boolean;
+  labels: string[];
+};
+
+export type ScoutTokenMeta = {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  decimals: number | null;
+  supply: number | null;
+  priceUsd: number | null;
+  mcUsd: number | null;
+  liqUsd: number | null;
+  createdAt: string | null;
+  launchpad: string | null;
+  pairAddress: string | null;
+  bondingCurve: string | null;
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+  solUsd: number | null;
+  notes: string[];
+};
+
+export type ScoutJob = {
+  id: number;
+  mint: string;
+  status: "queued" | "running" | "done" | "error";
+  phase: string | null;
+  detail: string | null;
+  progress_n: number | null;
+  progress_of: number | null;
+  token: ScoutTokenMeta | null;
+  wallets: ScoutWalletRow[] | null;
+  fills_n: number | null;
+  notes: string[] | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};

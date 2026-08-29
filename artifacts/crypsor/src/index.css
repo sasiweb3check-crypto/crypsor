@@ -45,6 +45,7 @@ button { cursor: pointer; }
   margin: 0 auto;
   padding: 16px;
 }
+.page.wide { max-width: 1100px; }
 .head {
   display: flex;
   align-items: center;
@@ -224,6 +225,9 @@ button { cursor: pointer; }
 .st.score { color: var(--blue); }
 .st.admit { color: var(--blue); }
 .st.rug { color: var(--red); }
+.st.hold { color: var(--green); }
+.st.partial { color: var(--blue); }
+.st.sold_all, .st.sold { color: var(--muted); }
 .lb {
   font-size: 11px;
   text-transform: uppercase;
@@ -334,6 +338,14 @@ button { cursor: pointer; }
 }
 .wlist code { font-size: 12px; color: var(--muted); word-break: break-all; }
 
+.scout-card { grid-template-columns: minmax(0, 1fr) auto; }
+.scout-actions { flex-wrap: wrap; justify-content: flex-end; }
+.toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .toasts {
   position: fixed;
   right: 16px;
@@ -365,4 +377,6 @@ button { cursor: pointer; }
   .matrix-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tok-card { grid-template-columns: 48px minmax(0, 1fr); }
   .tok-card .side { display: none; }
+  .scout-card { grid-template-columns: minmax(0, 1fr); }
+  .scout-card .side { display: flex; }
 }
