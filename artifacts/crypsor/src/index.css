@@ -236,6 +236,33 @@ button { cursor: pointer; }
 }
 .wlist code { font-size: 12px; color: var(--muted); word-break: break-all; }
 
+.toasts {
+  position: fixed;
+  right: 16px;
+  top: 56px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
+}
+.toast {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  width: 100%;
+}
+.toast b { font-size: 13px; }
+.toast span { color: var(--muted); font-size: 12px; }
+.toast.rung { border-color: #2a5a40; }
+.toast.confirm { border-color: #3a4a6a; }
+
 @media (max-width: 700px) {
   .meta { display: none; }
 }

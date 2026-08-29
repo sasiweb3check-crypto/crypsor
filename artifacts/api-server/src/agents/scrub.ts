@@ -1,12 +1,12 @@
 /**
  * Drop receive-only "buys". Tracked wallets must spend quote/SOL.
- * Soft-kill: phase deceased, wallet_buys 0. No hard delete (FK graph).
+ * Walks the whole book (not only the newest 60). Soft-kill: wallet_buys 0.
  */
 import { pool } from "../core/db";
 import { isWalletSwapBuy, txsBySigs } from "../sources/helius";
 import { agentNote } from "./log";
 
-const BATCH = 60;
+const BATCH = 80;
 
 type Row = {
   id: number;
@@ -19,18 +19,31 @@ type Row = {
 
 type Admit = { token_id: number; wallet: string; sig: string };
 
+let cursor = 0;
+
 export async function scrubReceives(): Promise<{ checked: number; killed: number; cleared: number }> {
-  const tokens = await pool.query(
+  let tokens = await pool.query(
     `SELECT t.id, t.mint, t.symbol, t.source, t.wallet_buys, t.discovered_at
      FROM f2_tokens t
-     WHERE COALESCE(t.phase, 'live') NOT IN ('deceased', 'dead')
-       AND (t.source = 'wallet_buy' OR t.wallet_buys > 0)
-     ORDER BY t.id DESC
-     LIMIT $1`,
-    [BATCH],
+     WHERE t.wallet_buys > 0 AND t.id > $1
+     ORDER BY t.id ASC
+     LIMIT $2`,
+    [cursor, BATCH],
   );
+  if (!tokens.rows.length && cursor > 0) {
+    cursor = 0;
+    tokens = await pool.query(
+      `SELECT t.id, t.mint, t.symbol, t.source, t.wallet_buys, t.discovered_at
+       FROM f2_tokens t
+       WHERE t.wallet_buys > 0
+       ORDER BY t.id ASC
+       LIMIT $1`,
+      [BATCH],
+    );
+  }
   const rows = tokens.rows as Row[];
   if (!rows.length) return { checked: 0, killed: 0, cleared: 0 };
+  cursor = rows[rows.length - 1].id;
 
   const ids = rows.map((r) => r.id);
   const adm = await pool.query(
@@ -56,17 +69,14 @@ export async function scrubReceives(): Promise<{ checked: number; killed: number
     const list = byToken.get(row.id) ?? [];
     if (list.length === 0) {
       const ageMs = row.discovered_at ? Date.now() - new Date(row.discovered_at).getTime() : 0;
-      if (row.source === "wallet_buy" && ageMs > 15 * 60_000) {
+      if (ageMs > 15 * 60_000) {
         await killReceive(row, "no admission signature");
         killed += 1;
-      } else if (row.source !== "wallet_buy" && row.wallet_buys > 0 && ageMs > 15 * 60_000) {
-        await clearBuys(row.id);
-        cleared += 1;
       }
       continue;
     }
     const fetched = list.filter((a) => txs.has(a.sig));
-    if (fetched.length !== list.length) {
+    if (fetched.length === 0) {
       // Incomplete Helius read — do not kill on missing data.
       continue;
     }
@@ -75,13 +85,11 @@ export async function scrubReceives(): Promise<{ checked: number; killed: number
       return tx ? isWalletSwapBuy(tx, a.wallet, row.mint) : false;
     });
     if (bought) continue;
-    if (row.source === "wallet_buy") {
-      await killReceive(row, "receive, not a buy");
-      killed += 1;
-    } else {
-      await clearBuys(row.id);
-      cleared += 1;
+    if (fetched.length !== list.length) {
+      continue;
     }
+    await killReceive(row, "receive, not a buy");
+    killed += 1;
   }
 
   if (killed || cleared) {
@@ -93,10 +101,6 @@ export async function scrubReceives(): Promise<{ checked: number; killed: number
     );
   }
   return { checked: rows.length, killed, cleared };
-}
-
-async function clearBuys(id: number): Promise<void> {
-  await pool.query(`UPDATE f2_tokens SET wallet_buys = 0 WHERE id = $1`, [id]);
 }
 
 async function killReceive(row: Row, why: string): Promise<void> {

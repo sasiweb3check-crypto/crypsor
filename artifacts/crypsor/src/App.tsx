@@ -2,6 +2,7 @@ import { Route, Switch, Link, Router as WouterRouter, useLocation } from "wouter
 import DeskPage from "./pages/ward";
 import TokenPage from "./pages/patient";
 import SettingsPage from "./pages/settings";
+import Toasts from "./components/toasts";
 
 function Nav() {
   const [loc] = useLocation();
@@ -20,6 +21,7 @@ export default function App() {
     <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
       <div className="app">
         <Nav />
+        <Toasts />
         <Switch>
           <Route path="/" component={DeskPage} />
           <Route path="/p/:id" component={TokenPage} />
