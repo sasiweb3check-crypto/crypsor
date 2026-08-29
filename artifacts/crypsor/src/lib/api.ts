@@ -24,500 +24,58 @@ export function sseUrl(): string {
   return `${getApiBase()}api/events`;
 }
 
-export type Phase = "intake" | "icu" | "ward" | "recovery" | "revived" | "deceased";
+export type TokenStatus = "live" | "running" | "dead";
 
-export type Factor = {
-  id: string;
-  label: string;
-  points: number;
-  max: number;
-  hold: boolean | null;
-  reason: string;
-};
-
-export type TapeWindow = {
-  buys: number | null;
-  sells: number | null;
-  volUsd: number | null;
-  changePct: number | null;
-};
-
-export type Prognosis = { id: string; label: string };
-
-export type Check = {
-  text: string;
-  hold: boolean | null;
-};
-
-export type OmoCall = "buying" | "holding" | "stalking" | "pass";
-
-export type DecisionReasons = {
-  call?: OmoCall;
-  holds?: string[];
-  fails?: string[];
-  unknowns?: string[];
-  refusedOn?: string[];
-  checks?: Check[];
-  quality?: "live" | "fallback" | "thin";
-  qualityNote?: string | null;
-  thesis?: string;
-  flags?: string[];
-};
-
-export type VerdictCard = {
+export type TokenCard = {
   id: number;
   mint: string;
   symbol: string | null;
   name: string | null;
   image: string | null;
-  last_verdict: string | null;
-  last_reasons: DecisionReasons | null;
-  last_mc: number | null;
-  last_liq: number | null;
-  wallet_buys: number;
-  last_quality: number | null;
-  last_scan_at: string | null;
-  tape_lead: string | null;
-};
-
-export type StreamRow = {
-  id: number;
-  agent: string;
-  action: string;
-  token_id: number | null;
-  mint: string | null;
-  detail: string;
-  at: string;
-};
-
-export type PatientCard = {
-  id: number;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  phase: Phase;
-  survival_score: number | null;
-  wallet_buys: number;
+  detected_mc: number | null;
   last_mc: number | null;
   peak_mc: number | null;
-  admission_mc: number | null;
   last_liq: number | null;
-  last_holders: number | null;
-  tape_lead: string | null;
-  last_verdict: string | null;
-  last_reasons: DecisionReasons | null;
-  discovered_at: string;
-  last_scan_at: string | null;
-  deceased_at: string | null;
-  revived_at: string | null;
-  graduated: boolean;
-  last_quality?: number | null;
-  cap_band?: "low" | "mid" | "mega" | null;
-  last_suggestion?: string | null;
-  source?: string | null;
-  meta?: { public?: boolean; source?: string; socials?: string[]; sentiment?: "hot" | "mixed" | "quiet"; boosted?: boolean; geckoUpPct?: number | null } | null;
-  prognosis?: Prognosis;
-};
-
-export type AgentVote = {
-  agent: string;
-  vote: "yes" | "no" | "hold";
-  reason: string;
-};
-
-export type WatchCard = {
-  token_id: number;
-  status: string;
-  yes_votes: number;
-  no_votes: number;
-  hold_votes: number;
-  agreed: boolean;
-  entry_ok: boolean;
-  headline: string | null;
-  votes: AgentVote[] | null;
-  last_mc: number | null;
-  last_liq: number | null;
-  last_score: number | null;
-  seen_at: string;
-  updated_at: string;
-  locked_at?: string | null;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  phase: Phase;
-  wallet_buys: number;
-  last_holders: number | null;
-};
-
-export type TradeCard = {
-  id: number;
-  token_id: number;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  wallet_buys: number;
-  phase: Phase;
-  entry_mc: number;
-  entry_liq: number | null;
-  entry_holders: number | null;
-  entry_score: number | null;
-  called_at: string;
-  peak_mc: number | null;
-  last_mc: number | null;
-  last_liq: number | null;
-  last_holders: number | null;
-  status: "open" | "trim" | "exit" | "dead";
-  exit_action: "hold" | "trim" | "exit" | null;
-  exit_take_pct: number | null;
-  exit_title: string | null;
-  exit_body: string | null;
-  gain_x: number | null;
-  ath_x: number | null;
-  gain_pct?: number | null;
-  ath_pct?: number | null;
-  closed_at: string | null;
-  close_mc: number | null;
-};
-
-export type PassLane = "live" | "archived" | "dead";
-
-export type PassCard = {
-  id: number;
-  token_id: number;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  passed_at: string;
-  pass_mc: number;
-  last_mc: number | null;
-  peak_mc: number | null;
-  gain_x: number | null;
-  ath_x: number | null;
   gain_pct: number | null;
   ath_pct: number | null;
-  lane: PassLane;
-  status: string;
-  phase: string | null;
-  last_liq: number | null;
   wallet_buys: number;
-  tape_lead: string | null;
-  survival?: number | null;
-  momentum?: "up" | "flat" | "down" | "unread" | null;
-  band?: "low" | "mid" | "mega" | null;
-  story?: string | null;
-  hotness?: number | null;
-};
-
-export type DayRoll = {
-  day: string;
-  passed: number;
-  live: number;
-  archived: number;
-  dead: number;
-  avgGainPct: number | null;
-  avgAthPct: number | null;
-  hit2x: number;
-  hit5x?: number;
-  hit10x?: number;
-  bestAthPct: number | null;
-};
-
-export type LiveBoard = {
-  at: string;
-  epoch?: string | null;
-  live: PassCard[];
-  archived: PassCard[];
-  performers?: PassCard[];
-  suggestions?: TapeName[];
-  waiting?: TapeName[];
-  days: DayRoll[];
-  census?: { tokens: number; passed: number; waiting?: number; suggestions?: number };
-  tokenStats?: TokenStats;
-  performance?: PerformanceStats;
-  totals: PerformanceStats & { tokens?: number };
-};
-
-export type Sentiment = "hot" | "mixed" | "quiet";
-
-export type TapeName = {
-  id: number;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  source: string;
-  last_mc: number | null;
-  last_liq: number | null;
-  peak_mc?: number | null;
-  suggest_mc?: number | null;
-  gain_pct?: number | null;
-  ath_pct?: number | null;
+  status: TokenStatus;
+  discovered_at: string;
   last_scan_at: string | null;
-  tape_lead: string | null;
-  story: string | null;
-  thesis: string | null;
-  sentiment: Sentiment | null;
-  socials: string[];
-  wallet_buys: number;
-  quality: number | null;
 };
 
-export type TokenStats = {
-  tokens: number;
-  waiting: number;
-  suggestions: number;
-  scanned24h: number;
-};
-
-export type PerformanceStats = {
-  live: number;
-  passed: number;
-  archived: number;
-  dead: number;
-  avgGainPct: number | null;
-  avgAthPct: number | null;
-  avgSurvival?: number | null;
-  hit2x: number;
-};
-
-export type DayPasses = {
-  day: string;
-  passes: PassCard[];
+export type TokenBoard = {
   at: string;
-};
-
-export type StatsReport = {
-  at: string;
-  epoch: string | null;
-  called: number;
-  called24h: number;
-  hit2x: number;
-  hit5x: number;
-  hit10x: number;
-  rate2x: number | null;
-  rate5x: number | null;
-  rate10x: number | null;
-  avgGainPct: number | null;
-  avgAthPct: number | null;
-  bestAthPct: number | null;
-  live: number;
-  archived: number;
-  dead: number;
-  days: DayRoll[];
-  recent: PassCard[];
-  recent24h: PassCard[];
-};
-
-export type LiveSort = "hot" | "gain" | "ath" | "mc" | "new";
-
-export type DeskState = {
-  open: TradeCard[];
-  watch?: WatchCard[];
-  verdicts?: VerdictCard[];
-  stream?: StreamRow[];
-  performers: TradeCard[];
-  paper: { n: number; wins: number; open: number; avgAth: number | null; avgGain: number | null };
-  page?: number;
-  pages?: number;
-  total?: number;
-  limit?: number;
-};
-
-export type WardBoard = {
-  census: Record<string, number>;
-  stats: {
-    live: number;
-    deceased: number;
-    survival: number | null;
-    avgScore: number | null;
-    trades24h: number;
-  };
-  patients: PatientCard[];
-  suggestions?: Suggestion[];
-  weights: Record<string, number>;
-};
-
-export type ScanRow = {
-  at: string;
-  mc_usd: number | null;
-  liq_usd: number | null;
-  price_usd: number | null;
-  holders: number | null;
-  top10_pct: number | null;
-  buys_5m: number | null;
-  sells_5m: number | null;
-  vol_5m: number | null;
-  bundler_pct: number | null;
-  sniper_pct: number | null;
-  bot_pct: number | null;
-  whale_pct: number | null;
-  smart_count: number | null;
-  kol_count: number | null;
-  pass: boolean;
-  fail_reasons: string[] | null;
-  tape: {
-    lead?: string;
-    holds?: string[];
-    fails?: string[];
-    factors?: Factor[];
-    m5?: TapeWindow;
-    h1?: TapeWindow;
-    h6?: TapeWindow;
-    chase?: boolean;
-    dead?: boolean;
-    tradeOk?: boolean;
-  } | null;
-  score: number | null;
-  phase: string | null;
-  quality?: number | null;
-  sources?: { used?: Record<string, string | null>; flags?: string[] } | null;
-};
-
-export type Suggestion = {
-  id: string;
-  severity: "info" | "watch" | "act";
-  title: string;
-  body: string;
-};
-
-export type SnapshotRow = {
-  at: string;
-  band: string;
-  kind?: "pulse" | "confirm" | string;
-  mc_usd: number | null;
-  liq_usd: number | null;
-  holders: number | null;
-  top10_pct: number | null;
-  score: number | null;
-  phase: string | null;
-  quality: number | null;
-  tape_lead: string | null;
-  mc_slope: number | null;
-  liq_slope: number | null;
-  holder_slope: number | null;
-  flags: string[] | null;
-  suggestions: Suggestion[] | null;
-  narrative?: string | null;
-  incomplete?: boolean | null;
-  filled?: { mc?: string; liq?: string; holders?: string } | null;
-};
-
-export type SourceReadRow = {
-  source: string;
-  ok: boolean;
-  mc_usd: number | null;
-  liq_usd: number | null;
-  holders: number | null;
-  top10_pct: number | null;
-  latency_ms: number | null;
-  extra: Record<string, unknown> | null;
-  at: string;
-};
-
-export type PatientChart = {
-  token: PatientCard & {
-    mint: string;
-    xFromAdmit: number | null;
-    peakX: number | null;
-    kill_reason: string | null;
-    called_at: string | null;
-    alert_mc: number | null;
-    prognosis?: Prognosis;
-  };
-  lastScan: ScanRow | null;
-  scans: ScanRow[];
-  course: Array<{ phase: string; at: string; score: number | null }>;
-  admissions: Array<{ wallet: string; sig: string | null; at: string; label: string | null }>;
-  alerts: Array<{
-    id: number; kind: string; title: string; body: string | null;
-    payload: Record<string, unknown> | null; telegram_sent: boolean; at: string;
-  }>;
-  notes: Array<{ agent: string; action: string; detail: string; at: string }>;
-  snapshots?: SnapshotRow[];
-  pulse?: SnapshotRow | null;
-  confirm?: SnapshotRow | null;
-  sources?: SourceReadRow[];
-  suggestions?: Suggestion[];
-  trade?: TradeCard | null;
-  watch?: WatchCard | null;
-  narrative?: string | null;
-  memory?: {
-    caution?: { notes?: string[]; dumps?: number; missingHolders?: number; missingMc?: number };
-    narrative?: string | null;
-    updated_at?: string;
-  } | null;
-  weights: Record<string, number>;
-};
-
-export type AlertRow = {
-  id: number;
-  token_id: number;
-  kind: string;
-  title: string;
-  body: string | null;
-  payload: Record<string, unknown> | null;
-  telegram_sent: boolean;
-  at: string;
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  phase: Phase;
-  survival_score: number | null;
-};
-
-export type AlertPage = {
-  items: AlertRow[];
+  items: TokenCard[];
+  performers: TokenCard[];
+  census: { all: number; live: number; running: number; dead: number };
   page: number;
   pages: number;
   total: number;
   limit: number;
 };
 
-export type AgentsState = {
-  status: {
-    started: boolean;
-    last: Record<string, number>;
-    running: Record<string, boolean>;
-    intervalsMs: Record<string, number>;
-  };
-  weights: Record<string, number>;
-  last24h: Array<{ agent: string; last_at: string; n: number }>;
-  paper: { judged: number; wins: number };
-  report: {
-    census: Record<string, number>;
-    survival: number | null;
-    trades_24h: number;
-    paper: { judged?: number; wins?: number };
-    detail: string;
-    suggestions?: Suggestion[];
-    quality?: Record<string, unknown>;
-    at: string;
-  } | null;
-  quality?: {
-    sources?: Array<{ source: string; n: number; ok: number; avg_ms: number | null }>;
-    snapshots?: Array<{ band: string; n: number }>;
-    bands?: Array<{ band: string; n: number; q?: number | null }>;
-    snapshots6h?: number;
-  } | null;
-  notes: Array<{
-    id: number; agent: string; action: string; token_id: number | null;
-    mint: string | null; detail: string; at: string;
-  }>;
+export type TokenChart = {
+  token: TokenCard;
+  admissions: Array<{ wallet: string; sig: string | null; at: string; label: string | null }>;
+  scans: Array<{ at: string; mc_usd: number | null; liq_usd: number | null; phase: string | null }>;
 };
 
-export const PHASE_META: Record<Phase, { label: string; hint: string }> = {
-  intake: { label: "Stalking", hint: "Wallet buy in, waiting for a clean hour" },
-  icu: { label: "Sellers", hint: "Sellers lead or already a chase — stand aside" },
-  ward: { label: "On", hint: "Gate passed or already on the book" },
-  recovery: { label: "Reclaim", hint: "Coming back from a sell-led hour" },
-  revived: { label: "Revived", hint: "Was dead; a wallet bought again" },
-  deceased: { label: "Dead", hint: "Rug-zone MC, empty pool, or corpse tape" },
-};
+export function dexTokenImage(mint: string | null | undefined): string | null {
+  if (!mint || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return null;
+  return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
+}
+
+export function deskImg(src: string | null | undefined, mint?: string | null): string | null {
+  const u = (src && /^https:\/\//i.test(src) ? src : null) ?? dexTokenImage(mint);
+  if (!u) return null;
+  const m = mint ? `&m=${encodeURIComponent(mint)}` : "";
+  return `${getApiBase()}api/img?u=${encodeURIComponent(u)}${m}`;
+}
+
+export function gmgnUrl(mint: string): string {
+  return `https://gmgn.ai/sol/token/${mint}`;
+}
 
 export function fmtUsd(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -526,39 +84,10 @@ export function fmtUsd(v: number | null | undefined): string {
   return `$${Math.round(v)}`;
 }
 
-export function fmtX(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return `${v.toFixed(2)}×`;
-}
-
-export function fmtSignedX(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const sign = v >= 1 ? "+" : "";
-  return `${sign}${v.toFixed(2)}×`;
-}
-
-export function fmtPct(v: number | null | undefined, digits = 0): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return `${v.toFixed(digits)}%`;
-}
-
 export function fmtGainPct(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   const sign = v > 0 ? "+" : "";
   return `${sign}${Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1)}%`;
-}
-
-export function fmtPassAt(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return "—";
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-export function fmtDay(iso: string): string {
-  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
-  if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export function timeAgo(iso: string | null | undefined): string {
@@ -576,25 +105,4 @@ export function shortMint(mint: string): string {
 
 export function shortWallet(addr: string): string {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
-}
-
-export function gmgnUrl(mint: string): string {
-  return `https://gmgn.ai/sol/token/${mint}`;
-}
-
-export function dexTokenImage(mint: string | null | undefined): string | null {
-  if (!mint || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return null;
-  return `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`;
-}
-
-export function deskImg(src: string | null | undefined, mint?: string | null): string | null {
-  const u = (src && /^https:\/\//i.test(src) ? src : null) ?? dexTokenImage(mint);
-  if (!u) return null;
-  const m = mint ? `&m=${encodeURIComponent(mint)}` : "";
-  return `${getApiBase()}api/img?u=${encodeURIComponent(u)}${m}`;
-}
-
-export function fmtHitRate(rate: number | null | undefined): string {
-  if (rate == null || !Number.isFinite(rate)) return "—";
-  return `${rate >= 10 ? rate.toFixed(0) : rate.toFixed(1)}%`;
 }

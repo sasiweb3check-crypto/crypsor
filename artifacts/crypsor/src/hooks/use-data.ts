@@ -40,7 +40,6 @@ type Shared = {
   connected: boolean;
   listeners: Set<() => void>;
   connListeners: Set<(on: boolean) => void>;
-  payloadListeners: Set<(data: unknown) => void>;
   pending: ReturnType<typeof setTimeout> | null;
 };
 
@@ -58,13 +57,12 @@ function bump(s: Shared): void {
 function acquire(
   onTick: () => void,
   onConn: (on: boolean) => void,
-  onPayload?: (data: unknown) => void,
 ): () => void {
   if (!shared) {
     const es = new EventSource(sseUrl());
     const s: Shared = {
       es, n: 0, connected: false,
-      listeners: new Set(), connListeners: new Set(), payloadListeners: new Set(), pending: null,
+      listeners: new Set(), connListeners: new Set(), pending: null,
     };
     es.addEventListener("connected", () => {
       s.connected = true;
@@ -74,30 +72,19 @@ function acquire(
       s.connected = false;
       for (const fn of s.connListeners) fn(false);
     };
-    for (const ev of ["stats:live", "pass:new", "vitals:tick", "snapshot:tick", "alert:new"]) {
-      es.addEventListener(ev, (e) => {
-        if (ev === "stats:live" && e instanceof MessageEvent) {
-          try {
-            const data = JSON.parse(String(e.data));
-            for (const fn of s.payloadListeners) fn(data);
-          } catch { /* ignore */ }
-          return;
-        }
-        bump(s);
-      });
+    for (const ev of ["desk:update", "alert:new"]) {
+      es.addEventListener(ev, () => bump(s));
     }
     shared = s;
   }
   shared.n += 1;
   shared.listeners.add(onTick);
   shared.connListeners.add(onConn);
-  if (onPayload) shared.payloadListeners.add(onPayload);
   onConn(shared.connected);
   return () => {
     if (!shared) return;
     shared.listeners.delete(onTick);
     shared.connListeners.delete(onConn);
-    if (onPayload) shared.payloadListeners.delete(onPayload);
     shared.n -= 1;
     if (shared.n <= 0) {
       if (shared.pending) clearTimeout(shared.pending);
@@ -107,8 +94,8 @@ function acquire(
   };
 }
 
-/** Shared EventSource across pages. Tick is throttled so vitals do not thrash fetches. */
-export function useSse(_events?: string[]): { connected: boolean; tick: number } {
+/** Shared EventSource. Tick is throttled so scans do not thrash fetches. */
+export function useSse(): { connected: boolean; tick: number } {
   const [connected, setConnected] = useState(false);
   const [tick, setTick] = useState(0);
 
@@ -124,64 +111,4 @@ export function useSse(_events?: string[]): { connected: boolean; tick: number }
   }, []);
 
   return { connected, tick };
-}
-
-/** Live stats board — SSE payload is the source of truth; poll only when the socket drops. */
-export function useLiveBoard<T>(fetcher: () => Promise<T>): {
-  data: T | null; error: string | null; loading: boolean; connected: boolean;
-} {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [connected, setConnected] = useState(false);
-  const alive = useRef(true);
-
-  useEffect(() => {
-    alive.current = true;
-    fetcher()
-      .then((d) => { if (alive.current) { setData(d); setError(null); } })
-      .catch((e: unknown) => { if (alive.current) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => { if (alive.current) setLoading(false); });
-
-    let poll: ReturnType<typeof setInterval> | null = null;
-    const startPoll = () => {
-      if (poll) return;
-      poll = setInterval(() => {
-        fetcher()
-          .then((d) => { if (alive.current) { setData(d); setError(null); } })
-          .catch(() => { /* keep last frame */ });
-      }, 8_000);
-    };
-    const stopPoll = () => {
-      if (poll) { clearInterval(poll); poll = null; }
-    };
-
-    const release = acquire(
-      () => {
-        fetcher()
-          .then((d) => { if (alive.current) { setData(d); setError(null); } })
-          .catch(() => { /* keep last frame */ });
-      },
-      (on) => {
-        setConnected(on);
-        if (on) stopPoll();
-        else startPoll();
-      },
-      (payload) => {
-        if (alive.current) {
-          setData(payload as T);
-          setError(null);
-          setLoading(false);
-        }
-      },
-    );
-
-    return () => {
-      alive.current = false;
-      stopPoll();
-      release();
-    };
-  }, []);
-
-  return { data, error, loading, connected };
 }

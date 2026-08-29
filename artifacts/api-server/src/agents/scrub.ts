@@ -23,7 +23,7 @@ export async function scrubReceives(): Promise<{ checked: number; killed: number
   const tokens = await pool.query(
     `SELECT t.id, t.mint, t.symbol, t.source, t.wallet_buys, t.discovered_at
      FROM f2_tokens t
-     WHERE COALESCE(t.phase, 'intake') <> 'deceased'
+     WHERE COALESCE(t.phase, 'live') NOT IN ('deceased', 'dead')
        AND (t.source = 'wallet_buy' OR t.wallet_buys > 0)
      ORDER BY t.id DESC
      LIMIT $1`,
@@ -102,22 +102,12 @@ async function clearBuys(id: number): Promise<void> {
 async function killReceive(row: Row, why: string): Promise<void> {
   await pool.query(
     `UPDATE f2_tokens SET
-       phase = 'deceased',
+       phase = 'dead',
        stage = 'killed',
        kill_reason = 'receive_not_buy',
        wallet_buys = 0,
-       hotness = 0,
        deceased_at = COALESCE(deceased_at, NOW())
      WHERE id = $1`,
-    [row.id],
-  );
-  await pool.query(
-    `UPDATE ward_trades SET
-       status = 'dead',
-       closed_at = COALESCE(closed_at, NOW()),
-       exit_title = COALESCE(exit_title, 'RECEIVE'),
-       exit_body = COALESCE(exit_body, 'Tracked wallet received this mint — not a buy.')
-     WHERE token_id = $1 AND status IN ('open','trim')`,
     [row.id],
   );
   const ticker = row.symbol || row.mint.slice(0, 6);
