@@ -29,6 +29,10 @@ const ALLOW = [
   "shdwdrive.com",
   "cloudflare-ipfs.com",
   "ipfs.nftstorage.link",
+  "axiom-cdn.io",
+  "axiom.xyz",
+  "gmgn.ai",
+  "r2.dev",
 ];
 
 type Hit = { buf: Buffer; type: string; at: number };

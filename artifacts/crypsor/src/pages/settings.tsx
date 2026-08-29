@@ -98,8 +98,9 @@ export default function SettingsPage() {
 
       <div className="h">Scan</div>
       <p className="note">
-        Intake polls tracked wallets. Young or running names print MC about every minute; the rest every 15 minutes. Under $5k MC goes to Archived.
-        Telegram: first buy, each extra tracked wallet, and 2× / 5× / 10× / 20× vs the detected buy MC.
+        Intake only counts a real swap (quote/SOL spent). A token transferred into the wallet is ignored — buy-then-transfer is fine.
+        Young or running names print MC about every minute; the rest every 15 minutes. Under $5k MC goes to Archived.
+        Telegram and in-app toasts: first buy, each extra tracked wallet, and 2× / 5× / 10× / 20× vs the detected buy MC.
         On Render Starter the process stays up. If the host is Free, ping <code>/api/keepalive</code> every minute.
       </p>
     </div>

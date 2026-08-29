@@ -61,4 +61,26 @@ describe("isWalletSwapBuy", () => {
     });
     assert.equal(isWalletSwapBuy(other, WALLET, "OtherMint11111111111111111111111111111111"), false);
   });
+
+  it("rejects Helius TRANSFER even when SOL moved for ATA rent", () => {
+    const transfer = tx({
+      type: "TRANSFER",
+      tokenTransfers: [{ mint: MINT, toUserAccount: WALLET, tokenAmount: 1_000 }],
+      nativeTransfers: [{ fromUserAccount: WALLET, amount: 50_000_000 }],
+    });
+    assert.equal(isWalletSwapBuy(transfer, WALLET, MINT), false);
+  });
+
+  it("rejects a spam mint received in the same tx as a real swap", () => {
+    const spam = "Spam11111111111111111111111111111111111111";
+    const mixed = tx({
+      tokenTransfers: [
+        { mint: MINT, toUserAccount: WALLET, tokenAmount: 100 },
+        { mint: spam, toUserAccount: WALLET, tokenAmount: 1 },
+      ],
+      nativeTransfers: [{ fromUserAccount: WALLET, amount: 50_000_000 }],
+    });
+    assert.equal(isWalletSwapBuy(mixed, WALLET, spam), false);
+    assert.equal(isWalletSwapBuy(mixed, WALLET, MINT), false);
+  });
 });

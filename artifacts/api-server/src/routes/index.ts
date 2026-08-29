@@ -205,6 +205,22 @@ router.put("/settings", async (req, res) => {
   res.json(ok({ saved }));
 });
 
+router.get("/alerts", async (_req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, token_id AS "tokenId", kind, title, body, at
+       FROM ward_alerts
+       WHERE kind IN ('admit', 'confirm', 'rung')
+       ORDER BY id DESC
+       LIMIT 12`,
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.json(ok(r.rows));
+  } catch (err) {
+    res.status(500).json(fail("alerts failed"));
+  }
+});
+
 router.get("/events", sseHandler);
 
 export default router;

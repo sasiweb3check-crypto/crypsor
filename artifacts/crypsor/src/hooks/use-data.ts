@@ -34,12 +34,22 @@ export function usePoll<T>(
   return { data, error, loading, refresh: load };
 }
 
+type AlertToast = {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  tokenId: number;
+  at: string;
+};
+
 type Shared = {
   es: EventSource;
   n: number;
   connected: boolean;
   listeners: Set<() => void>;
   connListeners: Set<(on: boolean) => void>;
+  alertListeners: Set<(a: AlertToast) => void>;
   pending: ReturnType<typeof setTimeout> | null;
 };
 
@@ -57,12 +67,13 @@ function bump(s: Shared): void {
 function acquire(
   onTick: () => void,
   onConn: (on: boolean) => void,
+  onAlert?: (a: AlertToast) => void,
 ): () => void {
   if (!shared) {
     const es = new EventSource(sseUrl());
     const s: Shared = {
       es, n: 0, connected: false,
-      listeners: new Set(), connListeners: new Set(), pending: null,
+      listeners: new Set(), connListeners: new Set(), alertListeners: new Set(), pending: null,
     };
     es.addEventListener("connected", () => {
       s.connected = true;
@@ -72,19 +83,26 @@ function acquire(
       s.connected = false;
       for (const fn of s.connListeners) fn(false);
     };
-    for (const ev of ["desk:update", "alert:new"]) {
-      es.addEventListener(ev, () => bump(s));
-    }
+    es.addEventListener("desk:update", () => bump(s));
+    es.addEventListener("alert:new", (e) => {
+      bump(s);
+      try {
+        const data = JSON.parse(String((e as MessageEvent).data)) as AlertToast;
+        for (const fn of s.alertListeners) fn(data);
+      } catch { /* ignore */ }
+    });
     shared = s;
   }
   shared.n += 1;
   shared.listeners.add(onTick);
   shared.connListeners.add(onConn);
+  if (onAlert) shared.alertListeners.add(onAlert);
   onConn(shared.connected);
   return () => {
     if (!shared) return;
     shared.listeners.delete(onTick);
     shared.connListeners.delete(onConn);
+    if (onAlert) shared.alertListeners.delete(onAlert);
     shared.n -= 1;
     if (shared.n <= 0) {
       if (shared.pending) clearTimeout(shared.pending);
@@ -111,4 +129,33 @@ export function useSse(): { connected: boolean; tick: number } {
   }, []);
 
   return { connected, tick };
+}
+
+const TOAST_KINDS = new Set(["admit", "confirm", "rung"]);
+
+export function useAlertToasts(): {
+  toasts: AlertToast[];
+  dismiss: (id: number) => void;
+} {
+  const [toasts, setToasts] = useState<AlertToast[]>([]);
+
+  useEffect(() => {
+    try {
+      return acquire(
+        () => { /* board tick handled by useSse */ },
+        () => { /* connection handled by useSse */ },
+        (a) => {
+          if (!a?.title || !TOAST_KINDS.has(a.kind)) return;
+          setToasts((prev) => [{ ...a, id: a.id ?? Date.now() }, ...prev].slice(0, 6));
+        },
+      );
+    } catch {
+      return;
+    }
+  }, []);
+
+  const dismiss = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+  return { toasts, dismiss };
 }
