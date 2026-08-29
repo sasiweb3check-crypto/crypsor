@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   bookWallet, classify, dedupeFills, fillsFromHeliusTx, filterScoutWallets,
-  interpolateMc, pumpMcFromReserves, rankWallets, type TokenFill,
+  interpolateMc, mergeFillGaps, pumpMcFromReserves, rankWallets, type TokenFill,
 } from "./scout-fills.ts";
 
 function fill(partial: Partial<TokenFill> & Pick<TokenFill, "wallet" | "side" | "tokenAmt" | "usd" | "at">): TokenFill {
@@ -104,6 +104,46 @@ describe("scout fills", () => {
     const w = "Dupxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     const a = fill({ wallet: w, side: "buy", tokenAmt: 1, usd: 1, at: 5, sig: "x" });
     assert.equal(dedupeFills([a, { ...a }]).length, 1);
+  });
+
+  it("merges GMGN usd onto an on-chain fill without changing the src or amount", () => {
+    const w = "Merxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const onchain = fill({ wallet: w, side: "buy", tokenAmt: 10, usd: null, at: 5, sig: "same" });
+    const gmgn = { ...fill({ wallet: w, side: "buy", tokenAmt: 10, usd: 7, at: 5, sig: "same" }), src: "gmgn" };
+    const merged = mergeFillGaps([onchain], [gmgn]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].src, "test");
+    assert.equal(merged[0].usd, 7);
+    assert.equal(merged[0].tokenAmt, 10);
+  });
+
+  it("keeps on-chain usd when GMGN disagrees", () => {
+    const w = "Keepxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const onchain = fill({ wallet: w, side: "buy", tokenAmt: 10, usd: 4, at: 5, sig: "same" });
+    const gmgn = { ...fill({ wallet: w, side: "buy", tokenAmt: 10, usd: 99, at: 5, sig: "same" }), src: "gmgn" };
+    assert.equal(mergeFillGaps([onchain], [gmgn])[0].usd, 4);
+  });
+
+  it("does not copy GMGN PnL into ROI when the payload also has realized_profit", () => {
+    const w = "Pnlxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const book = bookWallet(w, [
+      fill({ wallet: w, side: "buy", tokenAmt: 10, usd: 10, at: 1 }),
+      fill({ wallet: w, side: "sell", tokenAmt: 10, usd: 13, at: 2, src: "gmgn" }),
+    ]);
+    assert.equal(book.profitUsd, 3);
+    assert.equal(book.overallRoi, 0.3);
+    assert.equal(book.gmgnLegs, 1);
+    assert.equal(book.gap, false);
+  });
+
+  it("tags-only wallets stay gap with null ROI", () => {
+    const w = "Tagxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const book = bookWallet(w, [], { labels: ["smart_degen"], balance: 50, priceUsd: 2 });
+    assert.equal(book.gap, true);
+    assert.equal(book.overallRoi, null);
+    assert.equal(book.profitUsd, 0);
+    assert.equal(book.remainingUsd, 0);
+    assert.deepEqual(book.labels, ["smart_degen"]);
   });
 
   it("builds pump MC from virtual reserves", () => {

@@ -228,6 +228,7 @@ button { cursor: pointer; }
 .st.hold { color: var(--green); }
 .st.partial { color: var(--blue); }
 .st.sold_all, .st.sold { color: var(--muted); }
+.st.gap { color: var(--blue); }
 .lb {
   font-size: 11px;
   text-transform: uppercase;
