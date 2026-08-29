@@ -14,6 +14,8 @@ export default function TokenPage() {
   const t = q.data?.token;
   const ads = q.data?.admissions ?? [];
   const scans = q.data?.scans ?? [];
+  const memory = q.data?.memory ?? [];
+  const latest = memory[0];
 
   if (q.loading && !t) {
     return <div className="page"><div className="skel" /></div>;
@@ -70,10 +72,29 @@ export default function TokenPage() {
             {t.score != null && t.prev_score != null ? ` · ${t.score - t.prev_score >= 0 ? "+" : ""}${t.score - t.prev_score}` : ""}
           </div>
         </div>
+        <div className="num">
+          <div className="k">Liquidity</div>
+          <div className="v">{fmtUsd(latest?.liq_usd ?? t.last_liq)}</div>
+        </div>
+        <div className="num">
+          <div className="k">5m vol</div>
+          <div className="v">{fmtUsd(latest?.vol_5m)}</div>
+        </div>
+        <div className="num">
+          <div className="k">Holders</div>
+          <div className="v">{latest?.holders ?? "—"}</div>
+        </div>
       </div>
 
-      {(q.data?.memory?.[0]?.catalyst) ? (
-        <p className="note"><b>Catalyst. </b>{q.data.memory[0].catalyst}</p>
+      {(latest?.catalyst) ? (
+        <p className="note"><b>Catalyst. </b>{latest.catalyst}</p>
+      ) : null}
+      {latest?.factors && Object.keys(latest.factors).length > 0 ? (
+        <div className="factors" aria-label="Score factors">
+          {Object.entries(latest.factors).map(([k, v]) => (
+            <span key={k} className="factor">{k} {Math.round(v)}</span>
+          ))}
+        </div>
       ) : null}
 
       <div className="h">Wallets</div>
@@ -86,14 +107,30 @@ export default function TokenPage() {
       ))}
 
       <div className="h">Memory</div>
-      {(q.data?.memory ?? []).length === 0 ? <div className="empty">No snapshots yet. Scans still print below.</div> : null}
-      {(q.data?.memory ?? []).slice(0, 12).map((s) => (
-        <div key={s.at} className="line">
+      {(memory).length === 0 ? <div className="empty">No snapshots yet. Scans still print below.</div> : null}
+      {memory.slice(0, 12).map((s) => (
+        <div key={s.at} className="line mem">
           <b>{fmtUsd(s.mc_usd)}</b>
           <Gain pct={s.gain_pct} />
           {s.score != null ? <span className="lb watch">{s.score}{s.score_delta != null ? ` ${s.score_delta >= 0 ? "+" : ""}${s.score_delta}` : ""}</span> : null}
           <LabelChip label={s.label} />
-          <span className="muted">{s.survived === false ? "dead" : s.wallets ? `${s.wallets}w` : ""}{s.mc_delta_pct != null ? ` · MC ${fmtGainPct(s.mc_delta_pct)}` : ""} · {timeAgo(s.at)}</span>
+          <span className="muted">
+            {s.survived === false ? "dead" : ""}
+            {s.vol_5m ? ` · vol ${fmtUsd(s.vol_5m)}` : ""}
+            {s.liq_usd ? ` · liq ${fmtUsd(s.liq_usd)}` : ""}
+            {s.holders ? ` · ${s.holders}h` : ""}
+            {s.buy_ratio != null ? ` · ${(s.buy_ratio * 100).toFixed(0)}% buys` : ""}
+            {s.boosts ? ` · boost ${s.boosts}` : ""}
+            {s.mc_delta_pct != null ? ` · MC ${fmtGainPct(s.mc_delta_pct)}` : ""}
+            {" · "}{timeAgo(s.at)}
+          </span>
+          {s.factors && Object.keys(s.factors).length > 0 ? (
+            <div className="factors">
+              {Object.entries(s.factors).map(([k, v]) => (
+                <span key={k} className="factor">{k} {Math.round(v)}</span>
+              ))}
+            </div>
+          ) : null}
         </div>
       ))}
 

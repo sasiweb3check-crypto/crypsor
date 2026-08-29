@@ -5,9 +5,13 @@
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
-import { imageOf, mcOf, pairsForMints, vol5mOf, buys5mOf } from "../sources/dexscreener";
-import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
-import { catalystOf, rungOf, statusOf } from "../scoring/desk";
+import {
+  boostsOf, buys5mOf, buysH1Of, imageOf, liqOf, mcOf, pairsForMints,
+  priceChgH1Of, priceChgM5Of, sells5mOf, sellsH1Of, vol5mOf, volH1Of,
+} from "../sources/dexscreener";
+import { coin as pumpCoin, coinsForMints, curveSol, pumpHolders, pumpMc } from "../sources/pumpfun";
+import { holderCounts } from "../sources/holders";
+import { rungOf, scoreStepOf, statusOf } from "../scoring/desk";
 import { dexTokenImage } from "../scoring/image";
 import { insertDeskMemory } from "./memory";
 import { agentNote } from "./log";
@@ -26,6 +30,8 @@ type Row = {
   peak_mc: number | null;
   wallet_buys: number;
   notified_rung: number | null;
+  notified_score: number | null;
+  discovered_at: string | Date | null;
 };
 
 async function dueBatch(): Promise<Row[]> {
@@ -33,7 +39,9 @@ async function dueBatch(): Promise<Row[]> {
     `SELECT id, mint, symbol,
             detected_mc, admission_mc, last_mc, peak_mc,
             COALESCE(wallet_buys, 0) AS wallet_buys,
-            COALESCE(notified_rung, 1) AS notified_rung
+            COALESCE(notified_rung, 1) AS notified_rung,
+            COALESCE(notified_score, 0) AS notified_score,
+            discovered_at
      FROM f2_tokens
      WHERE wallet_buys > 0
        AND (
@@ -56,26 +64,73 @@ async function dueBatch(): Promise<Row[]> {
      last_scan_at ASC NULLS FIRST, id DESC
      LIMIT $1`,
     [BATCH],
-  );
+  ).catch(() => pool.query(
+    `SELECT id, mint, symbol,
+            detected_mc, admission_mc, last_mc, peak_mc,
+            COALESCE(wallet_buys, 0) AS wallet_buys,
+            COALESCE(notified_rung, 1) AS notified_rung,
+            0 AS notified_score,
+            discovered_at
+     FROM f2_tokens
+     WHERE wallet_buys > 0
+       AND (
+         last_scan_at IS NULL
+         OR last_scan_at < NOW() - INTERVAL '14 minutes'
+         OR (
+           last_scan_at < NOW() - INTERVAL '50 seconds'
+           AND (
+             discovered_at > NOW() - INTERVAL '6 hours'
+             OR COALESCE(last_mc, 0) > COALESCE(detected_mc, admission_mc, 0)
+           )
+         )
+       )
+     ORDER BY last_scan_at ASC NULLS FIRST, id DESC
+     LIMIT $1`,
+    [BATCH],
+  ));
   return due.rows as Row[];
 }
 
-async function printRows(rows: Row[]): Promise<{ dead: number; running: number; rungs: number }> {
+function ageHours(discovered: string | Date | null | undefined): number | null {
+  if (!discovered) return null;
+  const t = new Date(discovered).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, (Date.now() - t) / 3_600_000);
+}
+
+async function printRows(rows: Row[]): Promise<{ dead: number; running: number; rungs: number; scores: number }> {
   const pairs = await pairsForMints(rows.map((r) => r.mint));
+  const pumps = await coinsForMints(rows.map((r) => r.mint));
+  const holderMints = rows
+    .filter((r) => {
+      const last = r.last_mc;
+      if (last != null && last < 5_000) {
+        const age = ageHours(r.discovered_at);
+        if (age != null && age > 6) return false;
+      }
+      return true;
+    })
+    .map((r) => r.mint);
+  const holders = await holderCounts(holderMints);
   let dead = 0;
   let running = 0;
   let rungs = 0;
+  let scores = 0;
 
   for (const row of rows) {
     const pair = pairs.get(row.mint);
-    let mc = mcOf(pair);
-    let liq = pair?.liquidity?.usd ?? null;
-    let image = imageOf(pair);
-    if (mc == null) {
-      const p = await pumpCoin(row.mint);
-      mc = pumpMc(p);
-      image = image ?? (p?.image_uri ?? null);
+    let pump = pumps.get(row.mint) ?? null;
+    let mc = mcOf(pair) ?? pumpMc(pump);
+    if (mc == null && !pump) {
+      const fetched = await pumpCoin(row.mint);
+      if (fetched) {
+        pumps.set(row.mint, fetched);
+        pump = fetched;
+      }
+      mc = pumpMc(fetched);
     }
+    const liq = liqOf(pair);
+    let image = imageOf(pair) ?? pump?.image_uri ?? null;
     image = image ?? dexTokenImage(row.mint);
 
     const detected = row.detected_mc ?? row.admission_mc;
@@ -84,10 +139,14 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
     const status = statusOf(last, freeze);
     const wallets = row.wallet_buys || 0;
     const vol5m = vol5mOf(pair);
+    const volH1 = volH1Of(pair);
     const buys5m = buys5mOf(pair);
+    const sells5m = sells5mOf(pair);
+    const holderN = holders.get(row.mint) ?? pumpHolders(pump);
     const prevRung = row.notified_rung && row.notified_rung > 0 ? row.notified_rung : 1;
     const nowRung = rungOf(last, freeze);
     const fireRung = nowRung > prevRung;
+    const prevScoreStep = scoreStepOf(row.notified_score);
 
     await pool.query(
       `UPDATE f2_tokens SET
@@ -115,8 +174,8 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
         liq,
         freeze,
         image,
-        pair?.baseToken?.symbol ?? null,
-        pair?.baseToken?.name ?? null,
+        pair?.baseToken?.symbol ?? pump?.symbol ?? null,
+        pair?.baseToken?.name ?? pump?.name ?? null,
         status,
         fireRung ? nowRung : prevRung,
       ],
@@ -129,47 +188,83 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       detected: freeze,
       wallets,
       vol5m,
+      volH1,
+      buys5m,
+      sells5m,
+      buysH1: buysH1Of(pair),
+      sellsH1: sellsH1Of(pair),
+      priceChgM5: priceChgM5Of(pair),
+      priceChgH1: priceChgH1Of(pair),
+      holders: holderN ?? null,
+      boosts: boostsOf(pair),
+      replies: pump?.reply_count ?? null,
+      live: pump?.is_currently_live ?? null,
+      graduated: pump?.complete ?? null,
+      banned: pump?.is_banned ?? null,
+      nsfw: pump?.nsfw ?? null,
+      curveSol: curveSol(pump),
+      ageHours: ageHours(row.discovered_at),
     });
 
+    const nowScoreStep = scoreStepOf(stamp.score);
+    const fireScore = nowScoreStep > prevScoreStep && nowScoreStep > 0;
     try {
-      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, stamp.label]);
+      await pool.query(
+        `UPDATE f2_tokens SET desk_label = $2, notified_score = $3 WHERE id = $1`,
+        [row.id, stamp.label, fireScore ? nowScoreStep : prevScoreStep],
+      );
     } catch {
-      // desk_label lands after schema pass
+      try {
+        await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, stamp.label]);
+      } catch {
+        // desk_label lands after schema pass
+      }
     }
 
     try {
       await pool.query(
-        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, pass, fail_reasons, phase)
-         VALUES ($1,$2,$3,$4,$5,$6,true,'[]'::jsonb,$7)`,
-        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, status],
+        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, sells_5m, holders, score, pass, fail_reasons, phase)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'[]'::jsonb,$10)`,
+        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, sells5m, holderN ?? null, stamp.score, status],
       );
     } catch {
       try {
         await pool.query(
-          `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, pass, fail_reasons, phase)
-           VALUES ($1,$2,$3,$4,true,'[]'::jsonb,$5)`,
-          [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, status],
+          `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, pass, fail_reasons, phase)
+           VALUES ($1,$2,$3,$4,$5,$6,true,'[]'::jsonb,$7)`,
+          [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, status],
         );
       } catch {
-        // scan table always exists after schema pass
+        try {
+          await pool.query(
+            `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, pass, fail_reasons, phase)
+             VALUES ($1,$2,$3,$4,true,'[]'::jsonb,$5)`,
+            [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, status],
+          );
+        } catch {
+          // scan table always exists after schema pass
+        }
       }
     }
 
+    const ticker = row.symbol || row.mint.slice(0, 6);
+    const payload = {
+      mint: row.mint,
+      mc: last,
+      detected: freeze,
+      score: stamp.score,
+      factors: stamp.factors,
+      tags: stamp.tags,
+      catalyst: stamp.catalyst,
+    };
+
     if (fireRung) {
-      const ticker = row.symbol || row.mint.slice(0, 6);
-      const catalyst = catalystOf({
-        lastMc: last,
-        detectedMc: freeze,
-        prevMc: row.last_mc,
-        vol5m,
-        liq,
-      });
       await raiseAlert({
         tokenId: row.id,
         kind: "rung",
         title: `${nowRung}× $${ticker}`,
-        body: catalyst,
-        payload: { mint: row.mint, rung: nowRung, mc: last, detected: freeze, score: stamp.score, catalyst },
+        body: stamp.catalyst,
+        payload: { ...payload, rung: nowRung },
         lane: "call",
         score: stamp.score,
         screen: true,
@@ -178,11 +273,26 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       rungs += 1;
     }
 
+    if (fireScore) {
+      await raiseAlert({
+        tokenId: row.id,
+        kind: "score",
+        title: `Score ${nowScoreStep} $${ticker}`,
+        body: stamp.catalyst,
+        payload: { ...payload, scoreStep: nowScoreStep },
+        lane: "call",
+        score: stamp.score,
+        screen: true,
+        telegram: true,
+      });
+      scores += 1;
+    }
+
     if (status === "dead") dead += 1;
     if (status === "running") running += 1;
   }
 
-  return { dead, running, rungs };
+  return { dead, running, rungs, scores };
 }
 
 let catchupDone = false;
@@ -206,12 +316,13 @@ async function catchMissedCalls(): Promise<void> {
   }
 }
 
-export async function scanTick(): Promise<{ scanned: number; dead: number; running: number; rungs: number }> {
+export async function scanTick(): Promise<{ scanned: number; dead: number; running: number; rungs: number; scores: number }> {
   await catchMissedCalls();
   let scanned = 0;
   let dead = 0;
   let running = 0;
   let rungs = 0;
+  let scores = 0;
 
   for (let i = 0; i < MAX_BATCHES; i++) {
     const rows = await dueBatch();
@@ -221,16 +332,17 @@ export async function scanTick(): Promise<{ scanned: number; dead: number; runni
     dead += r.dead;
     running += r.running;
     rungs += r.rungs;
+    scores += r.scores;
   }
 
   if (scanned) {
-    emitSse("desk:update", { scanned, dead, running, rungs, at: new Date().toISOString() });
+    emitSse("desk:update", { scanned, dead, running, rungs, scores, at: new Date().toISOString() });
     await agentNote(
       "scan",
       "PRINT",
-      `scanned ${scanned} · running ${running} · archived ${dead} · rungs ${rungs}`,
+      `scanned ${scanned} · running ${running} · archived ${dead} · rungs ${rungs} · scores ${scores}`,
       { quiet: true },
     );
   }
-  return { scanned, dead, running, rungs };
+  return { scanned, dead, running, rungs, scores };
 }

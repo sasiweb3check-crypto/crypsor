@@ -96,6 +96,16 @@ export type DeskMemory = {
   wallet_delta: number | null;
   band: string | null;
   catalyst: string | null;
+  factors: Record<string, number> | null;
+  vol_5m: number | null;
+  vol_h1: number | null;
+  buys_5m: number | null;
+  sells_5m: number | null;
+  holders: number | null;
+  buy_ratio: number | null;
+  boosts: number | null;
+  replies: number | null;
+  price_chg_m5: number | null;
 };
 
 export type NoticeItem = {

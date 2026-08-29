@@ -165,6 +165,8 @@ button { cursor: pointer; }
 .st.running { color: var(--green); }
 .st.live { color: var(--blue); }
 .st.dead { color: var(--muted); }
+.st.score { color: var(--blue); }
+.st.admit { color: var(--blue); }
 .lb {
   font-size: 11px;
   text-transform: uppercase;
@@ -240,6 +242,24 @@ button { cursor: pointer; }
   gap: 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.line.mem { align-items: flex-start; }
+.factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  margin: 4px 0 2px;
+}
+.factor {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
 }
 
 .plain { max-width: 720px; }

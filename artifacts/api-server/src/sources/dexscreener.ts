@@ -4,24 +4,13 @@
 import { logger } from "../core/log";
 import { pace } from "./pace";
 import { httpsImage, dexTokenImage } from "../scoring/image";
+import type { DexPair } from "./pair-stats";
 
-export type DexPair = {
-  chainId?: string;
-  dexId?: string;
-  url?: string;
-  priceUsd?: string;
-  marketCap?: number;
-  fdv?: number;
-  liquidity?: { usd?: number };
-  volume?: { m5?: number; h1?: number };
-  txns?: {
-    m5?: { buys?: number; sells?: number };
-    h1?: { buys?: number; sells?: number };
-  };
-  priceChange?: { m5?: number; h1?: number };
-  baseToken?: { address?: string; symbol?: string; name?: string };
-  info?: { imageUrl?: string; header?: string };
-};
+export type { DexPair } from "./pair-stats";
+export {
+  boostsOf, buys5mOf, buysH1Of, liqOf, mcOf, pairAgeHours,
+  posInt, priceChgH1Of, priceChgM5Of, sells5mOf, sellsH1Of, vol5mOf, volH1Of,
+} from "./pair-stats";
 
 const UA = { Accept: "application/json", "user-agent": "crypsor/wallet-desk" };
 
@@ -40,21 +29,6 @@ async function json<T>(url: string, timeoutMs = 10_000): Promise<T | null> {
 export function imageOf(pair: DexPair | null | undefined): string | null {
   return httpsImage(pair?.info?.imageUrl || pair?.info?.header)
     ?? dexTokenImage(pair?.baseToken?.address);
-}
-
-export function mcOf(pair: DexPair | null | undefined): number | null {
-  const n = Number(pair?.marketCap ?? pair?.fdv ?? 0);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-export function vol5mOf(pair: DexPair | null | undefined): number | null {
-  const n = Number(pair?.volume?.m5 ?? 0);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-export function buys5mOf(pair: DexPair | null | undefined): number | null {
-  const n = Number(pair?.txns?.m5?.buys ?? 0);
-  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** Best (deepest) Solana pair per mint. */

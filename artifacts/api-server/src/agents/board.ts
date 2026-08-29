@@ -50,6 +50,16 @@ export type DeskMemory = {
   wallet_delta: number | null;
   band: string | null;
   catalyst: string | null;
+  factors: Record<string, number> | null;
+  vol_5m: number | null;
+  vol_h1: number | null;
+  buys_5m: number | null;
+  sells_5m: number | null;
+  holders: number | null;
+  buy_ratio: number | null;
+  boosts: number | null;
+  replies: number | null;
+  price_chg_m5: number | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
@@ -199,12 +209,53 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     performers,
     census,
     matrix: band === "early" ? gainMatrix(banded) : null,
-    scoreStats: band === "early" ? await scoreStats() : null,
+    scoreStats: await scoreStats(),
     band,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
     total,
     limit,
+  };
+}
+
+function mapMemory(s: Record<string, unknown>): DeskMemory {
+  const factorsRaw = s.factors;
+  let factors: Record<string, number> | null = null;
+  if (factorsRaw && typeof factorsRaw === "object" && !Array.isArray(factorsRaw)) {
+    factors = {};
+    for (const [k, v] of Object.entries(factorsRaw as Record<string, unknown>)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) factors[k] = n;
+    }
+  }
+  const n = (k: string) => (s[k] != null && Number.isFinite(Number(s[k])) ? Number(s[k]) : null);
+  return {
+    at: new Date(s.at as string | Date).toISOString(),
+    mc_usd: n("mc_usd"),
+    liq_usd: n("liq_usd"),
+    gain_pct: n("gain_pct"),
+    wallets: n("wallets"),
+    status: (s.status as string | null) ?? null,
+    label: (s.label as string | null) ?? null,
+    survived: s.survived == null ? null : Boolean(s.survived),
+    score: n("score"),
+    prev_score: n("prev_score"),
+    score_delta: n("score_delta"),
+    mc_delta_pct: n("mc_delta_pct"),
+    liq_delta_pct: n("liq_delta_pct"),
+    wallet_delta: n("wallet_delta"),
+    band: (s.band as string | null) ?? null,
+    catalyst: (s.catalyst as string | null) ?? null,
+    factors,
+    vol_5m: n("vol_5m"),
+    vol_h1: n("vol_h1"),
+    buys_5m: n("buys_5m"),
+    sells_5m: n("sells_5m"),
+    holders: n("holders"),
+    buy_ratio: n("buy_ratio"),
+    boosts: n("boosts"),
+    replies: n("replies"),
+    price_chg_m5: n("price_chg_m5"),
   };
 }
 
@@ -236,47 +287,24 @@ export async function getToken(id: number): Promise<{
     const mem = await pool.query(
       `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
               score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
-              catalyst
+              catalyst, factors, vol_5m, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );
-    memory = mem.rows.map((s: {
-      at: string | Date;
-      mc_usd: number | null;
-      liq_usd: number | null;
-      gain_pct: number | null;
-      wallets: number | null;
-      status: string | null;
-      label: string | null;
-      survived: boolean | null;
-      score: number | null;
-      prev_score: number | null;
-      score_delta: number | null;
-      mc_delta_pct: number | null;
-      liq_delta_pct: number | null;
-      wallet_delta: number | null;
-      band: string | null;
-      catalyst: string | null;
-    }) => ({
-      at: new Date(s.at).toISOString(),
-      mc_usd: s.mc_usd != null ? Number(s.mc_usd) : null,
-      liq_usd: s.liq_usd != null ? Number(s.liq_usd) : null,
-      gain_pct: s.gain_pct != null ? Number(s.gain_pct) : null,
-      wallets: s.wallets != null ? Number(s.wallets) : null,
-      status: s.status,
-      label: s.label,
-      survived: s.survived,
-      score: s.score != null ? Number(s.score) : null,
-      prev_score: s.prev_score != null ? Number(s.prev_score) : null,
-      score_delta: s.score_delta != null ? Number(s.score_delta) : null,
-      mc_delta_pct: s.mc_delta_pct != null ? Number(s.mc_delta_pct) : null,
-      liq_delta_pct: s.liq_delta_pct != null ? Number(s.liq_delta_pct) : null,
-      wallet_delta: s.wallet_delta != null ? Number(s.wallet_delta) : null,
-      band: s.band,
-      catalyst: s.catalyst ?? null,
-    }));
+    memory = mem.rows.map((row) => mapMemory(row as Record<string, unknown>));
   } catch {
-    memory = [];
+    try {
+      const mem = await pool.query(
+        `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
+                score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
+                catalyst
+         FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+        [id],
+      );
+      memory = mem.rows.map((row) => mapMemory(row as Record<string, unknown>));
+    } catch {
+      memory = [];
+    }
   }
   return {
     token,
@@ -347,7 +375,7 @@ export async function listNotices(): Promise<NoticeBoard> {
               a.at, t.symbol, t.mint
        FROM ward_alerts a
        LEFT JOIN f2_tokens t ON t.id = a.token_id
-       WHERE a.kind IN ('admit', 'rung')
+       WHERE a.kind IN ('admit', 'rung', 'score')
        ORDER BY a.id DESC
        LIMIT 80`,
     );
