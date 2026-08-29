@@ -6,6 +6,7 @@ import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
 import { scanTick } from "../agents/scan";
 import { scrubReceives } from "../agents/scrub";
+import { scoutTick } from "../agents/scout";
 
 const log = logger.child({ module: "runtime" });
 
@@ -17,8 +18,8 @@ const SCAN_CHECK_MS = 30_000;
 const SCRUB_MS = 10 * 60_000;
 const SCAN_EVERY_MS = 15 * 60_000;
 
-let last = { intake: 0, scan: 0, scrub: 0 };
-let running = { intake: false, scan: false, scrub: false };
+let last = { intake: 0, scan: 0, scrub: 0, scout: 0 };
+let running = { intake: false, scan: false, scrub: false, scout: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -55,6 +56,14 @@ export async function ensureRuntime(): Promise<void> {
         last.scrub = Date.now();
         void guarded("scrub", scrubReceives).finally(() => { running.scrub = false; });
       }, 30_000);
+      setInterval(() => {
+        if (running.scout) return;
+        running.scout = true;
+        void guarded("scout", scoutTick).finally(() => {
+          running.scout = false;
+          last.scout = Date.now();
+        });
+      }, 8_000);
       started = true;
       log.info("desk started — wallet buys · 50s MC while young/running · 15m otherwise");
     })().catch((err) => {
@@ -75,7 +84,7 @@ export function agentStatus(): {
     started,
     last: { ...last },
     running: { ...running },
-    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scanFast: 50_000, scrub: SCRUB_MS },
+    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scanFast: 50_000, scrub: SCRUB_MS, scout: 8_000 },
   };
 }
 
@@ -85,5 +94,6 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   await guarded("intake", async () => { out.intake = await intakeTick(); });
   await guarded("scan", async () => { out.scan = await scanTick(); });
   await guarded("scrub", async () => { out.scrub = await scrubReceives(); });
+  await guarded("scout", async () => { out.scout = await scoutTick(); });
   return out;
 }
