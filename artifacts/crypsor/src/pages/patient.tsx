@@ -1,7 +1,7 @@
 import { useLocation, useParams } from "wouter";
 import { api, fmtUsd, fmtGainPct, gmgnUrl, shortMint, shortWallet, timeAgo, type TokenChart } from "../lib/api";
 import { usePoll } from "../hooks/use-data";
-import { Gain, LabelChip, TokenImg } from "../components/pass-card";
+import { Gain, TokenImg, MemoryChart } from "../components/pass-card";
 
 export default function TokenPage() {
   const { id } = useParams<{ id: string }>();
@@ -39,8 +39,10 @@ export default function TokenPage() {
           <div className="muted mint">{t.mint}</div>
           <div className="hero-cta">
             <a className="chip on" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
-            <span className={`st ${t.status}`}>{t.status === "dead" ? "archived" : t.status}</span>
-            <LabelChip label={t.label} />
+            <span className="score-pip">{t.score ?? "—"}</span>
+            {t.rug === "dump" || t.rug === "rug" || t.rug === "caution"
+              ? <span className={`risk ${t.rug}`}>{t.rug === "rug" ? "rug possible" : t.rug === "dump" ? "clean dump" : "caution"}</span>
+              : null}
           </div>
         </div>
       </div>
@@ -73,6 +75,11 @@ export default function TokenPage() {
           </div>
         </div>
         <div className="num">
+          <div className="k">Entry</div>
+          <div className="v">{t.entry_mc != null ? fmtUsd(t.entry_mc) : "—"}</div>
+          <div className="muted">{t.entry_mc != null ? "score ≥ 40, no dump" : "not suggested"}</div>
+        </div>
+        <div className="num">
           <div className="k">Liquidity</div>
           <div className="v">{fmtUsd(latest?.liq_usd ?? t.last_liq)}</div>
         </div>
@@ -89,6 +96,12 @@ export default function TokenPage() {
       {(latest?.catalyst) ? (
         <p className="note"><b>Catalyst. </b>{latest.catalyst}</p>
       ) : null}
+      {latest?.rug === "dump" || latest?.rug === "rug" || latest?.survival?.rug_possible ? (
+        <p className="note err">
+          <b>{latest.rug === "rug" ? "Rug possible. " : "Dump vs last snapshot. "}</b>
+          MC, liquidity, and holders on the chart below are the caution — surviving score will use this path.
+        </p>
+      ) : null}
       {latest?.factors && Object.keys(latest.factors).length > 0 ? (
         <div className="factors" aria-label="Score factors">
           {Object.entries(latest.factors).map(([k, v]) => (
@@ -96,6 +109,9 @@ export default function TokenPage() {
           ))}
         </div>
       ) : null}
+
+      <div className="h">Snapshots</div>
+      <MemoryChart points={memory} />
 
       <div className="h">Wallets</div>
       {ads.length === 0 ? <div className="empty">No buy signatures stored.</div> : null}
@@ -112,8 +128,8 @@ export default function TokenPage() {
         <div key={s.at} className="line mem">
           <b>{fmtUsd(s.mc_usd)}</b>
           <Gain pct={s.gain_pct} />
-          {s.score != null ? <span className="lb watch">{s.score}{s.score_delta != null ? ` ${s.score_delta >= 0 ? "+" : ""}${s.score_delta}` : ""}</span> : null}
-          <LabelChip label={s.label} />
+          {s.score != null ? <span className="score-pip">{s.score}{s.score_delta != null ? ` ${s.score_delta >= 0 ? "+" : ""}${s.score_delta}` : ""}</span> : null}
+          {s.rug && s.rug !== "none" ? <span className={`risk ${s.rug}`}>{s.rug === "rug" ? "rug possible" : s.rug}</span> : null}
           <span className="muted">
             {s.survived === false ? "dead" : ""}
             {s.vol_5m ? ` · vol ${fmtUsd(s.vol_5m)}` : ""}

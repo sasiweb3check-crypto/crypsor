@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  alertLane, catalystOf, labelOf, pctDelta, rungOf, scoreAtPoint, scoreBreakdown, scoreBucket, scoreStepOf, screenAlert,
+  alertLane, catalystOf, entryOf, labelOf, pctDelta, rungOf, scoreAtPoint, scoreBreakdown, scoreBucket, scoreStepOf, screenAlert, survivalOf,
   type ScorePoint,
 } from "./desk.ts";
 
@@ -91,7 +91,7 @@ describe("snapshot score", () => {
   });
 
   it("can call before 2× when volume, flow, and liq print hot", () => {
-    const quiet = scoreAtPoint(pt({ mc: 12_900, detected: 12_900 }), null);
+    const quiet = scoreAtPoint(pt({ mc: 12_900, detected: 12_900, liq: 2_500 }), null);
     const hot = scoreAtPoint(pt({
       mc: 12_900,
       detected: 12_900,
@@ -128,5 +128,34 @@ describe("snapshot score", () => {
     assert.ok(b.factors.flow != null);
     assert.ok(b.factors.holders != null);
     assert.ok(b.catalyst.includes("5.4×"));
+  });
+
+  it("does not require a multiple to score or call a $400k tape", () => {
+    const b = scoreBreakdown(pt({
+      mc: 400_000,
+      detected: 400_000,
+      liq: 45_000,
+      vol5m: 28_000,
+      buys5m: 90,
+      sells5m: 22,
+      priceChgM5: 7,
+      holders: 800,
+    }), null);
+    assert.equal(b.factors.multiple, undefined);
+    assert.ok(b.score >= 40, `got ${b.score}`);
+    assert.ok(entryOf({ lastMc: 400_000, score: b.score, survived: true, rug: "none" }) === 400_000);
+  });
+
+  it("flags a clean dump vs the previous snapshot for surviving score later", () => {
+    const prev = pt({ mc: 40_000, detected: 12_900, liq: 12_000, holders: 400, vol5m: 3_000 });
+    const now = pt({
+      mc: 22_000, detected: 12_900, liq: 4_500, holders: 280,
+      vol5m: 8_000, buys5m: 6, sells5m: 40,
+    });
+    const s = survivalOf(now, prev);
+    assert.equal(s.dump, "clean");
+    assert.ok(s.rug === "dump" || s.rug === "rug", s.rug);
+    assert.equal(s.rug_possible, true);
+    assert.equal(entryOf({ lastMc: 22_000, score: 70, survived: true, rug: s.rug }), null);
   });
 });

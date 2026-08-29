@@ -25,7 +25,8 @@ export function sseUrl(): string {
 }
 
 export type TokenStatus = "live" | "running" | "dead";
-export type DeskLabel = "dead" | "late" | "runner" | "call" | "heat" | "watch";
+export type DeskLabel = "dead" | "late" | "runner" | "call" | "heat" | "watch" | "hot" | "setup" | "dump" | "rug" | "caution";
+export type RugKind = "none" | "caution" | "dump" | "rug";
 export type DeskBand = "early" | "all";
 
 export type GainMatrix = {
@@ -52,6 +53,9 @@ export type TokenCard = {
   score: number | null;
   prev_score: number | null;
   score_at: string | null;
+  rug: RugKind;
+  entry_mc: number | null;
+  holders: number | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -60,10 +64,25 @@ export type TokenBoard = {
   at: string;
   items: TokenCard[];
   performers: TokenCard[];
-  census: { all: number; live: number; running: number; dead: number; early: number };
+  census: {
+    all: number;
+    live: number;
+    running: number;
+    dead: number;
+    early: number;
+    active?: number;
+    high?: number;
+    score40?: number;
+    score60?: number;
+    score80?: number;
+    rugs?: number;
+  };
   matrix: GainMatrix | null;
   scoreStats: ScoreStat[] | null;
   band: DeskBand;
+  scoreMin?: number;
+  gainMin?: number;
+  sort?: "score" | "gain" | "ath" | "new";
   page: number;
   pages: number;
   total: number;
@@ -106,6 +125,8 @@ export type DeskMemory = {
   boosts: number | null;
   replies: number | null;
   price_chg_m5: number | null;
+  rug: string | null;
+  survival: Record<string, unknown> | null;
 };
 
 export type NoticeItem = {
