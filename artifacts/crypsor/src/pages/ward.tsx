@@ -77,7 +77,7 @@ export default function DeskPage() {
       ) : null}
 
       {early && d?.matrix ? <MatrixStrip matrix={d.matrix} /> : null}
-      {early && d?.scoreStats ? <ScoreStrip stats={d.scoreStats} /> : null}
+      {d?.scoreStats ? <ScoreStrip stats={d.scoreStats} /> : null}
 
       <form
         className="toolbar"

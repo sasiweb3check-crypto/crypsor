@@ -12,12 +12,12 @@ export default function NoticesPage() {
     <div className="page">
       <div className="head">
         <h1>Calls</h1>
-        <span className="muted">Confidence vs detected MC</span>
+        <span className="muted">Rungs vs detected, plus score 40 / 60 / 80</span>
       </div>
       <p className="note">
-        Tracked wallets only source names. The call is last MC vs the freeze at first buy —
-        2× / 3× / 5× / 10× / 20×, with 5m volume when Dex prints it. Same-token extra wallets
-        are not a signal.
+        Tracked wallets only source names. Calls fire on 2× / 3× / 5× / 10× / 20× vs the
+        buy freeze, and when the frozen score crosses 40 / 60 / 80 from volume, liquidity,
+        holders, buy/sell flow, and attention. Same-token extra wallets are not a signal.
       </p>
 
       {q.loading && !q.data ? <div className="skel" /> : null}
@@ -36,7 +36,7 @@ export default function NoticesPage() {
             <div className="card-main">
               <div className="sym">
                 {a.title}
-                <span className={`st ${a.kind}`}>{a.kind === "rung" ? "call" : a.kind}</span>
+                <span className={`st ${a.kind}`}>{a.kind === "rung" ? "call" : a.kind === "score" ? "score" : a.kind}</span>
               </div>
               <div className="meta">{a.body}</div>
             </div>

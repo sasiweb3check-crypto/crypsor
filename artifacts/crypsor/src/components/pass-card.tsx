@@ -61,6 +61,7 @@ export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
         </div>
         <div className="meta">
           detected {fmtUsd(p.detected_mc)} · now {fmtUsd(p.last_mc)}
+          {p.score != null ? ` · score ${p.score}` : ""}
           {p.wallet_buys ? ` · ${p.wallet_buys} wallet${p.wallet_buys === 1 ? "" : "s"}` : ""}
           {p.last_scan_at ? ` · ${timeAgo(p.last_scan_at)}` : ""}
         </div>
@@ -95,7 +96,7 @@ export function PerformerCard({ p, onOpen }: { p: TokenCard; onOpen: () => void 
 export function ScoreStrip({ stats }: { stats: ScoreStat[] }) {
   return (
     <section className="matrix" aria-label="Score ranges vs later 2x 5x">
-      <div className="h">Frozen score vs later 2× / 5× · $5k–$30k snapshots</div>
+      <div className="h">Frozen score vs later 2× / 5× · all wallet-buy snapshots</div>
       <div className="matrix-grid score-grid">
         {stats.map((s) => (
           <div key={s.bucket} className="num">

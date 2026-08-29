@@ -302,9 +302,26 @@ const SCHEMA: string[] = [
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS band text`,
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS vol_5m real`,
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS catalyst text`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS factors jsonb`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS vol_h1 real`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS buys_5m integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS sells_5m integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS holders integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS buy_ratio real`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS boosts integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS replies integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS price_chg_m5 real`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_score integer`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_prev_score integer`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_score_at timestamptz`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS notified_score integer`,
+  `UPDATE f2_tokens SET notified_score = CASE
+      WHEN COALESCE(desk_score, 0) >= 80 THEN 80
+      WHEN COALESCE(desk_score, 0) >= 60 THEN 60
+      WHEN COALESCE(desk_score, 0) >= 40 THEN 40
+      ELSE 0
+    END
+    WHERE notified_score IS NULL`,
   `ALTER TABLE ward_alerts ADD COLUMN IF NOT EXISTS lane text`,
   `ALTER TABLE ward_alerts ADD COLUMN IF NOT EXISTS score integer`,
 
