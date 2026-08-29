@@ -428,6 +428,28 @@ const SCHEMA: string[] = [
      updated_at timestamptz NOT NULL DEFAULT NOW()
    )`,
   `CREATE INDEX IF NOT EXISTS idx_scout_jobs_created ON scout_jobs (created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS intel_events (
+     id serial PRIMARY KEY,
+     chain text NOT NULL,
+     kind text NOT NULL,
+     at timestamptz NOT NULL,
+     wallet text NOT NULL,
+     counterparty text,
+     mint text,
+     symbol text,
+     name text,
+     usd real,
+     native_amt real,
+     tx text NOT NULL,
+     rumor text,
+     tags jsonb,
+     detail text,
+     extra jsonb,
+     created_at timestamptz NOT NULL DEFAULT NOW(),
+     UNIQUE (chain, tx, kind, wallet)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_intel_events_at ON intel_events (at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_intel_events_chain ON intel_events (chain, at DESC)`,
 ];
 
 let ensured = false;

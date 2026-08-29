@@ -4,6 +4,7 @@ import TokenPage from "./pages/patient";
 import NoticesPage from "./pages/notices";
 import SettingsPage from "./pages/settings";
 import ScoutPage from "./pages/scout";
+import MovesPage from "./pages/moves";
 import Toasts from "./components/toasts";
 
 function Nav() {
@@ -14,6 +15,7 @@ function Nav() {
       <span className="brand">Crypsor</span>
       <Link href="/" className={on("/") ? "on" : ""}>Desk</Link>
       <Link href="/scout" className={loc.startsWith("/scout") ? "on" : ""}>Scout</Link>
+      <Link href="/moves" className={loc.startsWith("/moves") ? "on" : ""}>Moves</Link>
       <Link href="/notices" className={loc.startsWith("/notices") ? "on" : ""}>Calls</Link>
       <Link href="/settings" className={on("/settings") ? "on" : ""}>Settings</Link>
     </nav>
@@ -31,6 +33,7 @@ export default function App() {
           <Route path="/p/:id" component={TokenPage} />
           <Route path="/scout/:id" component={ScoutPage} />
           <Route path="/scout" component={ScoutPage} />
+          <Route path="/moves" component={MovesPage} />
           <Route path="/notices" component={NoticesPage} />
           <Route path="/settings" component={SettingsPage} />
           <Route>

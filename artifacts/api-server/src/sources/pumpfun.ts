@@ -87,3 +87,30 @@ export async function coinsForMints(mints: string[]): Promise<Map<string, PumpCo
   }
   return out;
 }
+
+export type PumpTradeRow = {
+  signature?: string;
+  is_buy?: boolean;
+  user?: string;
+  timestamp?: number;
+  sol_amount?: number;
+  token_amount?: number;
+};
+
+export async function newestCoins(limit = 50): Promise<PumpCoin[]> {
+  const n = Math.min(Math.max(limit, 1), 50);
+  const rows = await get<PumpCoin[]>(
+    `/coins?offset=0&limit=${n}&sort=created_timestamp&order=DESC&includeNsfw=false`,
+    8_000,
+  );
+  return Array.isArray(rows) ? rows.filter((c) => c?.mint) : [];
+}
+
+export async function firstTrades(mint: string, limit = 200): Promise<PumpTradeRow[]> {
+  const n = Math.min(Math.max(limit, 1), 200);
+  const rows = await get<PumpTradeRow[]>(
+    `/trades/all/${encodeURIComponent(mint)}?limit=${n}&offset=0`,
+    8_000,
+  );
+  return Array.isArray(rows) ? rows : [];
+}

@@ -229,6 +229,11 @@ button { cursor: pointer; }
 .st.partial { color: var(--blue); }
 .st.sold_all, .st.sold { color: var(--muted); }
 .st.gap { color: var(--blue); }
+.st.buy { color: var(--green); }
+.st.sell { color: var(--red); }
+.st.fund { color: var(--blue); }
+.st.deploy { color: #c9b07a; }
+.st.rumor { color: #d4a0ff; }
 .lb {
   font-size: 11px;
   text-transform: uppercase;

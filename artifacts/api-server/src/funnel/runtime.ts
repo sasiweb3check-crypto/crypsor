@@ -7,6 +7,7 @@ import { intakeTick } from "../agents/intake";
 import { scanTick } from "../agents/scan";
 import { scrubReceives } from "../agents/scrub";
 import { scoutTick } from "../agents/scout";
+import { intelTick } from "../agents/intel";
 
 const log = logger.child({ module: "runtime" });
 
@@ -17,9 +18,10 @@ const INTAKE_MS = 40_000;
 const SCAN_CHECK_MS = 30_000;
 const SCRUB_MS = 10 * 60_000;
 const SCAN_EVERY_MS = 15 * 60_000;
+const INTEL_MS = 50_000;
 
-let last = { intake: 0, scan: 0, scrub: 0, scout: 0 };
-let running = { intake: false, scan: false, scrub: false, scout: false };
+let last = { intake: 0, scan: 0, scrub: 0, scout: 0, intel: 0 };
+let running = { intake: false, scan: false, scrub: false, scout: false, intel: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -64,8 +66,14 @@ export async function ensureRuntime(): Promise<void> {
           last.scout = Date.now();
         });
       }, 8_000);
+      setInterval(() => {
+        if (running.intel || Date.now() - last.intel < INTEL_MS) return;
+        running.intel = true;
+        last.intel = Date.now();
+        void guarded("intel", intelTick).finally(() => { running.intel = false; });
+      }, 5_000);
       started = true;
-      log.info("desk started — wallet buys · 50s MC while young/running · 15m otherwise");
+      log.info("desk started — wallet buys · moves tape 50s · 50s MC while young/running · 15m otherwise");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -84,7 +92,9 @@ export function agentStatus(): {
     started,
     last: { ...last },
     running: { ...running },
-    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scanFast: 50_000, scrub: SCRUB_MS, scout: 8_000 },
+    intervalsMs: {
+      intake: INTAKE_MS, scan: SCAN_EVERY_MS, scanFast: 50_000, scrub: SCRUB_MS, scout: 8_000, intel: INTEL_MS,
+    },
   };
 }
 
@@ -95,5 +105,6 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   await guarded("scan", async () => { out.scan = await scanTick(); });
   await guarded("scrub", async () => { out.scrub = await scrubReceives(); });
   await guarded("scout", async () => { out.scout = await scoutTick(); });
+  await guarded("intel", async () => { out.intel = await intelTick(); });
   return out;
 }
