@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   fmtUsd, fmtGainPct, deskImg, gmgnUrl, timeAgo,
-  type TokenCard,
+  type DeskLabel, type TokenCard,
 } from "../lib/api";
 
 export function TokenImg({
@@ -42,6 +42,11 @@ export function Gain({ pct }: { pct: number | null }) {
   return <span className={`gain ${pct == null ? "" : up ? "up" : "down"}`}>{fmtGainPct(pct)}</span>;
 }
 
+export function LabelChip({ label }: { label: DeskLabel | string | null | undefined }) {
+  if (!label || label === "dead") return null;
+  return <span className={`lb ${label}`}>{label}</span>;
+}
+
 export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
   return (
     <div className={`row-card ${p.status}`}>
@@ -52,6 +57,7 @@ export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
         <div className="sym">
           ${p.symbol || p.name || p.mint.slice(0, 6)}
           <span className={`st ${p.status}`}>{p.status === "dead" ? "archived" : p.status}</span>
+          <LabelChip label={p.label} />
         </div>
         <div className="meta">
           detected {fmtUsd(p.detected_mc)} · now {fmtUsd(p.last_mc)}

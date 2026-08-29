@@ -25,6 +25,14 @@ export function sseUrl(): string {
 }
 
 export type TokenStatus = "live" | "running" | "dead";
+export type DeskLabel = "dead" | "late" | "runner" | "call" | "heat" | "watch";
+export type DeskBand = "early" | "all";
+
+export type GainMatrix = {
+  n: number;
+  now: Record<string, { n: number; pct: number }>;
+  peak: Record<string, { n: number; pct: number }>;
+};
 
 export type TokenCard = {
   id: number;
@@ -40,6 +48,7 @@ export type TokenCard = {
   ath_pct: number | null;
   wallet_buys: number;
   status: TokenStatus;
+  label: DeskLabel;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -48,17 +57,31 @@ export type TokenBoard = {
   at: string;
   items: TokenCard[];
   performers: TokenCard[];
-  census: { all: number; live: number; running: number; dead: number };
+  census: { all: number; live: number; running: number; dead: number; early: number };
+  matrix: GainMatrix | null;
+  band: DeskBand;
   page: number;
   pages: number;
   total: number;
   limit: number;
 };
 
+export type DeskMemory = {
+  at: string;
+  mc_usd: number | null;
+  liq_usd: number | null;
+  gain_pct: number | null;
+  wallets: number | null;
+  status: string | null;
+  label: string | null;
+  survived: boolean | null;
+};
+
 export type TokenChart = {
   token: TokenCard;
   admissions: Array<{ wallet: string; sig: string | null; at: string; label: string | null }>;
   scans: Array<{ at: string; mc_usd: number | null; liq_usd: number | null; phase: string | null }>;
+  memory: DeskMemory[];
 };
 
 export function dexTokenImage(mint: string | null | undefined): string | null {

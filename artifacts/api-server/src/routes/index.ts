@@ -101,20 +101,27 @@ router.post("/cron/tick", (req, res) => {
   void boundedTick().then((r) => res.json(ok({ ...r, at: new Date().toISOString() })));
 });
 
-function boardQuery(req: Request): { page: number; limit: number; q: string; status: TokenStatus | "all" } {
+function boardQuery(req: Request): {
+  page: number;
+  limit: number;
+  q: string;
+  status: TokenStatus | "all";
+  band: "early" | "all";
+} {
   const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 80);
   const q = String(req.query.q ?? "").trim();
   const raw = String(req.query.status ?? "all").toLowerCase();
   const status: TokenStatus | "all" = (STATUSES as readonly string[]).includes(raw) ? raw as TokenStatus : "all";
-  return { page, limit, q, status };
+  const band = String(req.query.band ?? "all").toLowerCase() === "early" ? "early" : "all";
+  return { page, limit, q, status, band };
 }
 
 async function sendBoard(req: Request, res: Response): Promise<void> {
   try {
     const query = boardQuery(req);
     const payload = await cached(
-      `tokens:${query.status}:${query.page}:${query.limit}:${query.q}`,
+      `tokens:${query.status}:${query.band}:${query.page}:${query.limit}:${query.q}`,
       2_000,
       () => listTokens(query),
     );

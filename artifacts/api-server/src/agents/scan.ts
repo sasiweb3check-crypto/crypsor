@@ -7,8 +7,9 @@ import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
-import { fmtMc, rungOf, statusOf } from "../scoring/desk";
+import { fmtMc, labelOf, rungOf, statusOf } from "../scoring/desk";
 import { dexTokenImage } from "../scoring/image";
+import { insertDeskMemory } from "./memory";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
 
@@ -23,6 +24,7 @@ type Row = {
   admission_mc: number | null;
   last_mc: number | null;
   peak_mc: number | null;
+  wallet_buys: number;
   notified_rung: number | null;
 };
 
@@ -30,6 +32,7 @@ async function dueBatch(): Promise<Row[]> {
   const due = await pool.query(
     `SELECT id, mint, symbol,
             detected_mc, admission_mc, last_mc, peak_mc,
+            COALESCE(wallet_buys, 0) AS wallet_buys,
             COALESCE(notified_rung, 1) AS notified_rung
      FROM f2_tokens
      WHERE wallet_buys > 0
@@ -82,6 +85,8 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
     const freeze = detected ?? mc;
     const last = mc ?? row.last_mc;
     const status = statusOf(last, freeze);
+    const wallets = row.wallet_buys || 0;
+    const label = labelOf({ lastMc: last, detectedMc: freeze, walletBuys: wallets });
     const prevRung = row.notified_rung && row.notified_rung > 0 ? row.notified_rung : 1;
     const nowRung = status === "dead" ? prevRung : rungOf(last, freeze);
     const fireRung = status !== "dead" && nowRung > prevRung;
@@ -118,6 +123,20 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
         fireRung ? nowRung : prevRung,
       ],
     );
+
+    try {
+      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, label]);
+    } catch {
+      // desk_label lands after schema pass
+    }
+
+    await insertDeskMemory({
+      tokenId: row.id,
+      mc: last,
+      liq,
+      detected: freeze,
+      wallets,
+    });
 
     try {
       await pool.query(
