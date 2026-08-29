@@ -8,7 +8,7 @@ import { cached, cacheBackend } from "../core/cache";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { listTokens, getToken, listNotices, type BoardQuery } from "../agents/board";
-import { startScoutJob, getScoutJob, enrichScoutWallet } from "../agents/scout";
+import { startScoutJob, getScoutJob, enrichScoutWallet, publicScoutJob } from "../agents/scout";
 import { imageProxy } from "./img";
 
 const router: IRouter = Router();
@@ -251,7 +251,7 @@ router.post("/scout", async (req, res) => {
   try {
     const mint = String(req.body?.mint ?? "").trim();
     const job = await startScoutJob(mint);
-    res.json(ok(job));
+    res.json(ok(publicScoutJob(job)));
   } catch (err) {
     res.status(400).json(fail(err instanceof Error ? err.message : "scout failed"));
   }
@@ -264,7 +264,7 @@ router.get("/scout/:id", async (req, res) => {
     const job = await getScoutJob(id);
     if (!job) { res.status(404).json(fail("not found")); return; }
     res.setHeader("Cache-Control", "no-store");
-    res.json(ok(job));
+    res.json(ok(publicScoutJob(job)));
   } catch (err) {
     res.status(500).json(fail("scout failed"));
   }
@@ -279,7 +279,7 @@ router.post("/scout/:id/enrich", async (req, res) => {
       return;
     }
     const job = await enrichScoutWallet(id, wallet);
-    res.json(ok(job));
+    res.json(ok(publicScoutJob(job)));
   } catch (err) {
     res.status(400).json(fail(err instanceof Error ? err.message : "enrich failed"));
   }

@@ -238,6 +238,8 @@ export type ScoutWalletRow = {
   lastAt: number | null;
   lpLike: boolean;
   labels: string[];
+  gap?: boolean;
+  gmgnLegs?: number;
 };
 
 export type ScoutTokenMeta = {

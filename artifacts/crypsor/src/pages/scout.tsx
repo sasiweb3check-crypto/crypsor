@@ -128,7 +128,7 @@ export default function ScoutPage() {
       await api<ScoutJob>(`api/scout/${jobId}/enrich`, {
         method: "POST",
         body: JSON.stringify({ wallet }),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(45_000),
       });
       q.refresh();
     } catch (e) {
@@ -147,8 +147,9 @@ export default function ScoutPage() {
       </div>
       <p className="note">
         Enter a mint. We rebuild this token&apos;s tape from pump.fun trades, Helius pool
-        history, and current holders — then rank wallets by our ROI. MC band is a post-filter
-        on buys we already stamped. GMGN is labels only.
+        history, and current holders, then fill gaps from GMGN&apos;s public token trades,
+        holders, smart-money, and wallet activity. Rank is our reconstructed ROI — GMGN
+        PnL is never copied. MC band is a post-filter on buys we already stamped.
       </p>
 
       <form
@@ -242,6 +243,8 @@ export default function ScoutPage() {
                   <div className="sym">
                     <code>{shortWallet(w.wallet)}</code>
                     <span className={`st ${w.status}`}>{w.status.replace("_", " ")}</span>
+                    {w.gap ? <span className="st gap">{(w.gmgnLegs ?? 0) > 0 ? "gmgn gap" : "tags only"}</span> : null}
+                    {(w.gmgnLegs ?? 0) > 0 && !w.gap ? <span className="st gap">gmgn {w.gmgnLegs}</span> : null}
                     {w.lpLike ? <span className="risk caution">lp-like</span> : null}
                     {w.labels.map((l) => <span key={l} className="factor">{l.replace("name:", "")}</span>)}
                   </div>

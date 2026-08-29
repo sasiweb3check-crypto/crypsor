@@ -1,6 +1,6 @@
 /**
  * Reconstruct this-token fills into cycles, averages, and ROI.
- * GMGN never belongs here — labels stay on the job row.
+ * GMGN fills may be merged in as src "gmgn"; GMGN PnL fields never belong here.
  */
 import { isQuoteMint } from "./noise.ts";
 
@@ -56,7 +56,34 @@ export type ScoutWallet = {
   lastAt: number | null;
   lpLike: boolean;
   labels: string[];
+  gap: boolean;
+  gmgnLegs: number;
+  tape: ScoutFillTape[];
 };
+
+export type ScoutFillTape = {
+  side: FillSide;
+  tokenAmt: number;
+  usd: number | null;
+  at: number;
+  sig: string;
+  mc: number | null;
+  src: string;
+};
+
+export function isGmgnSrc(src: string): boolean {
+  return src === "gmgn" || src.startsWith("gmgn");
+}
+
+export function compactTape(fills: TokenFill[], cap = 40): ScoutFillTape[] {
+  return fills.slice(0, cap).map(({ side, tokenAmt, usd, at, sig, mc, src }) => ({
+    side, tokenAmt, usd, at, sig, mc, src,
+  }));
+}
+
+export function expandTape(wallet: string, tape: ScoutFillTape[] | undefined): TokenFill[] {
+  return (tape ?? []).map((f) => ({ wallet, ...f }));
+}
 
 export type HeliusLikeTx = {
   signature?: string;
@@ -82,7 +109,8 @@ export type HeliusLikeTx = {
 const DUST = 1e-8;
 
 export function fillKey(f: TokenFill): string {
-  return `${f.sig}:${f.wallet}:${f.side}`;
+  const sig = f.sig || `nosig:${f.at}:${f.tokenAmt}`;
+  return `${sig}:${f.wallet}:${f.side}`;
 }
 
 export function dedupeFills(fills: TokenFill[]): TokenFill[] {
@@ -96,6 +124,30 @@ export function dedupeFills(fills: TokenFill[]): TokenFill[] {
     out.push(f);
   }
   return out.sort((a, b) => a.at - b.at || a.sig.localeCompare(b.sig));
+}
+
+/** Keep primary identity; copy missing usd/mc from extra. Extra-only rows are appended. */
+export function mergeFillGaps(primary: TokenFill[], extra: TokenFill[]): TokenFill[] {
+  const map = new Map<string, TokenFill>();
+  for (const f of primary) {
+    if (!(f.tokenAmt > 0) || !f.wallet) continue;
+    map.set(fillKey(f), f);
+  }
+  for (const f of extra) {
+    if (!(f.tokenAmt > 0) || !f.wallet) continue;
+    const k = fillKey(f);
+    const cur = map.get(k);
+    if (!cur) {
+      map.set(k, f);
+      continue;
+    }
+    map.set(k, {
+      ...cur,
+      usd: cur.usd != null && cur.usd > 0 ? cur.usd : f.usd,
+      mc: cur.mc != null && cur.mc > 0 ? cur.mc : f.mc,
+    });
+  }
+  return [...map.values()].sort((a, b) => a.at - b.at || a.sig.localeCompare(b.sig));
 }
 
 function quoteFlowUsd(
@@ -247,9 +299,45 @@ export function bookWallet(
     balance?: number | null;
     priceUsd?: number | null;
     supply?: number | null;
+    labels?: string[];
   } = {},
 ): ScoutWallet {
   const rows = dedupeFills(fills.filter((f) => f.wallet === wallet));
+  const labels = [...new Set(opts.labels ?? [])].slice(0, 12);
+  const das = opts.balance != null && Number.isFinite(opts.balance) ? Math.max(0, opts.balance) : null;
+  if (!rows.length) {
+    const remainingTokens = das ?? 0;
+    return {
+      wallet,
+      status: remainingTokens > DUST ? "hold" : "sold_all",
+      balance: remainingTokens,
+      investedUsd: 0,
+      proceedsUsd: 0,
+      remainingUsd: 0,
+      remainingTokens,
+      avgBuy: null,
+      avgSell: null,
+      realizedRoi: null,
+      overallRoi: null,
+      profitUsd: 0,
+      winrate: null,
+      cycles: remainingTokens > DUST ? 1 : 0,
+      closedCycles: 0,
+      avgHoldMs: null,
+      legs: 0,
+      buys: 0,
+      sells: 0,
+      minBuyMc: null,
+      buyMcs: [],
+      firstAt: null,
+      lastAt: null,
+      lpLike: false,
+      labels,
+      gap: true,
+      gmgnLegs: 0,
+      tape: [],
+    };
+  }
   const lots: Lot[] = [];
   const cycles: ClosedCycle[] = [];
   let invested = 0;
@@ -307,7 +395,6 @@ export function bookWallet(
   }
 
   const reconLeft = lots.reduce((s, l) => s + l.tokens, 0);
-  const das = opts.balance != null && Number.isFinite(opts.balance) ? Math.max(0, opts.balance) : null;
   const remainingTokens = das != null ? das : reconLeft;
   const price = opts.priceUsd != null && opts.priceUsd > 0 ? opts.priceUsd : null;
   const remainingUsd = price != null ? remainingTokens * price : 0;
@@ -344,7 +431,10 @@ export function bookWallet(
     firstAt: rows[0]?.at ?? null,
     lastAt: rows[rows.length - 1]?.at ?? null,
     lpLike,
-    labels: [],
+    labels,
+    gap: rows.every((f) => isGmgnSrc(f.src)),
+    gmgnLegs: rows.filter((f) => isGmgnSrc(f.src)).length,
+    tape: compactTape(rows),
   };
 }
 
