@@ -95,6 +95,7 @@ export type DeskMemory = {
   liq_delta_pct: number | null;
   wallet_delta: number | null;
   band: string | null;
+  catalyst: string | null;
 };
 
 export type NoticeItem = {

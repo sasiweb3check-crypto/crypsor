@@ -1,24 +1,22 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  alertLane, labelOf, pctDelta, scoreAtPoint, scoreBucket, screenAlert, type ScorePoint,
+  alertLane, catalystOf, labelOf, pctDelta, rungOf, scoreAtPoint, scoreBucket, screenAlert,
+  type ScorePoint,
 } from "./desk.ts";
 
 function pt(partial: Partial<ScorePoint> & { mc: number; detected: number }): ScorePoint {
-  const wallets = partial.wallets ?? 1;
   const survived = partial.survived ?? true;
-  const label = partial.label ?? labelOf({ lastMc: partial.mc, detectedMc: partial.detected, walletBuys: wallets });
-  return { liq: 8_000, ...partial, wallets, survived, label };
+  const label = partial.label ?? labelOf({ lastMc: partial.mc, detectedMc: partial.detected });
+  return { liq: 8_000, ...partial, survived, label };
 }
 
 describe("snapshot score", () => {
-  it("routes screen alerts only in the $5k–$30k band", () => {
-    assert.equal(alertLane(12_900), "early");
-    assert.equal(alertLane(30_000), "early");
-    assert.equal(alertLane(30_001), "high");
-    assert.equal(alertLane(82_000), "high");
-    assert.equal(alertLane(null), "high");
-    assert.equal(screenAlert("early"), true);
+  it("sends confidence calls to the screen regardless of detected band", () => {
+    assert.equal(alertLane(4_206), "call");
+    assert.equal(alertLane(12_900), "call");
+    assert.equal(alertLane(90_000), "call");
+    assert.equal(screenAlert("call"), true);
     assert.equal(screenAlert("high"), false);
   });
 
@@ -26,37 +24,41 @@ describe("snapshot score", () => {
     assert.equal(scoreAtPoint(pt({ mc: 3_000, detected: 12_900, survived: false, label: "dead" }), null), 0);
   });
 
-  it("scores an early first print in the watch/mid band, not 100", () => {
-    const s = scoreAtPoint(pt({ mc: 12_900, detected: 12_900, wallets: 1 }), null);
-    assert.ok(s >= 30 && s < 50, `got ${s}`);
+  it("scores a first print near detected in the watch/mid band, not 100", () => {
+    const s = scoreAtPoint(pt({ mc: 12_900, detected: 12_900 }), null);
+    assert.ok(s >= 20 && s < 50, `got ${s}`);
   });
 
   it("raises score when the next snapshot is up vs memory", () => {
-    const prev = pt({ mc: 12_900, detected: 12_900, wallets: 1, score: 40 });
-    const now = pt({ mc: 16_000, detected: 12_900, wallets: 1 });
+    const prev = pt({ mc: 12_900, detected: 12_900, score: 40 });
+    const now = pt({ mc: 16_000, detected: 12_900 });
     const s = scoreAtPoint(now, prev);
     assert.ok(s > scoreAtPoint(now, null), `with memory ${s}`);
   });
 
   it("cuts score on a dump vs the previous snapshot", () => {
-    const prev = pt({ mc: 20_000, detected: 12_900, wallets: 1, score: 62 });
-    const now = pt({ mc: 11_000, detected: 12_900, wallets: 1 });
-    const up = scoreAtPoint(pt({ mc: 22_000, detected: 12_900, wallets: 1 }), prev);
+    const prev = pt({ mc: 20_000, detected: 12_900, score: 62 });
+    const now = pt({ mc: 11_000, detected: 12_900 });
+    const up = scoreAtPoint(pt({ mc: 22_000, detected: 12_900 }), prev);
     const down = scoreAtPoint(now, prev);
     assert.ok(down < up, `down ${down} up ${up}`);
   });
 
-  it("adds wallet confirmation vs previous memory", () => {
-    const prev = pt({ mc: 12_900, detected: 12_900, wallets: 1, score: 40 });
+  it("does not raise score for extra tracked wallets", () => {
+    const prev = pt({ mc: 12_900, detected: 12_900, score: 40 });
     const one = scoreAtPoint(pt({ mc: 12_900, detected: 12_900, wallets: 1 }), prev);
     const two = scoreAtPoint(pt({ mc: 12_900, detected: 12_900, wallets: 2 }), prev);
-    assert.ok(two > one, `two ${two} one ${one}`);
+    assert.equal(two, one);
   });
 
-  it("keeps high-MC names scorable but not in the early lane", () => {
-    const s = scoreAtPoint(pt({ mc: 90_000, detected: 90_000, wallets: 1, label: "late" }), null);
-    assert.ok(s > 0 && s < 70, `got ${s}`);
-    assert.equal(alertLane(90_000), "high");
+  it("calls MONA-style 4k→22k as 5× with a freeze catalyst", () => {
+    assert.equal(rungOf(22_906, 4_206), 5);
+    const text = catalystOf({ lastMc: 22_906, detectedMc: 4_206, vol5m: 94 });
+    assert.match(text, /5\.4×/);
+    assert.match(text, /\$4\.2K/);
+    assert.match(text, /vol/i);
+    const s = scoreAtPoint(pt({ mc: 22_906, detected: 4_206 }), pt({ mc: 8_500, detected: 4_206 }));
+    assert.ok(s >= 70, `got ${s}`);
   });
 
   it("buckets scores for alert calibration", () => {

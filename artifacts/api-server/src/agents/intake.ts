@@ -164,7 +164,7 @@ async function admit(
   }
 
   if (row.inserted) {
-    const screen = (stamp?.lane ?? "high") === "early";
+    const catalyst = `Sourced at detected ${fmtMc(detected)}.`;
     await agentNote("intake", "ADMIT", `$${ticker} buy via ${who} @ ${fmtMc(detected)}`, {
       tokenId: row.id, mint,
     });
@@ -172,40 +172,20 @@ async function admit(
       tokenId: row.id,
       kind: "admit",
       title: `BUY $${ticker}`,
-      body: `${who} bought. Detected MC ${fmtMc(detected)}. Score ${stamp?.score ?? "—"}.`,
+      body: `${catalyst} Tracking MC vs that freeze.`,
       payload: { mint, wallet, sig, mc: detected, score: stamp?.score ?? null },
-      lane: stamp?.lane ?? "high",
+      lane: "call",
       score: stamp?.score ?? null,
-      screen,
-      telegram: screen,
+      screen: true,
+      telegram: true,
     });
     emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
     return true;
   }
 
   if (extraWallet && row.wallet_buys >= 2) {
-    const screen = (stamp?.lane ?? "high") === "early";
-    await agentNote("intake", "CONFIRM", `$${ticker} wallet ${row.wallet_buys} via ${who}`, {
-      tokenId: row.id, mint,
-    });
-    await raiseAlert({
-      tokenId: row.id,
-      kind: "confirm",
-      title: `${nth(row.wallet_buys)} wallet $${ticker}`,
-      body: `${who} bought. ${row.wallet_buys} wallets. Detected ${fmtMc(detected)} · now ${fmtMc(nowMc)}. Score ${stamp?.score ?? "—"}.`,
-      payload: { mint, wallet, sig, mc: nowMc, wallets: row.wallet_buys, score: stamp?.score ?? null },
-      lane: stamp?.lane ?? "high",
-      score: stamp?.score ?? null,
-      screen,
-      telegram: screen,
-    });
     emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
   }
   return false;
 }
 
-function nth(n: number): string {
-  if (n === 2) return "2nd";
-  if (n === 3) return "3rd";
-  return `${n}th`;
-}

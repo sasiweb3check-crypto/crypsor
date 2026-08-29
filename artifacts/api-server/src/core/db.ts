@@ -266,6 +266,7 @@ const SCHEMA: string[] = [
       WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 20 THEN 20
       WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 10 THEN 10
       WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 5 THEN 5
+      WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 3 THEN 3
       WHEN last_mc >= COALESCE(detected_mc, admission_mc) * 2 THEN 2
       ELSE 1
     END
@@ -299,6 +300,8 @@ const SCHEMA: string[] = [
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS liq_delta_pct real`,
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS wallet_delta integer`,
   `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS band text`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS vol_5m real`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS catalyst text`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_score integer`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_prev_score integer`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_score_at timestamptz`,

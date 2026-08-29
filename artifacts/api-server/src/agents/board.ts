@@ -49,6 +49,7 @@ export type DeskMemory = {
   liq_delta_pct: number | null;
   wallet_delta: number | null;
   band: string | null;
+  catalyst: string | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
@@ -108,7 +109,7 @@ export type NoticeItem = {
   kind: string;
   title: string;
   body: string;
-  lane: AlertLane;
+  lane: AlertLane | string;
   score: number | null;
   at: string;
   symbol: string | null;
@@ -234,7 +235,8 @@ export async function getToken(id: number): Promise<{
   try {
     const mem = await pool.query(
       `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
-              score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band
+              score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
+              catalyst
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );
@@ -254,6 +256,7 @@ export async function getToken(id: number): Promise<{
       liq_delta_pct: number | null;
       wallet_delta: number | null;
       band: string | null;
+      catalyst: string | null;
     }) => ({
       at: new Date(s.at).toISOString(),
       mc_usd: s.mc_usd != null ? Number(s.mc_usd) : null,
@@ -270,6 +273,7 @@ export async function getToken(id: number): Promise<{
       liq_delta_pct: s.liq_delta_pct != null ? Number(s.liq_delta_pct) : null,
       wallet_delta: s.wallet_delta != null ? Number(s.wallet_delta) : null,
       band: s.band,
+      catalyst: s.catalyst ?? null,
     }));
   } catch {
     memory = [];
@@ -312,7 +316,6 @@ export async function scoreStats(): Promise<ScoreStat[]> {
        FROM desk_memory m
        JOIN f2_tokens t ON t.id = m.token_id
        WHERE m.score IS NOT NULL
-         AND m.detected_mc >= 5000 AND m.detected_mc <= 30000
          AND t.wallet_buys > 0
        GROUP BY 1`,
     );
@@ -344,8 +347,7 @@ export async function listNotices(): Promise<NoticeBoard> {
               a.at, t.symbol, t.mint
        FROM ward_alerts a
        LEFT JOIN f2_tokens t ON t.id = a.token_id
-       WHERE COALESCE(a.lane, a.payload->>'lane', 'high') = 'high'
-         AND a.kind IN ('admit', 'confirm', 'rung')
+       WHERE a.kind IN ('admit', 'rung')
        ORDER BY a.id DESC
        LIMIT 80`,
     );
@@ -366,7 +368,7 @@ export async function listNotices(): Promise<NoticeBoard> {
       kind: row.kind,
       title: row.title,
       body: row.body,
-      lane: row.lane === "early" ? "early" : "high",
+      lane: row.lane === "early" || row.lane === "call" ? row.lane : "high",
       score: row.score != null ? Number(row.score) : null,
       at: new Date(row.at).toISOString(),
       symbol: row.symbol,
