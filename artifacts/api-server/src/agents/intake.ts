@@ -8,7 +8,7 @@ import { recentBuys } from "../sources/helius";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
 import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
 import { isNoiseToken } from "../scoring/noise";
-import { statusOf } from "../scoring/desk";
+import { fmtMc, statusOf } from "../scoring/desk";
 import { httpsImage } from "../scoring/image";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
@@ -83,12 +83,13 @@ async function admit(
   const phase = statusOf(mc, mc);
   const ins = await pool.query(
     `WITH existing AS (
-        SELECT id, phase FROM f2_tokens WHERE mint = $1
+        SELECT id, phase, wallet_buys FROM f2_tokens WHERE mint = $1
      ), upsert AS (
         INSERT INTO f2_tokens (
           mint, symbol, name, image, source, created_ts, mc_at_discovery,
-          graduated, wallet_buys, stage, phase, admission_mc, detected_mc, last_mc, peak_mc
-        ) VALUES ($1,$2,$3,$4,'wallet_buy',$5,$6,$7,1,'tracking',$8,$6,$6,$6,$6)
+          graduated, wallet_buys, stage, phase, admission_mc, detected_mc, last_mc, peak_mc,
+          notified_rung
+        ) VALUES ($1,$2,$3,$4,'wallet_buy',$5,$6,$7,1,'tracking',$8,$6,$6,$6,$6,1)
         ON CONFLICT (mint) DO UPDATE SET
           wallet_buys = f2_tokens.wallet_buys + CASE
             WHEN NOT EXISTS (
@@ -107,9 +108,10 @@ async function admit(
           revived_at = CASE
             WHEN f2_tokens.phase IN ('dead','deceased') THEN NOW()
             ELSE f2_tokens.revived_at END
-        RETURNING id, (xmax = 0) AS inserted, phase, symbol, name, wallet_buys, detected_mc, admission_mc
+        RETURNING id, (xmax = 0) AS inserted, phase, symbol, name, wallet_buys,
+                  detected_mc, admission_mc, last_mc
      )
-     SELECT u.*, e.phase AS prev_phase
+     SELECT u.*, e.phase AS prev_phase, e.wallet_buys AS prev_buys
      FROM upsert u
      LEFT JOIN existing e ON e.id = u.id`,
     [
@@ -127,7 +129,8 @@ async function admit(
   const row = ins.rows[0] as {
     id: number; inserted: boolean; phase: string; prev_phase: string | null;
     symbol: string | null; name: string | null; wallet_buys: number;
-    detected_mc: number | null; admission_mc: number | null;
+    detected_mc: number | null; admission_mc: number | null; last_mc: number | null;
+    prev_buys: number | null;
   } | undefined;
   if (!row?.id) return false;
   await pool.query(
@@ -139,21 +142,44 @@ async function admit(
   const ticker = row.symbol || mint.slice(0, 6);
   const who = label || `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
   const detected = row.detected_mc ?? row.admission_mc;
+  const nowMc = row.last_mc ?? detected;
 
   if (row.inserted) {
-    await agentNote("intake", "ADMIT", `$${ticker} buy via ${who} @ ${detected != null ? `$${Math.round(detected)}` : "—"}`, {
+    await agentNote("intake", "ADMIT", `$${ticker} buy via ${who} @ ${fmtMc(detected)}`, {
       tokenId: row.id, mint,
     });
     await raiseAlert({
       tokenId: row.id,
       kind: "admit",
       title: `BUY $${ticker}`,
-      body: `${who} bought. Detected MC ${detected != null ? `$${Math.round(detected)}` : "—"}.`,
+      body: `${who} bought. Detected MC ${fmtMc(detected)}.`,
       payload: { mint, wallet, sig, mc: detected },
       telegram: true,
     });
     emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
     return true;
   }
+
+  const prevBuys = row.prev_buys ?? 0;
+  if (row.wallet_buys > prevBuys && row.wallet_buys >= 2) {
+    await agentNote("intake", "CONFIRM", `$${ticker} wallet ${row.wallet_buys} via ${who}`, {
+      tokenId: row.id, mint,
+    });
+    await raiseAlert({
+      tokenId: row.id,
+      kind: "confirm",
+      title: `${nth(row.wallet_buys)} wallet $${ticker}`,
+      body: `${who} bought. ${row.wallet_buys} wallets. Detected ${fmtMc(detected)} · now ${fmtMc(nowMc)}.`,
+      payload: { mint, wallet, sig, mc: nowMc, wallets: row.wallet_buys },
+      telegram: true,
+    });
+    emitSse("desk:update", { id: row.id, mint, symbol: row.symbol });
+  }
   return false;
+}
+
+function nth(n: number): string {
+  if (n === 2) return "2nd";
+  if (n === 3) return "3rd";
+  return `${n}th`;
 }
