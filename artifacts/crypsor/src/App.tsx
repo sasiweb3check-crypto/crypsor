@@ -12,7 +12,7 @@ function Nav() {
     <nav className="nav">
       <span className="brand">Crypsor</span>
       <Link href="/" className={on("/") ? "on" : ""}>Desk</Link>
-      <Link href="/notices" className={loc.startsWith("/notices") ? "on" : ""}>Notices</Link>
+      <Link href="/notices" className={loc.startsWith("/notices") ? "on" : ""}>Calls</Link>
       <Link href="/settings" className={on("/settings") ? "on" : ""}>Settings</Link>
     </nav>
   );

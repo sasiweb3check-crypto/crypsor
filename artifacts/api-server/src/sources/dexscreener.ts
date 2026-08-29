@@ -47,6 +47,16 @@ export function mcOf(pair: DexPair | null | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+export function vol5mOf(pair: DexPair | null | undefined): number | null {
+  const n = Number(pair?.volume?.m5 ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export function buys5mOf(pair: DexPair | null | undefined): number | null {
+  const n = Number(pair?.txns?.m5?.buys ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Best (deepest) Solana pair per mint. */
 export async function pairsForMints(mints: string[]): Promise<Map<string, DexPair>> {
   const out = new Map<string, DexPair>();

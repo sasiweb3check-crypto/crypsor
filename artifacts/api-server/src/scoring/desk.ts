@@ -7,7 +7,8 @@ export const MC_DEAD = 5_000;
 export const EARLY_MIN = 5_000;
 export const EARLY_MAX = 30_000;
 export const LATE_MC = 80_000;
-export const RUNGS = [2, 5, 10, 20] as const;
+/** Multiples vs the buy freeze. 3× is the missed MONA-style call. */
+export const RUNGS = [2, 3, 5, 10, 20] as const;
 export const MATRIX_RUNGS = [2, 5, 10] as const;
 
 export type TokenStatus = "live" | "running" | "dead";
@@ -22,17 +23,16 @@ export function gainPct(lastMc: number | null | undefined, detectedMc: number | 
   return ((lastMc / detectedMc) - 1) * 100;
 }
 
-/** MC under $5k is archived. Positive gain vs detected is running. Else live. */
+/** Last print under $5k is archived. Detected-under-5k is still a live watch. */
 export function statusOf(lastMc: number | null | undefined, detectedMc: number | null | undefined): TokenStatus {
   const last = lastMc != null && Number.isFinite(lastMc) ? lastMc : null;
   const det = detectedMc != null && Number.isFinite(detectedMc) ? detectedMc : null;
-  const mc = last ?? det;
-  if (mc != null && mc < MC_DEAD) return "dead";
+  if (last != null && last < MC_DEAD) return "dead";
   if (last != null && det != null && det > 0 && last > det) return "running";
   return "live";
 }
 
-/** Highest 2/5/10/20 multiple last print has cleared vs detected. ATH is not used. */
+/** Highest 2/3/5/10/20 multiple last print has cleared vs detected. ATH is not used. */
 export function rungOf(lastMc: number | null | undefined, detectedMc: number | null | undefined): Rung {
   if (lastMc == null || detectedMc == null || !Number.isFinite(lastMc) || !Number.isFinite(detectedMc) || detectedMc <= 0) {
     return 1;
@@ -61,24 +61,21 @@ export function survives(lastMc: number | null | undefined, detectedMc: number |
 }
 
 /**
- * Current label from last print vs detected. Peak is not used (ATH stays a separate number).
- * late = detected above $80k — still tracked, never an "early" call.
+ * Label from last print vs detected. Tracked-wallet count is not used —
+ * wallets are only how the name entered the book.
  */
 export function labelOf(opts: {
   lastMc: number | null | undefined;
   detectedMc: number | null | undefined;
-  walletBuys: number;
+  walletBuys?: number;
 }): DeskLabel {
   const last = opts.lastMc != null && Number.isFinite(opts.lastMc) ? opts.lastMc : null;
   const det = opts.detectedMc != null && Number.isFinite(opts.detectedMc) ? opts.detectedMc : null;
-  if (statusOf(last, det) === "dead") return "dead";
+  if (last != null && last < MC_DEAD) return "dead";
   const x = multipleOf(last ?? det, det) ?? 1;
-  const wallets = opts.walletBuys || 0;
-  const high = det != null && det > LATE_MC;
-  if (x >= 5 || (wallets >= 3 && x >= 1.5)) return "runner";
+  if (x >= 3) return "runner";
   if (x >= 2) return "call";
-  if (high) return "late";
-  if (wallets >= 2 && last != null && det != null && last >= 0.8 * det && last >= MC_DEAD) return "heat";
+  if (det != null && det > LATE_MC) return "late";
   return "watch";
 }
 
@@ -111,13 +108,14 @@ export function fmtMc(v: number | null | undefined): string {
   return `$${Math.round(v)}`;
 }
 
-export type AlertLane = "early" | "high";
+export type AlertLane = "early" | "high" | "call";
 
 export type ScorePoint = {
   mc: number | null | undefined;
   liq: number | null | undefined;
   detected: number | null | undefined;
-  wallets: number;
+  wallets?: number;
+  vol5m?: number | null;
   label: DeskLabel;
   survived: boolean;
   score?: number | null;
@@ -126,13 +124,13 @@ export type ScorePoint = {
 export const SCORE_BUCKETS = ["0-19", "20-39", "40-59", "60-79", "80-100"] as const;
 export type ScoreBucketName = (typeof SCORE_BUCKETS)[number];
 
-export function alertLane(detectedMc: number | null | undefined): AlertLane {
-  return inEarlyBand(detectedMc) ? "early" : "high";
+export function alertLane(_detectedMc?: number | null): AlertLane {
+  return "call";
 }
 
-/** Desk toasts + Telegram. High-MC prints stay off the screen. */
+/** Confidence rungs and admits always hit the desk. Wallet-count confirms do not. */
 export function screenAlert(lane: AlertLane): boolean {
-  return lane === "early";
+  return lane !== "high";
 }
 
 export function scoreBucket(score: number | null | undefined): ScoreBucketName | null {
@@ -157,51 +155,62 @@ function clampScore(n: number): number {
 
 /**
  * Score this print against the previous snapshot. Frozen until the next print.
- * Uses label + detected band + diffs (MC / liq / wallets) + last frozen score.
+ * Multiple vs detected is the call. Volume / MC diffs from memory support it.
+ * Tracked-wallet count is ignored.
  */
 export function scoreAtPoint(now: ScorePoint, prev: ScorePoint | null): number {
   if (!now.survived || now.label === "dead") return 0;
 
-  let s = 22;
-  if (now.label === "watch") s = 28;
-  else if (now.label === "heat") s = 44;
-  else if (now.label === "late") s = 32;
-  else if (now.label === "call") s = 64;
-  else if (now.label === "runner") s = 84;
-
-  if (inEarlyBand(now.detected)) s += 8;
-  else if (now.detected != null && now.detected > EARLY_MAX) s -= 6;
-
-  const x = multipleOf(now.mc, now.detected);
-  if (x != null) {
-    if (x >= 1) s += 6;
-    if (x >= 1.5) s += 6;
-    if (x < 0.6) s -= 12;
-  }
+  const x = multipleOf(now.mc, now.detected) ?? 1;
+  let s = 24;
+  if (x >= 1.2) s = 36;
+  if (x >= 2) s = 58;
+  if (x >= 3) s = 74;
+  if (x >= 5) s = 88;
+  if (x >= 10) s = 95;
 
   if (prev) {
     const mcD = pctDelta(now.mc, prev.mc);
     if (mcD != null) {
-      if (mcD >= 15) s += 10;
-      else if (mcD >= 5) s += 5;
-      else if (mcD <= -35) s -= 18;
+      if (mcD >= 15) s += 8;
+      else if (mcD >= 5) s += 4;
+      else if (mcD <= -35) s -= 16;
       else if (mcD <= -15) s -= 8;
     }
     const liqD = pctDelta(now.liq, prev.liq);
     if (liqD != null) {
-      if (liqD <= -40) s -= 15;
-      else if (liqD >= 20) s += 4;
+      if (liqD <= -40) s -= 12;
+      else if (liqD >= 20) s += 3;
     }
-    const w = (now.wallets || 0) - (prev.wallets || 0);
-    if (w > 0) s += Math.min(20, w * 12);
-    if (prev.survived && now.mc != null && prev.mc != null && now.mc >= prev.mc) s += 4;
-
-    const prevScore = prev.score;
-    if (prevScore != null && Number.isFinite(prevScore)) {
-      if (prevScore >= 60 && mcD != null && mcD >= 5) s += 6;
-      if (prevScore >= 60 && mcD != null && mcD <= -15) s -= 10;
-    }
+    const volD = pctDelta(now.vol5m, prev.vol5m);
+    if (volD != null && volD >= 40) s += 6;
+    if (prev.survived && now.mc != null && prev.mc != null && now.mc >= prev.mc) s += 3;
   }
 
   return clampScore(s);
+}
+
+/** Why this print is a call — MC vs the buy freeze, then snapshot diffs / 5m volume. */
+export function catalystOf(opts: {
+  lastMc: number | null | undefined;
+  detectedMc: number | null | undefined;
+  prevMc?: number | null;
+  vol5m?: number | null;
+  prevVol5m?: number | null;
+  liq?: number | null;
+}): string {
+  const parts: string[] = [];
+  const x = multipleOf(opts.lastMc, opts.detectedMc);
+  if (x != null) parts.push(`${x.toFixed(1)}× vs detected ${fmtMc(opts.detectedMc)}`);
+  const mcD = pctDelta(opts.lastMc, opts.prevMc);
+  if (mcD != null && Math.abs(mcD) >= 8) {
+    parts.push(`MC ${mcD > 0 ? "+" : ""}${mcD.toFixed(0)}% since last print`);
+  }
+  if (opts.vol5m != null && Number.isFinite(opts.vol5m) && opts.vol5m > 0) {
+    parts.push(`5m vol ${fmtMc(opts.vol5m)}`);
+  }
+  const volD = pctDelta(opts.vol5m, opts.prevVol5m);
+  if (volD != null && volD >= 40) parts.push(`vol +${volD.toFixed(0)}%`);
+  if (!parts.length) return "Waiting on the next MC print vs detected.";
+  return parts.join(" · ");
 }

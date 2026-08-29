@@ -219,8 +219,7 @@ router.get("/alerts", async (_req, res) => {
               COALESCE(lane, payload->>'lane', 'early') AS lane,
               score
        FROM ward_alerts
-       WHERE kind IN ('admit', 'confirm', 'rung')
-         AND COALESCE(lane, payload->>'lane', 'early') = 'early'
+       WHERE kind IN ('admit', 'rung')
        ORDER BY id DESC
        LIMIT 12`,
     );

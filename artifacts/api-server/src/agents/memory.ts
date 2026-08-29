@@ -4,7 +4,7 @@
  */
 import { pool } from "../core/db";
 import {
-  alertLane, gainPct, labelOf, pctDelta, scoreAtPoint, statusOf, survives,
+  alertLane, catalystOf, gainPct, labelOf, pctDelta, scoreAtPoint, statusOf, survives,
   type AlertLane, type DeskLabel,
 } from "../scoring/desk";
 
@@ -24,6 +24,7 @@ type PrevRow = {
   label: string | null;
   survived: boolean | null;
   score: number | null;
+  vol_5m?: number | null;
 };
 
 export function deskStamp(opts: {
@@ -44,13 +45,22 @@ export function deskStamp(opts: {
 async function prevMemory(tokenId: number): Promise<PrevRow | null> {
   try {
     const r = await pool.query(
-      `SELECT mc_usd, liq_usd, detected_mc, wallets, label, survived, score
+      `SELECT mc_usd, liq_usd, detected_mc, wallets, label, survived, score, vol_5m
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 1`,
       [tokenId],
     );
     return (r.rows[0] as PrevRow | undefined) ?? null;
   } catch {
-    return null;
+    try {
+      const r = await pool.query(
+        `SELECT mc_usd, liq_usd, detected_mc, wallets, label, survived, score
+         FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 1`,
+        [tokenId],
+      );
+      return (r.rows[0] as PrevRow | undefined) ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -60,6 +70,7 @@ export async function insertDeskMemory(opts: {
   liq: number | null;
   detected: number | null;
   wallets: number;
+  vol5m?: number | null;
 }): Promise<DeskStampResult> {
   const stamp = deskStamp({ lastMc: opts.mc, detectedMc: opts.detected, walletBuys: opts.wallets });
   const lane = alertLane(opts.detected);
@@ -69,7 +80,7 @@ export async function insertDeskMemory(opts: {
       mc: prev.mc_usd,
       liq: prev.liq_usd,
       detected: prev.detected_mc,
-      wallets: Number(prev.wallets ?? 0),
+      vol5m: prev.vol_5m ?? null,
       label: (prev.label as DeskLabel) || stamp.label,
       survived: Boolean(prev.survived),
       score: prev.score,
@@ -80,7 +91,7 @@ export async function insertDeskMemory(opts: {
       mc: opts.mc,
       liq: opts.liq,
       detected: opts.detected,
-      wallets: opts.wallets,
+      vol5m: opts.vol5m ?? null,
       label: stamp.label,
       survived: stamp.survived,
     },
@@ -91,13 +102,22 @@ export async function insertDeskMemory(opts: {
   const mcDelta = pctDelta(opts.mc, prev?.mc_usd);
   const liqDelta = pctDelta(opts.liq, prev?.liq_usd);
   const walletDelta = prev ? opts.wallets - Number(prev.wallets ?? 0) : null;
+  const catalyst = catalystOf({
+    lastMc: opts.mc,
+    detectedMc: opts.detected,
+    prevMc: prev?.mc_usd,
+    vol5m: opts.vol5m,
+    prevVol5m: prev?.vol_5m,
+    liq: opts.liq,
+  });
 
   try {
     await pool.query(
       `INSERT INTO desk_memory
          (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived,
-          score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
+          vol_5m, catalyst)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [
         opts.tokenId,
         opts.mc,
@@ -115,6 +135,8 @@ export async function insertDeskMemory(opts: {
         liqDelta,
         walletDelta,
         lane,
+        opts.vol5m ?? null,
+        catalyst,
       ],
     );
   } catch {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { gainMatrix, gainPct, inEarlyBand, labelOf, rungOf, statusOf } from "./desk.ts";
 
 describe("desk status", () => {
-  it("archives below $5k", () => {
+  it("archives only when the last print is under $5k", () => {
     assert.equal(statusOf(4_999, 20_000), "dead");
     assert.equal(statusOf(5_000, 20_000), "live");
   });
@@ -14,9 +14,10 @@ describe("desk status", () => {
     assert.equal(statusOf(15_000, 20_000), "live");
   });
 
-  it("archives when only detected MC is under $5k", () => {
-    assert.equal(statusOf(null, 3_000), "dead");
-    assert.equal(statusOf(null, 20_000), "live");
+  it("keeps a sub-$5k detect live until a last print is under $5k", () => {
+    assert.equal(statusOf(null, 3_000), "live");
+    assert.equal(statusOf(4_206, 4_206), "dead");
+    assert.equal(statusOf(22_906, 4_206), "running");
   });
 
   it("prints gain vs the buy freeze", () => {
@@ -25,24 +26,28 @@ describe("desk status", () => {
     assert.equal(gainPct(null, 20_000), null);
   });
 
-  it("rungs from the current print vs detected, not peak", () => {
+  it("rungs from the current print vs detected, including 3×", () => {
     assert.equal(rungOf(12_900, 12_900), 1);
     assert.equal(rungOf(25_840, 12_920), 2);
+    assert.equal(rungOf(38_760, 12_920), 3);
     assert.equal(rungOf(64_600, 12_920), 5);
     assert.equal(rungOf(129_200, 12_920), 10);
     assert.equal(rungOf(236_115, 12_920), 10);
     assert.equal(rungOf(258_400, 12_920), 20);
     assert.equal(rungOf(null, 12_920), 1);
+    assert.equal(rungOf(22_906, 4_206), 5);
+    assert.equal(rungOf(12_618, 4_206), 3);
   });
 
-  it("labels surviving names from last print vs detected", () => {
-    assert.equal(labelOf({ lastMc: 12_900, detectedMc: 12_900, walletBuys: 1 }), "watch");
-    assert.equal(labelOf({ lastMc: 12_000, detectedMc: 12_900, walletBuys: 2 }), "heat");
-    assert.equal(labelOf({ lastMc: 26_000, detectedMc: 12_900, walletBuys: 1 }), "call");
-    assert.equal(labelOf({ lastMc: 70_000, detectedMc: 12_900, walletBuys: 1 }), "runner");
-    assert.equal(labelOf({ lastMc: 20_000, detectedMc: 12_900, walletBuys: 3 }), "runner");
-    assert.equal(labelOf({ lastMc: 200_000, detectedMc: 200_000, walletBuys: 1 }), "late");
-    assert.equal(labelOf({ lastMc: 3_000, detectedMc: 12_900, walletBuys: 2 }), "dead");
+  it("labels from multiple vs detected, not wallet count", () => {
+    assert.equal(labelOf({ lastMc: 12_900, detectedMc: 12_900 }), "watch");
+    assert.equal(labelOf({ lastMc: 12_000, detectedMc: 12_900, walletBuys: 2 }), "watch");
+    assert.equal(labelOf({ lastMc: 26_000, detectedMc: 12_900 }), "call");
+    assert.equal(labelOf({ lastMc: 40_000, detectedMc: 12_900 }), "runner");
+    assert.equal(labelOf({ lastMc: 22_906, detectedMc: 4_206 }), "runner");
+    assert.equal(labelOf({ lastMc: 20_000, detectedMc: 12_900, walletBuys: 3 }), "watch");
+    assert.equal(labelOf({ lastMc: 200_000, detectedMc: 200_000 }), "late");
+    assert.equal(labelOf({ lastMc: 3_000, detectedMc: 12_900 }), "dead");
   });
 
   it("flags the 5k–30k early band", () => {

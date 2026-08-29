@@ -72,6 +72,10 @@ export default function TokenPage() {
         </div>
       </div>
 
+      {(q.data?.memory?.[0]?.catalyst) ? (
+        <p className="note"><b>Catalyst. </b>{q.data.memory[0].catalyst}</p>
+      ) : null}
+
       <div className="h">Wallets</div>
       {ads.length === 0 ? <div className="empty">No buy signatures stored.</div> : null}
       {ads.map((a) => (

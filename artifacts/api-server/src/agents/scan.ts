@@ -5,9 +5,9 @@
  */
 import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
-import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
+import { imageOf, mcOf, pairsForMints, vol5mOf, buys5mOf } from "../sources/dexscreener";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
-import { fmtMc, rungOf, statusOf } from "../scoring/desk";
+import { catalystOf, rungOf, statusOf } from "../scoring/desk";
 import { dexTokenImage } from "../scoring/image";
 import { insertDeskMemory } from "./memory";
 import { agentNote } from "./log";
@@ -41,19 +41,16 @@ async function dueBatch(): Promise<Row[]> {
          OR last_scan_at < NOW() - INTERVAL '14 minutes'
          OR (
            last_scan_at < NOW() - INTERVAL '50 seconds'
-           AND COALESCE(last_mc, detected_mc, admission_mc, 0) >= 5000
            AND (
-             discovered_at > NOW() - INTERVAL '3 hours'
+             discovered_at > NOW() - INTERVAL '6 hours'
              OR COALESCE(last_mc, 0) > COALESCE(detected_mc, admission_mc, 0)
            )
          )
        )
      ORDER BY CASE
        WHEN last_scan_at IS NULL THEN 0
-       WHEN discovered_at > NOW() - INTERVAL '3 hours'
-         AND COALESCE(last_mc, detected_mc, admission_mc, 0) >= 5000 THEN 1
-       WHEN COALESCE(last_mc, 0) > COALESCE(detected_mc, admission_mc, 0)
-         AND COALESCE(last_mc, 0) >= 5000 THEN 1
+       WHEN discovered_at > NOW() - INTERVAL '6 hours' THEN 1
+       WHEN COALESCE(last_mc, 0) > COALESCE(detected_mc, admission_mc, 0) THEN 1
        ELSE 2
      END,
      last_scan_at ASC NULLS FIRST, id DESC
@@ -86,9 +83,11 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
     const last = mc ?? row.last_mc;
     const status = statusOf(last, freeze);
     const wallets = row.wallet_buys || 0;
+    const vol5m = vol5mOf(pair);
+    const buys5m = buys5mOf(pair);
     const prevRung = row.notified_rung && row.notified_rung > 0 ? row.notified_rung : 1;
-    const nowRung = status === "dead" ? prevRung : rungOf(last, freeze);
-    const fireRung = status !== "dead" && nowRung > prevRung;
+    const nowRung = rungOf(last, freeze);
+    const fireRung = nowRung > prevRung;
 
     await pool.query(
       `UPDATE f2_tokens SET
@@ -129,6 +128,7 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       liq,
       detected: freeze,
       wallets,
+      vol5m,
     });
 
     try {
@@ -139,27 +139,41 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
 
     try {
       await pool.query(
-        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, pass, fail_reasons, phase)
-         VALUES ($1,$2,$3,$4,true,'[]'::jsonb,$5)`,
-        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, status],
+        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, pass, fail_reasons, phase)
+         VALUES ($1,$2,$3,$4,$5,$6,true,'[]'::jsonb,$7)`,
+        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, status],
       );
     } catch {
-      // scan table always exists after schema pass
+      try {
+        await pool.query(
+          `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, pass, fail_reasons, phase)
+           VALUES ($1,$2,$3,$4,true,'[]'::jsonb,$5)`,
+          [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, status],
+        );
+      } catch {
+        // scan table always exists after schema pass
+      }
     }
 
     if (fireRung) {
       const ticker = row.symbol || row.mint.slice(0, 6);
-      const screen = stamp.lane === "early";
+      const catalyst = catalystOf({
+        lastMc: last,
+        detectedMc: freeze,
+        prevMc: row.last_mc,
+        vol5m,
+        liq,
+      });
       await raiseAlert({
         tokenId: row.id,
         kind: "rung",
         title: `${nowRung}× $${ticker}`,
-        body: `Now ${fmtMc(last)} vs detected ${fmtMc(freeze)}. Score ${stamp.score}.`,
-        payload: { mint: row.mint, rung: nowRung, mc: last, detected: freeze, score: stamp.score },
-        lane: stamp.lane,
+        body: catalyst,
+        payload: { mint: row.mint, rung: nowRung, mc: last, detected: freeze, score: stamp.score, catalyst },
+        lane: "call",
         score: stamp.score,
-        screen,
-        telegram: screen,
+        screen: true,
+        telegram: true,
       });
       rungs += 1;
     }
@@ -171,7 +185,29 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
   return { dead, running, rungs };
 }
 
+let catchupDone = false;
+
+/** Names that already 2×+ vs detected but never got a rung alert (MONA-style miss). */
+async function catchMissedCalls(): Promise<void> {
+  if (catchupDone) return;
+  catchupDone = true;
+  try {
+    await pool.query(
+      `UPDATE f2_tokens t SET notified_rung = 1
+       WHERE t.wallet_buys > 0
+         AND COALESCE(t.last_mc, 0) >= COALESCE(t.detected_mc, t.admission_mc, 1) * 2
+         AND COALESCE(t.notified_rung, 1) > 1
+         AND NOT EXISTS (
+           SELECT 1 FROM ward_alerts a WHERE a.token_id = t.id AND a.kind = 'rung'
+         )`,
+    );
+  } catch {
+    // alerts table / columns
+  }
+}
+
 export async function scanTick(): Promise<{ scanned: number; dead: number; running: number; rungs: number }> {
+  await catchMissedCalls();
   let scanned = 0;
   let dead = 0;
   let running = 0;
