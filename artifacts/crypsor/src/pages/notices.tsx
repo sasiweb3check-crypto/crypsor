@@ -16,8 +16,9 @@ export default function NoticesPage() {
       </div>
       <p className="note">
         Tracked wallets only source names. Calls fire on 2× / 3× / 5× / 10× / 20× vs the
-        buy freeze, and when the frozen score crosses 40 / 60 / 80 from volume, liquidity,
-        holders, buy/sell flow, and attention. Same-token extra wallets are not a signal.
+        buy freeze, when the frozen score crosses 40 / 60 / 80, and when top holders
+        cluster enough to flag holders rug possible. Mint/freeze revoked is not a pass.
+        Same-token extra wallets are not a signal.
       </p>
 
       {q.loading && !q.data ? <div className="skel" /> : null}
@@ -36,7 +37,7 @@ export default function NoticesPage() {
             <div className="card-main">
               <div className="sym">
                 {a.title}
-                <span className={`st ${a.kind}`}>{a.kind === "rung" ? "call" : a.kind === "score" ? "score" : a.kind}</span>
+                <span className={`st ${a.kind}`}>{a.kind === "rung" ? "call" : a.kind === "score" ? "score" : a.kind === "rug" ? "rug" : a.kind}</span>
               </div>
               <div className="meta">{a.body}</div>
             </div>

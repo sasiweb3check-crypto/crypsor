@@ -10,7 +10,7 @@ import {
   priceChgH1Of, priceChgM5Of, sells5mOf, sellsH1Of, vol5mOf, volH1Of,
 } from "../sources/dexscreener";
 import { coin as pumpCoin, coinsForMints, curveSol, pumpHolders, pumpMc } from "../sources/pumpfun";
-import { holderCounts } from "../sources/holders";
+import { holderBooks } from "../sources/holders";
 import { rungOf, scoreStepOf, statusOf } from "../scoring/desk";
 import { dexTokenImage } from "../scoring/image";
 import { insertDeskMemory } from "./memory";
@@ -31,6 +31,7 @@ type Row = {
   wallet_buys: number;
   notified_rung: number | null;
   notified_score: number | null;
+  notified_holders_rug: boolean;
   discovered_at: string | Date | null;
 };
 
@@ -41,6 +42,7 @@ async function dueBatch(): Promise<Row[]> {
             COALESCE(wallet_buys, 0) AS wallet_buys,
             COALESCE(notified_rung, 1) AS notified_rung,
             COALESCE(notified_score, 0) AS notified_score,
+            COALESCE(notified_holders_rug, false) AS notified_holders_rug,
             discovered_at
      FROM f2_tokens
      WHERE wallet_buys > 0
@@ -70,6 +72,7 @@ async function dueBatch(): Promise<Row[]> {
             COALESCE(wallet_buys, 0) AS wallet_buys,
             COALESCE(notified_rung, 1) AS notified_rung,
             0 AS notified_score,
+            false AS notified_holders_rug,
             discovered_at
      FROM f2_tokens
      WHERE wallet_buys > 0
@@ -98,7 +101,7 @@ function ageHours(discovered: string | Date | null | undefined): number | null {
   return Math.max(0, (Date.now() - t) / 3_600_000);
 }
 
-async function printRows(rows: Row[]): Promise<{ dead: number; running: number; rungs: number; scores: number }> {
+async function printRows(rows: Row[]): Promise<{ dead: number; running: number; rungs: number; scores: number; rugs: number }> {
   const pairs = await pairsForMints(rows.map((r) => r.mint));
   const pumps = await coinsForMints(rows.map((r) => r.mint));
   const holderMints = rows
@@ -111,11 +114,12 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       return true;
     })
     .map((r) => r.mint);
-  const holders = await holderCounts(holderMints);
+  const books = await holderBooks(holderMints);
   let dead = 0;
   let running = 0;
   let rungs = 0;
   let scores = 0;
+  let rugs = 0;
 
   for (const row of rows) {
     const pair = pairs.get(row.mint);
@@ -142,7 +146,9 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
     const volH1 = volH1Of(pair);
     const buys5m = buys5mOf(pair);
     const sells5m = sells5mOf(pair);
-    const holderN = holders.get(row.mint) ?? pumpHolders(pump);
+    const book = books.get(row.mint);
+    const holderN = book?.holders ?? pumpHolders(pump);
+    const measured = book?.measured === true;
     const prevRung = row.notified_rung && row.notified_rung > 0 ? row.notified_rung : 1;
     const nowRung = rungOf(last, freeze);
     const fireRung = nowRung > prevRung;
@@ -196,6 +202,12 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       priceChgM5: priceChgM5Of(pair),
       priceChgH1: priceChgH1Of(pair),
       holders: holderN ?? null,
+      top10Pct: measured ? book?.top10Pct ?? null : null,
+      top10ExclLp: measured ? book?.top10ExclLp ?? null : null,
+      top20Pct: measured ? book?.top20Pct ?? null : null,
+      lpPct: measured ? book?.lpPct ?? null : null,
+      clusterN: measured ? book?.clusterN ?? null : null,
+      holdersRug: measured ? book?.holdersRug ?? null : null,
       boosts: boostsOf(pair),
       replies: pump?.reply_count ?? null,
       live: pump?.is_currently_live ?? null,
@@ -223,9 +235,9 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
 
     try {
       await pool.query(
-        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, sells_5m, holders, score, pass, fail_reasons, phase)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'[]'::jsonb,$10)`,
-        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, sells5m, holderN ?? null, stamp.score, status],
+        `INSERT INTO f2_scans (token_id, mc_usd, liq_usd, price_usd, vol_5m, buys_5m, sells_5m, holders, top10_pct, score, pass, fail_reasons, phase)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,'[]'::jsonb,$11)`,
+        [row.id, mc, liq, pair?.priceUsd ? Number(pair.priceUsd) : null, vol5m, buys5m, sells5m, holderN ?? null, measured ? book?.top10Pct ?? null : null, stamp.score, status],
       );
     } catch {
       try {
@@ -288,11 +300,36 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       scores += 1;
     }
 
+    if (stamp.survival.holders_rug && !row.notified_holders_rug) {
+      await raiseAlert({
+        tokenId: row.id,
+        kind: "rug",
+        title: `Holders rug possible $${ticker}`,
+        body: stamp.catalyst,
+        payload: {
+          ...payload,
+          holdersRug: true,
+          top10ExclLp: measured ? book?.top10ExclLp ?? null : null,
+          clusterN: measured ? book?.clusterN ?? null : null,
+        },
+        lane: "call",
+        score: stamp.score,
+        screen: true,
+        telegram: true,
+      });
+      rugs += 1;
+      try {
+        await pool.query(`UPDATE f2_tokens SET notified_holders_rug = true WHERE id = $1`, [row.id]);
+      } catch {
+        // column lands after schema pass
+      }
+    }
+
     if (status === "dead") dead += 1;
     if (status === "running") running += 1;
   }
 
-  return { dead, running, rungs, scores };
+  return { dead, running, rungs, scores, rugs };
 }
 
 let catchupDone = false;
@@ -316,13 +353,14 @@ async function catchMissedCalls(): Promise<void> {
   }
 }
 
-export async function scanTick(): Promise<{ scanned: number; dead: number; running: number; rungs: number; scores: number }> {
+export async function scanTick(): Promise<{ scanned: number; dead: number; running: number; rungs: number; scores: number; rugs: number }> {
   await catchMissedCalls();
   let scanned = 0;
   let dead = 0;
   let running = 0;
   let rungs = 0;
   let scores = 0;
+  let rugs = 0;
 
   for (let i = 0; i < MAX_BATCHES; i++) {
     const rows = await dueBatch();
@@ -333,16 +371,17 @@ export async function scanTick(): Promise<{ scanned: number; dead: number; runni
     running += r.running;
     rungs += r.rungs;
     scores += r.scores;
+    rugs += r.rugs;
   }
 
   if (scanned) {
-    emitSse("desk:update", { scanned, dead, running, rungs, scores, at: new Date().toISOString() });
+    emitSse("desk:update", { scanned, dead, running, rungs, scores, rugs, at: new Date().toISOString() });
     await agentNote(
       "scan",
       "PRINT",
-      `scanned ${scanned} · running ${running} · archived ${dead} · rungs ${rungs} · scores ${scores}`,
+      `scanned ${scanned} · running ${running} · archived ${dead} · rungs ${rungs} · scores ${scores} · holder rugs ${rugs}`,
       { quiet: true },
     );
   }
-  return { scanned, dead, running, rungs, scores };
+  return { scanned, dead, running, rungs, scores, rugs };
 }

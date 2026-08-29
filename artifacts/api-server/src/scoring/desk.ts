@@ -2,6 +2,7 @@
  * Wallet-buy desk — detected MC is frozen at the buy.
  * Gain is last print vs that freeze. Snapshot score is frozen at each print.
  */
+import { holderRugOf, holdersRugLine } from "./holder-rug.ts";
 
 export const MC_DEAD = 5_000;
 export const EARLY_MIN = 5_000;
@@ -132,6 +133,11 @@ export type ScorePoint = {
   priceChgH1?: number | null;
   holders?: number | null;
   top10Pct?: number | null;
+  top10ExclLp?: number | null;
+  top20Pct?: number | null;
+  lpPct?: number | null;
+  clusterN?: number | null;
+  holdersRug?: boolean | null;
   boosts?: number | null;
   replies?: number | null;
   live?: boolean | null;
@@ -214,14 +220,42 @@ export type SurvivalSnap = {
   holder_delta_pct: number | null;
   liq_delta_pct: number | null;
   buy_ratio: number | null;
+  holders_rug: boolean;
+  holders_caution: boolean;
+  top10_pct: number | null;
+  top10_excl_lp: number | null;
+  top20_pct: number | null;
+  lp_pct: number | null;
+  cluster_n: number | null;
+  reason: string | null;
 };
 
+function concentrationOf(now: ScorePoint): ReturnType<typeof holderRugOf> {
+  if (now.holdersRug === true) {
+    const v = holderRugOf({
+      top10Pct: now.top10Pct ?? null,
+      top10ExclLp: now.top10ExclLp ?? null,
+      top20Pct: now.top20Pct ?? null,
+      clusterN: now.clusterN ?? null,
+    });
+    return v.holdersRug ? v : { holdersRug: true, holdersCaution: false, reason: v.reason };
+  }
+  return holderRugOf({
+    top10Pct: now.top10Pct ?? null,
+    top10ExclLp: now.top10ExclLp ?? null,
+    top20Pct: now.top20Pct ?? null,
+    clusterN: now.clusterN ?? null,
+  });
+}
+
 /**
- * Rug / dump path vs the previous frozen snapshot. Stored for a later
- * surviving-score pass — do not invent holders or KOL.
+ * Rug / dump path vs the previous frozen snapshot, plus holder concentration
+ * on this print. First print can rug from clustered supply — do not wait for
+ * a dump vs last snapshot. Mint/freeze revoked is not a pass.
  */
 export function survivalOf(now: ScorePoint, prev: ScorePoint | null): SurvivalSnap {
   const survived = Boolean(now.survived) && now.label !== "dead";
+  const conc = concentrationOf(now);
   const mcD = pctDelta(now.mc, prev?.mc);
   const liqD = pctDelta(now.liq, prev?.liq);
   const holdD = pctDelta(now.holders, prev?.holders);
@@ -238,12 +272,16 @@ export function survivalOf(now: ScorePoint, prev: ScorePoint | null): SurvivalSn
   const caution = (mcD != null && mcD <= -15)
     || (liqD != null && liqD <= -20)
     || (holdD != null && holdD <= -8)
-    || sells;
+    || sells
+    || conc.holdersCaution;
 
   let rug: RugKind = "none";
   let dump: DumpKind = null;
   if (!survived) {
     rug = "none";
+  } else if (conc.holdersRug) {
+    rug = "rug";
+    dump = "holders";
   } else if (isRug) {
     rug = "rug";
     dump = clean ? "clean" : liqDump && holdDump ? "holders" : liqDump ? "liq" : "clean";
@@ -263,6 +301,14 @@ export function survivalOf(now: ScorePoint, prev: ScorePoint | null): SurvivalSn
     holder_delta_pct: holdD,
     liq_delta_pct: liqD,
     buy_ratio: ratio,
+    holders_rug: conc.holdersRug,
+    holders_caution: conc.holdersCaution,
+    top10_pct: num(now.top10Pct),
+    top10_excl_lp: num(now.top10ExclLp),
+    top20_pct: num(now.top20Pct),
+    lp_pct: num(now.lpPct),
+    cluster_n: num(now.clusterN),
+    reason: conc.reason,
   };
 }
 
@@ -271,9 +317,11 @@ export function entryOf(opts: {
   score: number | null | undefined;
   survived: boolean;
   rug?: RugKind | null;
+  holdersRug?: boolean | null;
 }): number | null {
   const mc = opts.lastMc != null && Number.isFinite(opts.lastMc) ? opts.lastMc : null;
   if (mc == null || !opts.survived) return null;
+  if (opts.holdersRug) return null;
   if (opts.rug === "dump" || opts.rug === "rug") return null;
   if (opts.score == null || !Number.isFinite(opts.score) || opts.score < 40) return null;
   return mc;
@@ -397,8 +445,16 @@ function flowFactor(now: ScorePoint): number | null {
 }
 
 function holdersFactor(now: ScorePoint, prev: ScorePoint | null): number | null {
+  const conc = concentrationOf(now);
   const n = num(now.holders);
-  if (n == null) return null;
+  const top = num(now.top10Pct);
+  const excl = num(now.top10ExclLp);
+  if (n == null && top == null && excl == null && !conc.holdersRug) return null;
+  if (conc.holdersRug) return 8;
+  if (n == null) {
+    if (conc.holdersCaution) return 22;
+    return null;
+  }
   let s = band(n, [10, 50, 150, 400, 1_000, 5_000], [22, 38, 52, 64, 76, 88]);
   const d = pctDelta(n, prev?.holders);
   if (d != null) {
@@ -407,8 +463,8 @@ function holdersFactor(now: ScorePoint, prev: ScorePoint | null): number | null 
     else if (d <= -20) s = Math.max(0, s - 18);
     else if (d <= -8) s = Math.max(0, s - 8);
   }
-  const top = num(now.top10Pct);
-  if (top != null && top >= 55) s = Math.max(0, s - 15);
+  if (conc.holdersCaution || (excl != null && excl >= 40)) s = Math.max(0, s - 22);
+  else if (top != null && top >= 55) s = Math.max(0, s - 15);
   return s;
 }
 
@@ -478,6 +534,11 @@ export function factorTags(now: ScorePoint, prev: ScorePoint | null, factors: Fa
   const holdD = pctDelta(now.holders, prev?.holders);
   if (holdD != null && holdD >= 8) tags.push("holder_in");
   if (holdD != null && holdD <= -8) tags.push("holder_out");
+  const conc = concentrationOf(now);
+  if (conc.holdersRug) {
+    tags.push("holders_rug");
+    tags.push("rug_possible");
+  }
   if (now.live === true) tags.push("live");
   if ((now.boosts ?? 0) > 0) tags.push("dex_boost");
   if ((now.replies ?? 0) >= 10) tags.push("replies");
@@ -501,6 +562,8 @@ export type CatalystOpts = {
   sells5m?: number | null;
   holders?: number | null;
   prevHolders?: number | null;
+  top10ExclLp?: number | null;
+  holdersRug?: boolean | null;
   boosts?: number | null;
   replies?: number | null;
   live?: boolean | null;
@@ -510,10 +573,15 @@ export type CatalystOpts = {
 /** Why this print is a call — named factors. Multiple is listed only when it actually moved. */
 export function catalystOf(opts: CatalystOpts): string {
   const parts: string[] = [];
+  const tags = opts.tags ?? [];
+  const rugLine = holdersRugLine({
+    holdersRug: opts.holdersRug === true || tags.includes("holders_rug"),
+    top10ExclLp: opts.top10ExclLp,
+  });
+  if (rugLine) parts.push(rugLine);
   const x = multipleOf(opts.lastMc, opts.detectedMc);
   if (x != null && x >= 1.5) parts.push(`${x.toFixed(1)}× vs detected ${fmtMc(opts.detectedMc)}`);
-  const tags = opts.tags ?? [];
-  if (tags.includes("rug_possible")) parts.push("rug possible");
+  if (!rugLine && tags.includes("rug_possible")) parts.push("rug possible");
   if (tags.includes("clean_dump")) parts.push("clean dump vs last print");
   const mcD = pctDelta(opts.lastMc, opts.prevMc);
   if (mcD != null && Math.abs(mcD) >= 8) {
@@ -586,6 +654,8 @@ export function scoreBreakdown(now: ScorePoint, prev: ScorePoint | null): ScoreB
     sells5m: now.sells5m,
     holders: now.holders,
     prevHolders: prev?.holders,
+    top10ExclLp: now.top10ExclLp,
+    holdersRug: concentrationOf(now).holdersRug,
     boosts: now.boosts,
     replies: now.replies,
     live: now.live,

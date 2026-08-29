@@ -326,6 +326,15 @@ const SCHEMA: string[] = [
       ELSE 0
     END
     WHERE notified_score IS NULL`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS top10_pct real`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS top10_excl_lp real`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS cluster_n integer`,
+  `ALTER TABLE desk_memory ADD COLUMN IF NOT EXISTS holders_rug boolean`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_top10_pct real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_top10_excl_lp real`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_cluster_n integer`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_holders_rug boolean`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS notified_holders_rug boolean`,
   `ALTER TABLE ward_alerts ADD COLUMN IF NOT EXISTS lane text`,
   `ALTER TABLE ward_alerts ADD COLUMN IF NOT EXISTS score integer`,
 

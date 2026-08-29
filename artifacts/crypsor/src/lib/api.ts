@@ -56,6 +56,9 @@ export type TokenCard = {
   rug: RugKind;
   entry_mc: number | null;
   holders: number | null;
+  holders_rug?: boolean;
+  top10_excl_lp?: number | null;
+  cluster_n?: number | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -127,6 +130,10 @@ export type DeskMemory = {
   price_chg_m5: number | null;
   rug: string | null;
   survival: Record<string, unknown> | null;
+  top10_pct?: number | null;
+  top10_excl_lp?: number | null;
+  cluster_n?: number | null;
+  holders_rug?: boolean | null;
 };
 
 export type NoticeItem = {

@@ -50,6 +50,7 @@ export function LabelChip({ label }: { label: DeskLabel | string | null | undefi
 }
 
 function RiskNote({ p }: { p: TokenCard }) {
+  if (p.holders_rug) return <span className="risk rug">holders rug possible</span>;
   if (p.rug !== "dump" && p.rug !== "rug" && p.rug !== "caution") return null;
   const text = p.rug === "rug" ? "rug possible" : p.rug === "dump" ? "clean dump" : "caution";
   return <span className={`risk ${p.rug}`}>{text}</span>;
@@ -57,7 +58,7 @@ function RiskNote({ p }: { p: TokenCard }) {
 
 export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
   return (
-    <div className={`tok-card ${p.status}${p.rug === "dump" || p.rug === "rug" ? " warn" : ""}`}>
+    <div className={`tok-card ${p.status}${p.rug === "dump" || p.rug === "rug" || p.holders_rug ? " warn" : ""}`}>
       <button type="button" className="thumb-hit" onClick={onOpen}>
         <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} className="thumb lg" />
       </button>
