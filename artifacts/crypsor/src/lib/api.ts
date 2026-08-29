@@ -49,6 +49,9 @@ export type TokenCard = {
   wallet_buys: number;
   status: TokenStatus;
   label: DeskLabel;
+  score: number | null;
+  prev_score: number | null;
+  score_at: string | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -59,11 +62,21 @@ export type TokenBoard = {
   performers: TokenCard[];
   census: { all: number; live: number; running: number; dead: number; early: number };
   matrix: GainMatrix | null;
+  scoreStats: ScoreStat[] | null;
   band: DeskBand;
   page: number;
   pages: number;
   total: number;
   limit: number;
+};
+
+export type ScoreStat = {
+  bucket: string;
+  n: number;
+  hit2x: number;
+  hit5x: number;
+  pct2x: number;
+  pct5x: number;
 };
 
 export type DeskMemory = {
@@ -75,6 +88,32 @@ export type DeskMemory = {
   status: string | null;
   label: string | null;
   survived: boolean | null;
+  score: number | null;
+  prev_score: number | null;
+  score_delta: number | null;
+  mc_delta_pct: number | null;
+  liq_delta_pct: number | null;
+  wallet_delta: number | null;
+  band: string | null;
+};
+
+export type NoticeItem = {
+  id: number;
+  tokenId: number;
+  kind: string;
+  title: string;
+  body: string;
+  lane: "early" | "high";
+  score: number | null;
+  at: string;
+  symbol: string | null;
+  mint: string | null;
+};
+
+export type NoticeBoard = {
+  at: string;
+  items: NoticeItem[];
+  scoreStats: ScoreStat[];
 };
 
 export type TokenChart = {

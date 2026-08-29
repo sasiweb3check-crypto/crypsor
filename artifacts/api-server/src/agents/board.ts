@@ -6,7 +6,7 @@ import { pool } from "../core/db";
 import { tokenImageUrl } from "../scoring/image";
 import {
   gainMatrix, gainPct, inEarlyBand, labelOf, statusOf,
-  type DeskLabel, type GainMatrix, type TokenStatus,
+  SCORE_BUCKETS, type AlertLane, type DeskLabel, type GainMatrix, type ScoreBucketName, type TokenStatus,
 } from "../scoring/desk";
 
 export type { DeskLabel, GainMatrix, TokenStatus };
@@ -26,6 +26,9 @@ export type TokenCard = {
   wallet_buys: number;
   status: TokenStatus;
   label: DeskLabel;
+  score: number | null;
+  prev_score: number | null;
+  score_at: string | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -39,9 +42,21 @@ export type DeskMemory = {
   status: string | null;
   label: string | null;
   survived: boolean | null;
+  score: number | null;
+  prev_score: number | null;
+  score_delta: number | null;
+  mc_delta_pct: number | null;
+  liq_delta_pct: number | null;
+  wallet_delta: number | null;
+  band: string | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
+            t.detected_mc, t.admission_mc, t.last_mc, t.peak_mc, t.last_liq,
+            t.discovered_at, t.last_scan_at, t.desk_score, t.desk_prev_score, t.desk_score_at
+     FROM f2_tokens t`;
+
+const SELECT_BASIC = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
             t.detected_mc, t.admission_mc, t.last_mc, t.peak_mc, t.last_liq,
             t.discovered_at, t.last_scan_at
      FROM f2_tokens t`;
@@ -70,10 +85,41 @@ function card(row: Record<string, unknown>): TokenCard {
     wallet_buys: walletBuys,
     status: statusOf(last, detected),
     label: labelOf({ lastMc: last, detectedMc: detected, walletBuys }),
+    score: row.desk_score != null ? Number(row.desk_score) : null,
+    prev_score: row.desk_prev_score != null ? Number(row.desk_prev_score) : null,
+    score_at: row.desk_score_at ? new Date(row.desk_score_at as string).toISOString() : null,
     discovered_at: new Date(row.discovered_at as string).toISOString(),
     last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
   };
 }
+
+export type ScoreStat = {
+  bucket: ScoreBucketName;
+  n: number;
+  hit2x: number;
+  hit5x: number;
+  pct2x: number;
+  pct5x: number;
+};
+
+export type NoticeItem = {
+  id: number;
+  tokenId: number;
+  kind: string;
+  title: string;
+  body: string;
+  lane: AlertLane;
+  score: number | null;
+  at: string;
+  symbol: string | null;
+  mint: string | null;
+};
+
+export type NoticeBoard = {
+  at: string;
+  items: NoticeItem[];
+  scoreStats: ScoreStat[];
+};
 
 export type BoardQuery = {
   q?: string;
@@ -89,6 +135,7 @@ export type TokenBoard = {
   performers: TokenCard[];
   census: { all: number; live: number; running: number; dead: number; early: number };
   matrix: GainMatrix | null;
+  scoreStats: ScoreStat[] | null;
   band: "early" | "all";
   page: number;
   pages: number;
@@ -108,7 +155,11 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     `${SELECT} WHERE ${WHERE_BUYS}
      ORDER BY t.discovered_at DESC
      LIMIT 5000`,
-  );
+  ).catch(() => pool.query(
+    `${SELECT_BASIC} WHERE ${WHERE_BUYS}
+     ORDER BY t.discovered_at DESC
+     LIMIT 5000`,
+  ));
   const cards = all.rows.map((r) => card(r as Record<string, unknown>));
 
   const needle = q.toLowerCase();
@@ -147,6 +198,7 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     performers,
     census,
     matrix: band === "early" ? gainMatrix(banded) : null,
+    scoreStats: band === "early" ? await scoreStats() : null,
     band,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
@@ -161,7 +213,8 @@ export async function getToken(id: number): Promise<{
   scans: Array<{ at: string; mc_usd: number | null; liq_usd: number | null; phase: string | null }>;
   memory: DeskMemory[];
 } | null> {
-  const r = await pool.query(`${SELECT} WHERE t.id = $1 AND ${WHERE_BUYS}`, [id]);
+  const r = await pool.query(`${SELECT} WHERE t.id = $1 AND ${WHERE_BUYS}`, [id])
+    .catch(() => pool.query(`${SELECT_BASIC} WHERE t.id = $1 AND ${WHERE_BUYS}`, [id]));
   if (!r.rows[0]) return null;
   const token = card(r.rows[0] as Record<string, unknown>);
   const ads = await pool.query(
@@ -180,7 +233,8 @@ export async function getToken(id: number): Promise<{
   let memory: DeskMemory[] = [];
   try {
     const mem = await pool.query(
-      `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived
+      `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
+              score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );
@@ -193,6 +247,13 @@ export async function getToken(id: number): Promise<{
       status: string | null;
       label: string | null;
       survived: boolean | null;
+      score: number | null;
+      prev_score: number | null;
+      score_delta: number | null;
+      mc_delta_pct: number | null;
+      liq_delta_pct: number | null;
+      wallet_delta: number | null;
+      band: string | null;
     }) => ({
       at: new Date(s.at).toISOString(),
       mc_usd: s.mc_usd != null ? Number(s.mc_usd) : null,
@@ -202,6 +263,13 @@ export async function getToken(id: number): Promise<{
       status: s.status,
       label: s.label,
       survived: s.survived,
+      score: s.score != null ? Number(s.score) : null,
+      prev_score: s.prev_score != null ? Number(s.prev_score) : null,
+      score_delta: s.score_delta != null ? Number(s.score_delta) : null,
+      mc_delta_pct: s.mc_delta_pct != null ? Number(s.mc_delta_pct) : null,
+      liq_delta_pct: s.liq_delta_pct != null ? Number(s.liq_delta_pct) : null,
+      wallet_delta: s.wallet_delta != null ? Number(s.wallet_delta) : null,
+      band: s.band,
     }));
   } catch {
     memory = [];
@@ -221,5 +289,95 @@ export async function getToken(id: number): Promise<{
       phase: s.phase,
     })),
     memory,
+  };
+}
+
+export async function scoreStats(): Promise<ScoreStat[]> {
+  const empty: ScoreStat[] = SCORE_BUCKETS.map((bucket) => ({
+    bucket, n: 0, hit2x: 0, hit5x: 0, pct2x: 0, pct5x: 0,
+  }));
+  try {
+    const r = await pool.query(
+      `SELECT
+         CASE
+           WHEN m.score < 20 THEN '0-19'
+           WHEN m.score < 40 THEN '20-39'
+           WHEN m.score < 60 THEN '40-59'
+           WHEN m.score < 80 THEN '60-79'
+           ELSE '80-100'
+         END AS bucket,
+         COUNT(*)::int AS n,
+         COUNT(*) FILTER (WHERE t.peak_mc >= m.detected_mc * 2)::int AS hit2x,
+         COUNT(*) FILTER (WHERE t.peak_mc >= m.detected_mc * 5)::int AS hit5x
+       FROM desk_memory m
+       JOIN f2_tokens t ON t.id = m.token_id
+       WHERE m.score IS NOT NULL
+         AND m.detected_mc >= 5000 AND m.detected_mc <= 30000
+         AND t.wallet_buys > 0
+       GROUP BY 1`,
+    );
+    const by = new Map(empty.map((s) => [s.bucket, s]));
+    for (const row of r.rows as Array<{ bucket: ScoreBucketName; n: number; hit2x: number; hit5x: number }>) {
+      const n = Number(row.n) || 0;
+      by.set(row.bucket, {
+        bucket: row.bucket,
+        n,
+        hit2x: Number(row.hit2x) || 0,
+        hit5x: Number(row.hit5x) || 0,
+        pct2x: n ? ((Number(row.hit2x) || 0) / n) * 100 : 0,
+        pct5x: n ? ((Number(row.hit5x) || 0) / n) * 100 : 0,
+      });
+    }
+    return SCORE_BUCKETS.map((b) => by.get(b) ?? { bucket: b, n: 0, hit2x: 0, hit5x: 0, pct2x: 0, pct5x: 0 });
+  } catch {
+    return empty;
+  }
+}
+
+export async function listNotices(): Promise<NoticeBoard> {
+  let items: NoticeItem[] = [];
+  try {
+    const r = await pool.query(
+      `SELECT a.id, a.token_id AS "tokenId", a.kind, a.title, a.body,
+              COALESCE(a.lane, a.payload->>'lane', 'high') AS lane,
+              COALESCE(a.score, (a.payload->>'score')::real) AS score,
+              a.at, t.symbol, t.mint
+       FROM ward_alerts a
+       LEFT JOIN f2_tokens t ON t.id = a.token_id
+       WHERE COALESCE(a.lane, a.payload->>'lane', 'high') = 'high'
+         AND a.kind IN ('admit', 'confirm', 'rung')
+       ORDER BY a.id DESC
+       LIMIT 80`,
+    );
+    items = r.rows.map((row: {
+      id: number;
+      tokenId: number;
+      kind: string;
+      title: string;
+      body: string;
+      lane: string;
+      score: number | null;
+      at: string | Date;
+      symbol: string | null;
+      mint: string | null;
+    }) => ({
+      id: Number(row.id),
+      tokenId: Number(row.tokenId),
+      kind: row.kind,
+      title: row.title,
+      body: row.body,
+      lane: row.lane === "early" ? "early" : "high",
+      score: row.score != null ? Number(row.score) : null,
+      at: new Date(row.at).toISOString(),
+      symbol: row.symbol,
+      mint: row.mint,
+    }));
+  } catch {
+    items = [];
+  }
+  return {
+    at: new Date().toISOString(),
+    items,
+    scoreStats: await scoreStats(),
   };
 }

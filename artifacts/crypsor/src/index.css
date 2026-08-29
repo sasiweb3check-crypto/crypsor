@@ -184,6 +184,8 @@ button { cursor: pointer; }
   gap: 8px;
 }
 .matrix .num .v { font-size: 16px; }
+.score-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.notice-row { grid-template-columns: minmax(0, 1fr) auto; text-align: left; width: 100%; }
 .gain { font-variant-numeric: tabular-nums; font-weight: 600; }
 .gain.up { color: var(--green); }
 .gain.down { color: var(--red); }

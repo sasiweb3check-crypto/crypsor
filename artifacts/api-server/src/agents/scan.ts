@@ -7,7 +7,7 @@ import { pool } from "../core/db";
 import { emitSse } from "../core/bus";
 import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
-import { fmtMc, labelOf, rungOf, statusOf } from "../scoring/desk";
+import { fmtMc, rungOf, statusOf } from "../scoring/desk";
 import { dexTokenImage } from "../scoring/image";
 import { insertDeskMemory } from "./memory";
 import { agentNote } from "./log";
@@ -86,7 +86,6 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
     const last = mc ?? row.last_mc;
     const status = statusOf(last, freeze);
     const wallets = row.wallet_buys || 0;
-    const label = labelOf({ lastMc: last, detectedMc: freeze, walletBuys: wallets });
     const prevRung = row.notified_rung && row.notified_rung > 0 ? row.notified_rung : 1;
     const nowRung = status === "dead" ? prevRung : rungOf(last, freeze);
     const fireRung = status !== "dead" && nowRung > prevRung;
@@ -124,19 +123,19 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
       ],
     );
 
-    try {
-      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, label]);
-    } catch {
-      // desk_label lands after schema pass
-    }
-
-    await insertDeskMemory({
+    const stamp = await insertDeskMemory({
       tokenId: row.id,
       mc: last,
       liq,
       detected: freeze,
       wallets,
     });
+
+    try {
+      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, stamp.label]);
+    } catch {
+      // desk_label lands after schema pass
+    }
 
     try {
       await pool.query(
@@ -150,13 +149,17 @@ async function printRows(rows: Row[]): Promise<{ dead: number; running: number; 
 
     if (fireRung) {
       const ticker = row.symbol || row.mint.slice(0, 6);
+      const screen = stamp.lane === "early";
       await raiseAlert({
         tokenId: row.id,
         kind: "rung",
         title: `${nowRung}× $${ticker}`,
-        body: `Now ${fmtMc(last)} vs detected ${fmtMc(freeze)}.`,
-        payload: { mint: row.mint, rung: nowRung, mc: last, detected: freeze },
-        telegram: true,
+        body: `Now ${fmtMc(last)} vs detected ${fmtMc(freeze)}. Score ${stamp.score}.`,
+        payload: { mint: row.mint, rung: nowRung, mc: last, detected: freeze, score: stamp.score },
+        lane: stamp.lane,
+        score: stamp.score,
+        screen,
+        telegram: screen,
       });
       rungs += 1;
     }

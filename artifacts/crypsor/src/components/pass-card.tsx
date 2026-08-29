@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   fmtUsd, fmtGainPct, deskImg, gmgnUrl, timeAgo,
-  type DeskLabel, type TokenCard,
+  type DeskLabel, type ScoreStat, type TokenCard,
 } from "../lib/api";
 
 export function TokenImg({
@@ -89,5 +89,22 @@ export function PerformerCard({ p, onOpen }: { p: TokenCard; onOpen: () => void 
       <b>${p.symbol || p.mint.slice(0, 4)}</b>
       <Gain pct={p.gain_pct} />
     </button>
+  );
+}
+
+export function ScoreStrip({ stats }: { stats: ScoreStat[] }) {
+  return (
+    <section className="matrix" aria-label="Score ranges vs later 2x 5x">
+      <div className="h">Frozen score vs later 2× / 5× · $5k–$30k snapshots</div>
+      <div className="matrix-grid score-grid">
+        {stats.map((s) => (
+          <div key={s.bucket} className="num">
+            <div className="k">Score {s.bucket}</div>
+            <div className="v">{s.n ? `${s.pct2x.toFixed(0)}%` : "—"}</div>
+            <div className="muted">{s.n} prints · 2× {s.hit2x} · 5× {s.hit5x}</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
