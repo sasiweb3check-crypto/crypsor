@@ -7,15 +7,13 @@ import { sseHandler } from "../core/bus";
 import { cached, cacheBackend } from "../core/cache";
 import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
-import { listTokens, getToken, listNotices, type TokenStatus } from "../agents/board";
+import { listTokens, getToken, listNotices, type BoardQuery } from "../agents/board";
 import { imageProxy } from "./img";
 
 const router: IRouter = Router();
 
 const ok = (data: unknown) => ({ ok: true, data });
 const fail = (error: string) => ({ ok: false, error });
-
-const STATUSES = ["live", "running", "dead"] as const;
 
 router.use((req, _res, next) => {
   if (req.path === "/img") {
@@ -101,27 +99,32 @@ router.post("/cron/tick", (req, res) => {
   void boundedTick().then((r) => res.json(ok({ ...r, at: new Date().toISOString() })));
 });
 
-function boardQuery(req: Request): {
-  page: number;
-  limit: number;
-  q: string;
-  status: TokenStatus | "all";
-  band: "early" | "all";
-} {
+function boardQuery(req: Request): BoardQuery {
   const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 80);
   const q = String(req.query.q ?? "").trim();
-  const raw = String(req.query.status ?? "all").toLowerCase();
-  const status: TokenStatus | "all" = (STATUSES as readonly string[]).includes(raw) ? raw as TokenStatus : "all";
+  const raw = String(req.query.status ?? "active").toLowerCase();
+  const allowed = ["live", "running", "dead", "all", "active"] as const;
+  const status: BoardQuery["status"] = (allowed as readonly string[]).includes(raw)
+    ? raw as BoardQuery["status"]
+    : "active";
   const band = String(req.query.band ?? "all").toLowerCase() === "early" ? "early" : "all";
-  return { page, limit, q, status, band };
+  const scoreRaw = parseInt(String(req.query.scoreMin ?? "40"), 10);
+  const scoreMin = [0, 40, 60, 80].includes(scoreRaw) ? scoreRaw : 40;
+  const gainRaw = parseInt(String(req.query.gainMin ?? "0"), 10);
+  const gainMin = [0, 2, 5, 10].includes(gainRaw) ? gainRaw : 0;
+  const sortRaw = String(req.query.sort ?? "score").toLowerCase();
+  const sort: BoardQuery["sort"] = (["score", "gain", "ath", "new"] as const).includes(sortRaw as "score")
+    ? sortRaw as BoardQuery["sort"]
+    : "score";
+  return { page, limit, q, status, band, scoreMin, gainMin, sort };
 }
 
 async function sendBoard(req: Request, res: Response): Promise<void> {
   try {
     const query = boardQuery(req);
     const payload = await cached(
-      `tokens:${query.status}:${query.band}:${query.page}:${query.limit}:${query.q}`,
+      `tokens:${query.status}:${query.band}:${query.page}:${query.limit}:${query.q}:${query.scoreMin}:${query.gainMin}:${query.sort}`,
       2_000,
       () => listTokens(query),
     );

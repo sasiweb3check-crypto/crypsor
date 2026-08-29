@@ -5,8 +5,8 @@
 import { pool } from "../core/db";
 import { tokenImageUrl } from "../scoring/image";
 import {
-  gainMatrix, gainPct, inEarlyBand, labelOf, statusOf,
-  SCORE_BUCKETS, type AlertLane, type DeskLabel, type GainMatrix, type ScoreBucketName, type TokenStatus,
+  entryOf, gainMatrix, gainPct, inEarlyBand, labelOf, statusOf,
+  SCORE_BUCKETS, type AlertLane, type DeskLabel, type GainMatrix, type RugKind, type ScoreBucketName, type TokenStatus,
 } from "../scoring/desk";
 
 export type { DeskLabel, GainMatrix, TokenStatus };
@@ -29,6 +29,9 @@ export type TokenCard = {
   score: number | null;
   prev_score: number | null;
   score_at: string | null;
+  rug: RugKind;
+  entry_mc: number | null;
+  holders: number | null;
   discovered_at: string;
   last_scan_at: string | null;
 };
@@ -60,11 +63,13 @@ export type DeskMemory = {
   boosts: number | null;
   replies: number | null;
   price_chg_m5: number | null;
+  rug: string | null;
+  survival: Record<string, unknown> | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
-            t.detected_mc, t.admission_mc, t.last_mc, t.peak_mc, t.last_liq,
-            t.discovered_at, t.last_scan_at, t.desk_score, t.desk_prev_score, t.desk_score_at
+            t.detected_mc, t.admission_mc, t.last_mc, t.peak_mc, t.last_liq, t.last_holders,
+            t.discovered_at, t.last_scan_at, t.desk_score, t.desk_prev_score, t.desk_score_at, t.last_rug
      FROM f2_tokens t`;
 
 const SELECT_BASIC = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
@@ -81,6 +86,11 @@ function card(row: Record<string, unknown>): TokenCard {
   const peak = row.peak_mc != null ? Number(row.peak_mc) : last;
   const mint = String(row.mint);
   const walletBuys = Number(row.wallet_buys ?? 0);
+  const score = row.desk_score != null ? Number(row.desk_score) : null;
+  const rug = (row.last_rug === "rug" || row.last_rug === "dump" || row.last_rug === "caution")
+    ? row.last_rug as RugKind
+    : "none";
+  const status = statusOf(last, detected);
   return {
     id: Number(row.id),
     mint,
@@ -94,11 +104,14 @@ function card(row: Record<string, unknown>): TokenCard {
     gain_pct: gainPct(last, detected),
     ath_pct: gainPct(peak, detected),
     wallet_buys: walletBuys,
-    status: statusOf(last, detected),
-    label: labelOf({ lastMc: last, detectedMc: detected, walletBuys }),
-    score: row.desk_score != null ? Number(row.desk_score) : null,
+    status,
+    label: labelOf({ lastMc: last, detectedMc: detected, walletBuys, score, rug }),
+    score,
     prev_score: row.desk_prev_score != null ? Number(row.desk_prev_score) : null,
     score_at: row.desk_score_at ? new Date(row.desk_score_at as string).toISOString() : null,
+    rug,
+    entry_mc: entryOf({ lastMc: last, score, survived: status !== "dead", rug }),
+    holders: row.last_holders != null ? Number(row.last_holders) : null,
     discovered_at: new Date(row.discovered_at as string).toISOString(),
     last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
   };
@@ -134,8 +147,11 @@ export type NoticeBoard = {
 
 export type BoardQuery = {
   q?: string;
-  status?: TokenStatus | "all";
+  status?: TokenStatus | "all" | "active";
   band?: "early" | "all";
+  scoreMin?: number;
+  gainMin?: number;
+  sort?: "score" | "gain" | "ath" | "new";
   page?: number;
   limit?: number;
 };
@@ -144,10 +160,25 @@ export type TokenBoard = {
   at: string;
   items: TokenCard[];
   performers: TokenCard[];
-  census: { all: number; live: number; running: number; dead: number; early: number };
+  census: {
+    all: number;
+    live: number;
+    running: number;
+    dead: number;
+    early: number;
+    active: number;
+    high: number;
+    score40: number;
+    score60: number;
+    score80: number;
+    rugs: number;
+  };
   matrix: GainMatrix | null;
   scoreStats: ScoreStat[] | null;
   band: "early" | "all";
+  scoreMin: number;
+  gainMin: number;
+  sort: "score" | "gain" | "ath" | "new";
   page: number;
   pages: number;
   total: number;
@@ -159,8 +190,13 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 80);
   const offset = (page - 1) * limit;
   const q = (opts.q ?? "").trim();
-  const want = opts.status && opts.status !== "all" ? opts.status : null;
+  const status = opts.status ?? "active";
   const band = opts.band === "early" ? "early" : "all";
+  const scoreMin = opts.scoreMin != null && Number.isFinite(opts.scoreMin) ? Math.max(0, opts.scoreMin) : 0;
+  const gainMin = opts.gainMin != null && Number.isFinite(opts.gainMin) ? Math.max(0, opts.gainMin) : 0;
+  const sort = opts.sort === "gain" || opts.sort === "ath" || opts.sort === "new" || opts.sort === "score"
+    ? opts.sort
+    : "score";
 
   const all = await pool.query(
     `${SELECT} WHERE ${WHERE_BUYS}
@@ -186,31 +222,57 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     ? searched.filter((c) => inEarlyBand(c.detected_mc))
     : searched;
 
-  const performers = [...banded]
-    .filter((c) => c.gain_pct != null)
-    .sort((a, b) => (b.gain_pct ?? -999) - (a.gain_pct ?? -999))
-    .slice(0, 8);
-
   const census = {
     all: banded.length,
     live: banded.filter((c) => c.status === "live").length,
     running: banded.filter((c) => c.status === "running").length,
     dead: banded.filter((c) => c.status === "dead").length,
     early: earlyN,
+    active: banded.filter((c) => c.status !== "dead").length,
+    high: banded.filter((c) =>
+      c.status !== "dead" && (c.score ?? 0) >= 40 && c.rug !== "dump" && c.rug !== "rug"
+    ).length,
+    score40: banded.filter((c) => (c.score ?? 0) >= 40).length,
+    score60: banded.filter((c) => (c.score ?? 0) >= 60).length,
+    score80: banded.filter((c) => (c.score ?? 0) >= 80).length,
+    rugs: banded.filter((c) => c.rug === "dump" || c.rug === "rug").length,
   };
 
-  const filtered = want ? banded.filter((c) => c.status === want) : banded;
-  const total = filtered.length;
-  const items = filtered.slice(offset, offset + limit);
+  let filtered = banded;
+  if (status === "active") filtered = filtered.filter((c) => c.status !== "dead");
+  else if (status !== "all") filtered = filtered.filter((c) => c.status === status);
+  if (scoreMin > 0) filtered = filtered.filter((c) => (c.score ?? 0) >= scoreMin);
+  if (gainMin >= 2) filtered = filtered.filter((c) => c.gain_pct != null && 1 + c.gain_pct / 100 >= gainMin);
+  if (status === "active" && scoreMin >= 40) {
+    filtered = filtered.filter((c) => c.rug !== "dump" && c.rug !== "rug");
+  }
+
+  const ranked = [...filtered].sort((a, b) => {
+    if (sort === "gain") return (b.gain_pct ?? -999) - (a.gain_pct ?? -999);
+    if (sort === "ath") return (b.ath_pct ?? -999) - (a.ath_pct ?? -999);
+    if (sort === "new") return new Date(b.discovered_at).getTime() - new Date(a.discovered_at).getTime();
+    return (b.score ?? -1) - (a.score ?? -1);
+  });
+
+  const performers = [...filtered]
+    .filter((c) => c.status !== "dead" && c.rug !== "dump" && c.rug !== "rug")
+    .sort((a, b) => (b.gain_pct ?? -999) - (a.gain_pct ?? -999))
+    .slice(0, 8);
+
+  const total = ranked.length;
+  const items = ranked.slice(offset, offset + limit);
 
   return {
     at: new Date().toISOString(),
     items,
     performers,
     census,
-    matrix: band === "early" ? gainMatrix(banded) : null,
+    matrix: band === "early" ? gainMatrix(banded) : gainMatrix(filtered),
     scoreStats: await scoreStats(),
     band,
+    scoreMin,
+    gainMin,
+    sort,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
     total,
@@ -256,6 +318,10 @@ function mapMemory(s: Record<string, unknown>): DeskMemory {
     boosts: n("boosts"),
     replies: n("replies"),
     price_chg_m5: n("price_chg_m5"),
+    rug: (s.rug as string | null) ?? null,
+    survival: s.survival && typeof s.survival === "object" && !Array.isArray(s.survival)
+      ? s.survival as Record<string, unknown>
+      : null,
   };
 }
 
@@ -287,7 +353,8 @@ export async function getToken(id: number): Promise<{
     const mem = await pool.query(
       `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived,
               score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
-              catalyst, factors, vol_5m, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5
+              catalyst, factors, vol_5m, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
+              survival, rug
        FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
       [id],
     );

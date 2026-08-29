@@ -13,8 +13,10 @@ export const MATRIX_RUNGS = [2, 5, 10] as const;
 
 export type TokenStatus = "live" | "running" | "dead";
 export type Rung = 1 | (typeof RUNGS)[number];
-/** Surviving label. Does not hide a name from the desk. */
-export type DeskLabel = "dead" | "late" | "runner" | "call" | "heat" | "watch";
+/** Surviving / score label. Multiple vs detected is not a label. */
+export type DeskLabel = "dead" | "late" | "runner" | "call" | "heat" | "watch" | "hot" | "setup" | "dump" | "rug" | "caution";
+export type RugKind = "none" | "caution" | "dump" | "rug";
+export type DumpKind = "clean" | "liq" | "holders" | "sells" | null;
 
 export function gainPct(lastMc: number | null | undefined, detectedMc: number | null | undefined): number | null {
   if (lastMc == null || detectedMc == null || !Number.isFinite(lastMc) || !Number.isFinite(detectedMc) || detectedMc <= 0) {
@@ -61,21 +63,26 @@ export function survives(lastMc: number | null | undefined, detectedMc: number |
 }
 
 /**
- * Label from last print vs detected. Tracked-wallet count is not used —
- * wallets are only how the name entered the book.
+ * Label from frozen score + rug path. Multiple vs detected is not a label —
+ * a $400k detect can still be a setup without 2×.
  */
 export function labelOf(opts: {
   lastMc: number | null | undefined;
   detectedMc: number | null | undefined;
   walletBuys?: number;
+  score?: number | null;
+  rug?: RugKind | null;
 }): DeskLabel {
   const last = opts.lastMc != null && Number.isFinite(opts.lastMc) ? opts.lastMc : null;
-  const det = opts.detectedMc != null && Number.isFinite(opts.detectedMc) ? opts.detectedMc : null;
   if (last != null && last < MC_DEAD) return "dead";
-  const x = multipleOf(last ?? det, det) ?? 1;
-  if (x >= 3) return "runner";
-  if (x >= 2) return "call";
-  if (det != null && det > LATE_MC) return "late";
+  if (opts.rug === "rug") return "rug";
+  if (opts.rug === "dump") return "dump";
+  if (opts.rug === "caution") return "caution";
+  const score = opts.score;
+  if (score != null && Number.isFinite(score)) {
+    if (score >= 80) return "hot";
+    if (score >= 60) return "setup";
+  }
   return "watch";
 }
 
@@ -198,6 +205,80 @@ export function pctDelta(now: number | null | undefined, prev: number | null | u
   return ((now - prev) / prev) * 100;
 }
 
+export type SurvivalSnap = {
+  survived: boolean;
+  rug: RugKind;
+  dump: DumpKind;
+  rug_possible: boolean;
+  mc_delta_pct: number | null;
+  holder_delta_pct: number | null;
+  liq_delta_pct: number | null;
+  buy_ratio: number | null;
+};
+
+/**
+ * Rug / dump path vs the previous frozen snapshot. Stored for a later
+ * surviving-score pass — do not invent holders or KOL.
+ */
+export function survivalOf(now: ScorePoint, prev: ScorePoint | null): SurvivalSnap {
+  const survived = Boolean(now.survived) && now.label !== "dead";
+  const mcD = pctDelta(now.mc, prev?.mc);
+  const liqD = pctDelta(now.liq, prev?.liq);
+  const holdD = pctDelta(now.holders, prev?.holders);
+  const ratio = buyRatio(now.buys5m, now.sells5m);
+  const vol = num(now.vol5m);
+  const sells = ratio != null && ratio <= 0.38;
+  const clean = mcD != null && mcD <= -25 && (sells || (vol != null && vol > 0));
+  const liqDump = liqD != null && liqD <= -40;
+  const holdDump = holdD != null && holdD <= -15;
+  const isRug = (liqDump && (holdDump || clean))
+    || (mcD != null && mcD <= -35 && liqD != null && liqD <= -25);
+  const isDump = clean || (mcD != null && mcD <= -30 && sells) || liqDump
+    || (holdDump && mcD != null && mcD <= -10);
+  const caution = (mcD != null && mcD <= -15)
+    || (liqD != null && liqD <= -20)
+    || (holdD != null && holdD <= -8)
+    || sells;
+
+  let rug: RugKind = "none";
+  let dump: DumpKind = null;
+  if (!survived) {
+    rug = "none";
+  } else if (isRug) {
+    rug = "rug";
+    dump = clean ? "clean" : liqDump && holdDump ? "holders" : liqDump ? "liq" : "clean";
+  } else if (isDump) {
+    rug = "dump";
+    dump = clean ? "clean" : liqDump ? "liq" : holdDump ? "holders" : "sells";
+  } else if (caution) {
+    rug = "caution";
+  }
+
+  return {
+    survived,
+    rug,
+    dump,
+    rug_possible: rug === "rug" || rug === "dump",
+    mc_delta_pct: mcD,
+    holder_delta_pct: holdD,
+    liq_delta_pct: liqD,
+    buy_ratio: ratio,
+  };
+}
+
+export function entryOf(opts: {
+  lastMc: number | null | undefined;
+  score: number | null | undefined;
+  survived: boolean;
+  rug?: RugKind | null;
+}): number | null {
+  const mc = opts.lastMc != null && Number.isFinite(opts.lastMc) ? opts.lastMc : null;
+  if (mc == null || !opts.survived) return null;
+  if (opts.rug === "dump" || opts.rug === "rug") return null;
+  if (opts.score == null || !Number.isFinite(opts.score) || opts.score < 40) return null;
+  return mc;
+}
+
 function clampScore(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
@@ -246,8 +327,9 @@ export const FACTOR_WEIGHTS: Record<FactorKey, number> = {
 
 function multipleFactor(now: ScorePoint): number | null {
   const x = multipleOf(now.mc, now.detected);
-  if (x == null) return null;
-  return band(x, [1, 1.2, 2, 3, 5, 10, 20], [24, 36, 58, 74, 88, 95, 98]);
+  // Continuation bonus only. Flat vs detected must not block a $400k tape call.
+  if (x == null || x < 1.25) return null;
+  return band(x, [1.25, 2, 3, 5, 10, 20], [40, 58, 74, 88, 95, 98]);
 }
 
 function mcPathFactor(now: ScorePoint, prev: ScorePoint | null): number | null {
@@ -262,7 +344,7 @@ function liquidityFactor(now: ScorePoint, prev: ScorePoint | null): number | nul
   if (liq == null && curve == null) return null;
   let s: number;
   if (liq != null) {
-    s = band(liq, [500, 2_000, 5_000, 8_000, 15_000, 40_000, 100_000], [12, 22, 38, 48, 58, 70, 78]);
+    s = band(liq, [500, 2_000, 5_000, 8_000, 15_000, 40_000, 100_000], [12, 22, 32, 38, 50, 64, 74]);
     const mc = num(now.mc);
     if (mc != null && mc > 0) {
       const ratio = liq / mc;
@@ -401,6 +483,8 @@ export function factorTags(now: ScorePoint, prev: ScorePoint | null, factors: Fa
   if ((now.replies ?? 0) >= 10) tags.push("replies");
   if (now.graduated === true) tags.push("graduated");
   if ((factors.flow ?? 0) >= 70 && (factors.multiple ?? 100) < 50) tags.push("accumulation");
+  if (liqD != null && liqD <= -40 && (mcD != null && mcD <= -25)) tags.push("rug_possible");
+  if (mcD != null && mcD <= -25 && (ratio != null && ratio <= 0.38 || (now.vol5m ?? 0) > 0)) tags.push("clean_dump");
   return tags;
 }
 
@@ -423,11 +507,14 @@ export type CatalystOpts = {
   tags?: string[];
 };
 
-/** Why this print is a call — named factors, not multiple-only. */
+/** Why this print is a call — named factors. Multiple is listed only when it actually moved. */
 export function catalystOf(opts: CatalystOpts): string {
   const parts: string[] = [];
   const x = multipleOf(opts.lastMc, opts.detectedMc);
-  if (x != null) parts.push(`${x.toFixed(1)}× vs detected ${fmtMc(opts.detectedMc)}`);
+  if (x != null && x >= 1.5) parts.push(`${x.toFixed(1)}× vs detected ${fmtMc(opts.detectedMc)}`);
+  const tags = opts.tags ?? [];
+  if (tags.includes("rug_possible")) parts.push("rug possible");
+  if (tags.includes("clean_dump")) parts.push("clean dump vs last print");
   const mcD = pctDelta(opts.lastMc, opts.prevMc);
   if (mcD != null && Math.abs(mcD) >= 8) {
     parts.push(`MC ${mcD > 0 ? "+" : ""}${mcD.toFixed(0)}% since last print`);
@@ -457,7 +544,7 @@ export function catalystOf(opts: CatalystOpts): string {
   if (opts.live) parts.push("livestream");
   if ((opts.boosts ?? 0) > 0) parts.push(`dex boost ${opts.boosts}`);
   if ((opts.replies ?? 0) >= 5) parts.push(`${opts.replies} replies`);
-  if (!parts.length) return "Waiting on the next MC print vs detected.";
+  if (!parts.length) return "Waiting on tape, liquidity, and holders at this print.";
   return parts.join(" · ");
 }
 
@@ -467,7 +554,7 @@ export function catalystOf(opts: CatalystOpts): string {
  * Tracked-wallet count is ignored.
  */
 export function scoreBreakdown(now: ScorePoint, prev: ScorePoint | null): ScoreBreakdown {
-  if (!now.survived || now.label === "dead") {
+  if (!now.survived) {
     return { score: 0, factors: {}, tags: ["dead"], catalyst: catalystOf({ lastMc: now.mc, detectedMc: now.detected }) };
   }
 

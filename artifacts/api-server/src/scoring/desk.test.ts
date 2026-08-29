@@ -39,14 +39,14 @@ describe("desk status", () => {
     assert.equal(rungOf(12_618, 4_206), 3);
   });
 
-  it("labels from multiple vs detected, not wallet count", () => {
+  it("labels from score and rug path, not 2× vs detected", () => {
     assert.equal(labelOf({ lastMc: 12_900, detectedMc: 12_900 }), "watch");
-    assert.equal(labelOf({ lastMc: 12_000, detectedMc: 12_900, walletBuys: 2 }), "watch");
-    assert.equal(labelOf({ lastMc: 26_000, detectedMc: 12_900 }), "call");
-    assert.equal(labelOf({ lastMc: 40_000, detectedMc: 12_900 }), "runner");
-    assert.equal(labelOf({ lastMc: 22_906, detectedMc: 4_206 }), "runner");
-    assert.equal(labelOf({ lastMc: 20_000, detectedMc: 12_900, walletBuys: 3 }), "watch");
-    assert.equal(labelOf({ lastMc: 200_000, detectedMc: 200_000 }), "late");
+    assert.equal(labelOf({ lastMc: 26_000, detectedMc: 12_900 }), "watch");
+    assert.equal(labelOf({ lastMc: 40_000, detectedMc: 12_900, score: 72 }), "setup");
+    assert.equal(labelOf({ lastMc: 400_000, detectedMc: 400_000, score: 81 }), "hot");
+    assert.equal(labelOf({ lastMc: 22_906, detectedMc: 4_206, rug: "dump" }), "dump");
+    assert.equal(labelOf({ lastMc: 20_000, detectedMc: 12_900, walletBuys: 3, score: 55 }), "watch");
+    assert.equal(labelOf({ lastMc: 200_000, detectedMc: 200_000 }), "watch");
     assert.equal(labelOf({ lastMc: 3_000, detectedMc: 12_900 }), "dead");
   });
 

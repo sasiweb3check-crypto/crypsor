@@ -43,31 +43,41 @@ export function Gain({ pct }: { pct: number | null }) {
 }
 
 export function LabelChip({ label }: { label: DeskLabel | string | null | undefined }) {
-  if (!label || label === "dead") return null;
+  if (!label || label === "dead" || label === "watch" || label === "late" || label === "runner" || label === "call" || label === "heat") {
+    return null;
+  }
   return <span className={`lb ${label}`}>{label}</span>;
+}
+
+function RiskNote({ p }: { p: TokenCard }) {
+  if (p.rug !== "dump" && p.rug !== "rug" && p.rug !== "caution") return null;
+  const text = p.rug === "rug" ? "rug possible" : p.rug === "dump" ? "clean dump" : "caution";
+  return <span className={`risk ${p.rug}`}>{text}</span>;
 }
 
 export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
   return (
-    <div className={`row-card ${p.status}`}>
+    <div className={`tok-card ${p.status}${p.rug === "dump" || p.rug === "rug" ? " warn" : ""}`}>
       <button type="button" className="thumb-hit" onClick={onOpen}>
-        <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} />
+        <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} className="thumb lg" />
       </button>
       <button type="button" className="card-main" onClick={onOpen}>
         <div className="sym">
           ${p.symbol || p.name || p.mint.slice(0, 6)}
-          <span className={`st ${p.status}`}>{p.status === "dead" ? "archived" : p.status}</span>
+          <span className="score-pip">{p.score ?? "—"}</span>
           <LabelChip label={p.label} />
+          <RiskNote p={p} />
         </div>
-        <div className="meta">
-          detected {fmtUsd(p.detected_mc)} · now {fmtUsd(p.last_mc)}
-          {p.score != null ? ` · score ${p.score}` : ""}
-          {p.wallet_buys ? ` · ${p.wallet_buys} wallet${p.wallet_buys === 1 ? "" : "s"}` : ""}
-          {p.last_scan_at ? ` · ${timeAgo(p.last_scan_at)}` : ""}
+        <div className="tok-grid">
+          <span>now <b>{fmtUsd(p.last_mc)}</b></span>
+          <span>gain <Gain pct={p.gain_pct} /></span>
+          <span>ath <Gain pct={p.ath_pct} /></span>
+          {p.entry_mc != null
+            ? <span className="ok">entry <b>{fmtUsd(p.entry_mc)}</b></span>
+            : <span className="muted">no entry</span>}
         </div>
       </button>
       <div className="side">
-        <Gain pct={p.gain_pct} />
         <a
           className="gmgn-ic"
           href={gmgnUrl(p.mint)}
@@ -78,6 +88,7 @@ export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
         >
           G
         </a>
+        {p.last_scan_at ? <span className="muted">{timeAgo(p.last_scan_at)}</span> : null}
       </div>
     </div>
   );
@@ -85,18 +96,39 @@ export function TokenRow({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
 
 export function PerformerCard({ p, onOpen }: { p: TokenCard; onOpen: () => void }) {
   return (
-    <button type="button" className="performer" onClick={onOpen}>
-      <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} />
-      <b>${p.symbol || p.mint.slice(0, 4)}</b>
-      <Gain pct={p.gain_pct} />
-    </button>
+    <div className="perf-card">
+      <button type="button" className="perf-hit" onClick={onOpen}>
+        <TokenImg src={p.image} mint={p.mint} letter={letterOf(p)} className="thumb lg" />
+        <div className="perf-body">
+          <div className="sym">
+            ${p.symbol || p.mint.slice(0, 4)}
+            <span className="score-pip">{p.score ?? "—"}</span>
+          </div>
+          <div className="tok-grid tight">
+            <Gain pct={p.gain_pct} />
+            <span className="muted">ath <Gain pct={p.ath_pct} /></span>
+          </div>
+          {p.entry_mc != null ? <div className="muted">entry {fmtUsd(p.entry_mc)}</div> : null}
+          <RiskNote p={p} />
+        </div>
+      </button>
+      <a
+        className="gmgn-ic"
+        href={gmgnUrl(p.mint)}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="GMGN"
+      >
+        G
+      </a>
+    </div>
   );
 }
 
 export function ScoreStrip({ stats }: { stats: ScoreStat[] }) {
   return (
     <section className="matrix" aria-label="Score ranges vs later 2x 5x">
-      <div className="h">Frozen score vs later 2× / 5× · all wallet-buy snapshots</div>
+      <div className="h">Frozen score vs later 2× / 5×</div>
       <div className="matrix-grid score-grid">
         {stats.map((s) => (
           <div key={s.bucket} className="num">
@@ -107,5 +139,40 @@ export function ScoreStrip({ stats }: { stats: ScoreStat[] }) {
         ))}
       </div>
     </section>
+  );
+}
+
+/** MC (green) + holders (blue) from oldest → newest snapshot. */
+export function MemoryChart({
+  points,
+}: {
+  points: Array<{ mc_usd: number | null; holders: number | null; rug?: string | null }>;
+}) {
+  const rows = [...points].reverse().filter((p) => p.mc_usd != null || p.holders != null);
+  if (rows.length < 2) return null;
+  const w = 320;
+  const h = 88;
+  const pad = 8;
+  const mcs = rows.map((p) => p.mc_usd).filter((n): n is number => n != null);
+  const holds = rows.map((p) => p.holders).filter((n): n is number => n != null);
+  const line = (vals: number[]) => {
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const span = max - min || 1;
+    return vals.map((v, i) => {
+      const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
+      const y = h - pad - ((v - min) / span) * (h - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+  };
+  const warn = rows[rows.length - 1]?.rug === "dump" || rows[rows.length - 1]?.rug === "rug";
+  return (
+    <div className={`spark ${warn ? "warn" : ""}`} aria-label="MC and holders across snapshots">
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img">
+        {mcs.length >= 2 ? <polyline fill="none" stroke={warn ? "#e85d5d" : "#3dd68c"} strokeWidth="2" points={line(mcs)} /> : null}
+        {holds.length >= 2 ? <polyline fill="none" stroke="#6ea8ff" strokeWidth="1.5" points={line(holds)} opacity="0.85" /> : null}
+      </svg>
+      <div className="muted spark-k">green MC · blue holders{warn ? " · dump vs last prints" : ""}</div>
+    </div>
   );
 }

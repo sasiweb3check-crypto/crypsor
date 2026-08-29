@@ -4,8 +4,8 @@
  */
 import { pool } from "../core/db";
 import {
-  alertLane, catalystOf, gainPct, labelOf, pctDelta, scoreBreakdown, statusOf, survives,
-  type AlertLane, type DeskLabel, type FactorScores, type ScorePoint,
+  alertLane, catalystOf, entryOf, gainPct, labelOf, pctDelta, scoreBreakdown, statusOf, survivalOf, survives,
+  type AlertLane, type DeskLabel, type FactorScores, type RugKind, type ScorePoint, type SurvivalSnap,
 } from "../scoring/desk";
 
 export type DeskStampResult = {
@@ -17,6 +17,9 @@ export type DeskStampResult = {
   catalyst: string;
   factors: FactorScores;
   tags: string[];
+  rug: RugKind;
+  survival: SurvivalSnap;
+  entry: number | null;
 };
 
 type PrevRow = {
@@ -67,11 +70,13 @@ export function deskStamp(opts: {
   lastMc: number | null | undefined;
   detectedMc: number | null | undefined;
   walletBuys: number;
+  score?: number | null;
+  rug?: RugKind | null;
 }): { label: DeskLabel; status: ReturnType<typeof statusOf>; survived: boolean; gain: number | null } {
   const last = opts.lastMc ?? null;
   const det = opts.detectedMc ?? null;
   return {
-    label: labelOf({ lastMc: last, detectedMc: det, walletBuys: opts.walletBuys }),
+    label: labelOf({ lastMc: last, detectedMc: det, walletBuys: opts.walletBuys, score: opts.score, rug: opts.rug }),
     status: statusOf(last, det),
     survived: survives(last, det),
     gain: gainPct(last, det),
@@ -154,18 +159,31 @@ function buyRatio(buys: number | null | undefined, sells: number | null | undefi
 }
 
 export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResult> {
-  const stamp = deskStamp({ lastMc: opts.mc, detectedMc: opts.detected, walletBuys: opts.wallets });
+  const base = deskStamp({ lastMc: opts.mc, detectedMc: opts.detected, walletBuys: opts.wallets });
   const lane = alertLane(opts.detected);
   const prev = await prevMemory(opts.tokenId);
-  const prevPoint = prev ? pointFromPrev(prev, stamp.label) : null;
-  const nowPoint = pointFromPrint(opts, stamp);
+  const prevPoint = prev ? pointFromPrev(prev, base.label) : null;
+  const nowPoint = pointFromPrint(opts, base);
   const broken = scoreBreakdown(nowPoint, prevPoint);
   const score = broken.score;
+  const survival = survivalOf(nowPoint, prevPoint);
+  const label = labelOf({
+    lastMc: opts.mc,
+    detectedMc: opts.detected,
+    walletBuys: opts.wallets,
+    score,
+    rug: survival.rug,
+  });
+  const stamp = { ...base, label };
+  const entry = entryOf({ lastMc: opts.mc, score, survived: stamp.survived, rug: survival.rug });
   const prevScore = prev?.score ?? null;
   const scoreDelta = prevScore != null ? score - prevScore : null;
   const mcDelta = pctDelta(opts.mc, prev?.mc_usd);
   const liqDelta = pctDelta(opts.liq, prev?.liq_usd);
   const walletDelta = prev ? opts.wallets - Number(prev.wallets ?? 0) : null;
+  const tags = [...broken.tags];
+  if (survival.rug_possible) tags.push("rug_possible");
+  if (survival.dump === "clean") tags.push("clean_dump");
   const catalyst = broken.catalyst || catalystOf({
     lastMc: opts.mc,
     detectedMc: opts.detected,
@@ -173,16 +191,21 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
     vol5m: opts.vol5m,
     prevVol5m: prev?.vol_5m,
     liq: opts.liq,
+    holders: opts.holders,
+    prevHolders: prev?.holders,
+    tags,
   });
   const ratio = buyRatio(opts.buys5m, opts.sells5m);
+  const survivalJson = JSON.stringify(survival);
 
   try {
     await pool.query(
       `INSERT INTO desk_memory
          (token_id, mc_usd, liq_usd, detected_mc, gain_pct, wallets, status, label, survived,
           score, prev_score, score_delta, mc_delta_pct, liq_delta_pct, wallet_delta, band,
-          vol_5m, catalyst, factors, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+          vol_5m, catalyst, factors, vol_h1, buys_5m, sells_5m, holders, buy_ratio, boosts, replies, price_chg_m5,
+          survival, rug)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
       [
         opts.tokenId,
         opts.mc,
@@ -211,6 +234,8 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
         opts.boosts ?? null,
         opts.replies ?? null,
         opts.priceChgM5 ?? null,
+        survivalJson,
+        survival.rug,
       ],
     );
   } catch {
@@ -248,8 +273,8 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
   try {
     await pool.query(
       `UPDATE f2_tokens SET desk_score = $2, desk_prev_score = $3, desk_score_at = NOW(),
-         last_holders = COALESCE($4, last_holders) WHERE id = $1`,
-      [opts.tokenId, score, prevScore, opts.holders ?? null],
+         last_holders = COALESCE($4, last_holders), last_rug = $5, last_survival = $6 WHERE id = $1`,
+      [opts.tokenId, score, prevScore, opts.holders ?? null, survival.rug, survivalJson],
     );
   } catch {
     try {
@@ -270,6 +295,9 @@ export async function insertDeskMemory(opts: MemoryPrint): Promise<DeskStampResu
     lane,
     catalyst,
     factors: broken.factors,
-    tags: broken.tags,
+    tags,
+    rug: survival.rug,
+    survival,
+    entry,
   };
 }
