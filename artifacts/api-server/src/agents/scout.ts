@@ -17,6 +17,7 @@ import {
 import { mergeLabels } from "../sources/gmgn-client";
 import { gmgnWalletLabels, loadGmgnTokenTape, loadGmgnWalletActivity } from "../sources/gmgn-tape";
 import { logger } from "../core/log";
+import { sqlJson } from "./scout-json";
 
 export type ScoutJob = {
   id: number;
@@ -58,6 +59,8 @@ function rowToJob(r: Record<string, unknown>): ScoutJob {
   };
 }
 
+const JSONB_KEYS = new Set(["token", "wallets", "notes"]);
+
 /** Drop fill tape from API payloads. Enrich still reads it from the job row. */
 export function publicScoutJob(job: ScoutJob): ScoutJob {
   if (!job.wallets) return job;
@@ -67,10 +70,11 @@ export function publicScoutJob(job: ScoutJob): ScoutJob {
 async function patch(id: number, fields: Record<string, unknown>): Promise<void> {
   const keys = Object.keys(fields);
   if (!keys.length) return;
+  const values = keys.map((k) => JSONB_KEYS.has(k) ? sqlJson(fields[k]) : fields[k]);
   const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
   await pool.query(
     `UPDATE scout_jobs SET ${sets}, updated_at = NOW() WHERE id = $1`,
-    [id, ...keys.map((k) => fields[k])],
+    [id, ...values],
   );
   emitSse("scout:update", { id });
 }
@@ -119,16 +123,30 @@ async function runJob(job: ScoutJob): Promise<void> {
   if (token.launchpad === "pump.fun" || job.mint.toLowerCase().endsWith("pump")) {
     fills.push(...await loadPumpTrades(token, (p, d, n, o) => { void on(p, d, n, o); }));
   }
-  if (token.bondingCurve) {
-    fills.push(...await loadPoolTxs(token, token.bondingCurve, (p, d, n, o) => { void on(p, d, n, o); }));
+  const pools = new Set<string>();
+  if (token.bondingCurve) pools.add(token.bondingCurve);
+  if (token.pairAddress) pools.add(token.pairAddress);
+  for (const addr of pools) {
+    fills.push(...await loadPoolTxs(token, addr, (p, d, n, o) => { void on(p, d, n, o); }));
   }
   if (token.pairAddress) {
-    fills.push(...await loadPoolTxs(token, token.pairAddress, (p, d, n, o) => { void on(p, d, n, o); }));
     fills.push(...await loadGeckoTrades(token));
   }
 
   await on("gmgn", "GMGN token tape");
-  const gmgn = await loadGmgnTokenTape(job.mint, skip, (p, d, n, o) => { void on(p, d, n, o); });
+  let gmgn;
+  try {
+    gmgn = await loadGmgnTokenTape(job.mint, skip, (p, d, n, o) => { void on(p, d, n, o); });
+  } catch (err) {
+    logger.warn({ err, mint: job.mint.slice(0, 8) }, "gmgn token tape failed");
+    gmgn = {
+      fills: [] as TokenFill[],
+      labels: new Map<string, string[]>(),
+      discovered: [] as string[],
+      notes: ["GMGN tape failed; continuing with on-chain fills only."],
+      routes: {},
+    };
+  }
   const labels = new Map(gmgn.labels);
   let merged = mergeFillGaps(fills, gmgn.fills);
 
@@ -139,12 +157,16 @@ async function runJob(job: ScoutJob): Promise<void> {
   for (let i = 0; i < thin.length; i++) {
     const w = thin[i];
     await on("gmgn", `GMGN activity ${w.slice(0, 4)}…`, i + 1, thin.length);
-    const act = await loadGmgnWalletActivity(w, job.mint, skip);
-    if (act.fills.length) {
-      activityFills.push(...act.fills);
-      activityWallets += 1;
+    try {
+      const act = await loadGmgnWalletActivity(w, job.mint, skip);
+      if (act.fills.length) {
+        activityFills.push(...act.fills);
+        activityWallets += 1;
+      }
+      if (act.labels.length) labels.set(w, mergeLabels(labels.get(w), act.labels));
+    } catch (err) {
+      logger.debug({ err, wallet: w.slice(0, 6) }, "gmgn activity failed");
     }
-    if (act.labels.length) labels.set(w, mergeLabels(labels.get(w), act.labels));
   }
   merged = mergeFillGaps(merged, activityFills);
 
