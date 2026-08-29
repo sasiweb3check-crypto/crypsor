@@ -182,6 +182,22 @@ export function gmgnWalletUrl(wallet: string): string {
   return `https://gmgn.ai/sol/address/${wallet}`;
 }
 
+export function gmgnTxUrl(sig: string): string {
+  return `https://gmgn.ai/sol/tx/${sig}`;
+}
+
+export function rhTxUrl(hash: string): string {
+  return `https://robinhoodchain.blockscout.com/tx/${hash}`;
+}
+
+export function rhAddressUrl(addr: string): string {
+  return `https://robinhoodchain.blockscout.com/address/${addr}`;
+}
+
+export function isSolanaAddress(addr: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr);
+}
+
 export function fmtUsd(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   if (v >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
@@ -277,4 +293,34 @@ export type ScoutJob = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type IntelChain = "sol" | "robinhood";
+export type IntelKind = "fund" | "buy" | "sell" | "deploy";
+
+export type IntelEvent = {
+  id: number;
+  chain: IntelChain | string;
+  kind: IntelKind | string;
+  at: string;
+  wallet: string;
+  counterparty: string | null;
+  mint: string | null;
+  symbol: string | null;
+  name: string | null;
+  usd: number | null;
+  nativeAmt: number | null;
+  tx: string;
+  rumor: string | null;
+  tags: string[];
+  detail: string | null;
+};
+
+export type MovesBoard = {
+  at: string;
+  items: IntelEvent[];
+  total: number;
+  page: number;
+  pages: number;
+  limit: number;
 };

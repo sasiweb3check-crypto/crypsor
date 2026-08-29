@@ -86,6 +86,7 @@ function acquire(
     };
     es.addEventListener("desk:update", () => bump(s));
     es.addEventListener("scout:update", () => bump(s));
+    es.addEventListener("intel:update", () => bump(s));
     es.addEventListener("alert:new", (e) => {
       bump(s);
       try {

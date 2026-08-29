@@ -9,6 +9,7 @@ import { agentStatus, ensureRuntime, runFullTick } from "../funnel/runtime";
 import { heliusKey, setSetting, getSetting } from "../core/settings";
 import { listTokens, getToken, listNotices, type BoardQuery } from "../agents/board";
 import { startScoutJob, getScoutJob, enrichScoutWallet, publicScoutJob } from "../agents/scout";
+import { listMoves } from "../agents/intel";
 import { imageProxy } from "./img";
 
 const router: IRouter = Router();
@@ -246,6 +247,28 @@ router.get("/notices", async (_req, res) => {
 });
 
 router.get("/events", sseHandler);
+
+router.get("/moves", async (req, res) => {
+  try {
+    const chain = String(req.query.chain ?? "").trim().toLowerCase();
+    const kind = String(req.query.kind ?? "").trim().toLowerCase();
+    const rumor = String(req.query.rumor ?? "") === "1" || String(req.query.rumor ?? "") === "true";
+    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "40"), 10) || 40, 1), 80);
+    const payload = await listMoves({
+      chain: chain || undefined,
+      kind: kind || undefined,
+      rumor,
+      page,
+      limit,
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(ok(payload));
+  } catch (err) {
+    console.error("moves failed", err);
+    res.status(500).json(fail("moves failed"));
+  }
+});
 
 router.post("/scout", async (req, res) => {
   try {
