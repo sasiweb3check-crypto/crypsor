@@ -1,98 +1,114 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { api, timeAgo, type LiveBoard, type LiveSort } from "../lib/api";
+import { api, type TokenBoard, type TokenStatus } from "../lib/api";
 import { usePoll, useSse } from "../hooks/use-data";
-import { PassRow, PerformerCard } from "../components/pass-card";
+import { TokenRow, PerformerCard } from "../components/pass-card";
 
-const HOTS = [40, 55, 70] as const;
-const SORTS: Array<{ id: LiveSort; label: string }> = [
-  { id: "hot", label: "Hot" },
-  { id: "gain", label: "Gain" },
-  { id: "ath", label: "ATH" },
-  { id: "mc", label: "MC" },
-  { id: "new", label: "New" },
+const FILTERS: Array<{ id: "all" | TokenStatus; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "running", label: "Running" },
+  { id: "live", label: "Live" },
+  { id: "dead", label: "Archived" },
 ];
 
-export default function WardPage() {
+export default function DeskPage() {
   const [, nav] = useLocation();
-  const [hot, setHot] = useState<number>(40);
-  const [sort, setSort] = useState<LiveSort>("hot");
-  const { connected } = useSse();
-  const board = usePoll<LiveBoard>(
-    () => api(`api/stats?hot=${hot}&sort=${sort}`),
-    6_000,
-    [hot, sort],
+  const [q, setQ] = useState("");
+  const [typed, setTyped] = useState("");
+  const [status, setStatus] = useState<"all" | TokenStatus>("all");
+  const [page, setPage] = useState(1);
+  const { connected, tick } = useSse();
+  const board = usePoll<TokenBoard>(
+    () => api(`api/tokens?page=${page}&limit=20&status=${status}&q=${encodeURIComponent(q)}`),
+    20_000,
+    [page, status, q, tick],
   );
   const d = board.data;
-  const live = d?.live ?? [];
+  const items = d?.items ?? [];
   const performers = d?.performers ?? [];
+  const census = d?.census;
   const open = (id: number) => nav(`/p/${id}`);
 
   return (
     <div className="page">
-      <header className="topbar">
-        <div className="brand">Crypsor <span>Desk</span></div>
-        <div className="fresh">
-          {connected ? "live" : "polling"}
-          {d?.at ? ` · ${timeAgo(d.at)}` : ""}
-          {live.length ? ` · ${live.length} hot` : ""}
-        </div>
-        <div className={`live-dot ${connected ? "on" : ""}`} />
-      </header>
+      <div className="head">
+        <h1>Wallet buys</h1>
+        <span className={`dot${connected ? " on" : ""}`} title={connected ? "live" : "polling"} />
+        <span className="muted">{connected ? "live" : "polling"}</span>
+      </div>
 
       {performers.length > 0 ? (
         <>
-          <div className="section-h">Performers</div>
-          <div className="performer-row">
+          <div className="h">Performers</div>
+          <div className="performers">
             {performers.map((p) => (
-              <PerformerCard key={p.token_id} p={p} onOpen={() => open(p.token_id)} />
+              <PerformerCard key={p.id} p={p} onOpen={() => open(p.id)} />
             ))}
           </div>
         </>
       ) : null}
 
-      <div className="section-row">
-        <div className="section-h">Live</div>
-        <div className="chips tight">
-          {SORTS.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={sort === s.id ? "chip on" : "chip"}
-              onClick={() => setSort(s.id)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="chips">
-        {HOTS.map((n) => (
+      <form
+        className="toolbar"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setPage(1);
+          setQ(typed.trim());
+        }}
+      >
+        <input
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder="Search symbol, name, mint"
+          aria-label="Search tokens"
+        />
+        <button type="submit" className="chip on">Search</button>
+      </form>
+
+      <div className="toolbar">
+        {FILTERS.map((f) => (
           <button
-            key={n}
+            key={f.id}
             type="button"
-            className={hot === n ? "chip on" : "chip"}
-            onClick={() => setHot(n)}
+            className={status === f.id ? "chip on" : "chip"}
+            onClick={() => { setStatus(f.id); setPage(1); }}
           >
-            hot {n}+
+            {f.label}
+            {census ? (
+              <span className="n">
+                {f.id === "all" ? census.all : census[f.id]}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>
 
-      {board.loading && !d ? (
-        <>
-          <div className="skel" /><div className="skel" /><div className="skel" />
-        </>
-      ) : null}
+      {board.loading && !d ? <div className="skel" /> : null}
       {board.error ? <div className="empty err">{board.error}</div> : null}
-      {!board.loading && live.length === 0 && !board.error ? (
-        <div className="empty">
-          Nothing at hotness {hot}+ yet. Names land here from the database once heat clears this floor.
+      {!board.loading && items.length === 0 && !board.error ? (
+        <div className="empty">No wallet-buy tokens in this slice.</div>
+      ) : null}
+      <div className="rows">
+        {items.map((p) => (
+          <TokenRow key={p.id} p={p} onOpen={() => open(p.id)} />
+        ))}
+      </div>
+
+      {(d?.pages ?? 1) > 1 ? (
+        <div className="pager">
+          <button type="button" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            Prev
+          </button>
+          <span className="muted">{d?.page} / {d?.pages} · {d?.total}</span>
+          <button
+            type="button"
+            disabled={page >= (d?.pages ?? 1)}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+          </button>
         </div>
       ) : null}
-      {live.map((p) => (
-        <PassRow key={p.token_id} p={p} onOpen={() => open(p.token_id)} />
-      ))}
     </div>
   );
 }

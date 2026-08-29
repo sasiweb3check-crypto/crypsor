@@ -53,56 +53,53 @@ export default function SettingsPage() {
   const cur = settingsQ.data;
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <div className="brand">Settings</div>
-      </header>
-      <p className="blurb">
-        The only data source is wallet buys. Add Solana addresses you trust — every buy becomes a patient.
+    <div className="page plain">
+      <h1>Settings</h1>
+      <p className="note">
+        Only tracked-wallet buys are listed. Add Solana addresses — each buy is frozen at the market cap we see at that print.
       </p>
 
-      <div className="section-h">Tracked wallets</div>
-      <div className="form">
+      <div className="h">Tracked wallets</div>
+      <div className="row">
         <input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="Solana address" autoCapitalize="off" />
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label (optional)" />
-        <button type="button" className="btn" onClick={() => void addWallet()}>Admit wallet</button>
+        <button type="button" className="btn" onClick={() => void addWallet()}>Add</button>
       </div>
-      <div className="list">
+      <ul className="wlist">
         {(walletsQ.data ?? []).map((w) => (
-          <div key={w.id} className="wallet">
-            <div className="card-main">
-              <div className="sym">{w.label || "Unnamed"}</div>
+          <li key={w.id}>
+            <div>
+              <div>{w.label || "Unnamed"}</div>
               <code>{w.address}</code>
             </div>
-            <button type="button" className="btn ghost" onClick={() => void removeWallet(w.id)}>Remove</button>
-          </div>
+            <button type="button" className="chip" onClick={() => void removeWallet(w.id)}>Remove</button>
+          </li>
         ))}
-        {(walletsQ.data ?? []).length === 0 && <div className="row"><span className="blurb">No wallets yet.</span></div>}
-      </div>
+      </ul>
+      {(walletsQ.data ?? []).length === 0 ? <p className="note">No wallets yet.</p> : null}
 
-      <div className="section-h">Keys</div>
-      <div className="form">
-        <label className="field">
-          <span>Helius {cur?.helius_api_key && <em className="tape-buyers"> · {cur.helius_api_key}</em>}</span>
-          <input value={helius} onChange={(e) => setHelius(e.target.value)} placeholder="New key" autoCapitalize="off" />
-        </label>
-        <label className="field">
-          <span>Telegram bot {cur?.telegram_bot_token && <em className="tape-buyers"> · {cur.telegram_bot_token}</em>}</span>
-          <input value={tgToken} onChange={(e) => setTgToken(e.target.value)} placeholder="123456:ABC…" autoCapitalize="off" />
-        </label>
-        <label className="field">
-          <span>Telegram chat {cur?.telegram_chat_id && <em className="tape-buyers"> · {cur.telegram_chat_id}</em>}</span>
-          <input value={tgChat} onChange={(e) => setTgChat(e.target.value)} placeholder="Chat id" autoCapitalize="off" />
-        </label>
+      <div className="h">Keys</div>
+      <label>
+        Helius {cur?.helius_api_key ? `· ${cur.helius_api_key}` : ""}
+        <input value={helius} onChange={(e) => setHelius(e.target.value)} placeholder="New key" autoCapitalize="off" />
+      </label>
+      <label>
+        Telegram bot {cur?.telegram_bot_token ? `· ${cur.telegram_bot_token}` : ""}
+        <input value={tgToken} onChange={(e) => setTgToken(e.target.value)} placeholder="123456:ABC…" autoCapitalize="off" />
+      </label>
+      <label>
+        Telegram chat {cur?.telegram_chat_id ? `· ${cur.telegram_chat_id}` : ""}
+        <input value={tgChat} onChange={(e) => setTgChat(e.target.value)} placeholder="Chat id" autoCapitalize="off" />
+      </label>
+      <div className="row">
         <button type="button" className="btn" onClick={() => void save()}>Save keys</button>
-        {msg && <span className="blurb">{msg}</span>}
+        {msg ? <span className={msg === "Saved" ? "ok" : "err"}>{msg}</span> : null}
       </div>
 
-      <div className="section-h">24/7</div>
-      <p className="blurb">
-        The scanner already loops inside this process. On Render <b>Starter</b> it never sleeps — confirm the service plan is Starter and instance count is 1.
-        If the host is <b>Free</b>, add a cron-job.org ping every minute to <code>/api/keepalive</code> (or <code>/api/cron/tick</code> with <code>CRON_SECRET</code>),
-        and set the GitHub repo variable <code>APP_URL</code> to this origin so Actions pings every 10 minutes.
+      <div className="h">Scan</div>
+      <p className="note">
+        Intake polls tracked wallets. Market cap is printed every 15 minutes. Names under $5k MC go to Archived.
+        On Render Starter the process stays up. If the host is Free, ping <code>/api/keepalive</code> every minute.
       </p>
     </div>
   );

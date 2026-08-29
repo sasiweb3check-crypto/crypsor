@@ -1,23 +1,10 @@
 /**
- * Desk runtime — wallet-buy discovery, public tape, omo gate, then live prints.
- *
- *   intake     tracked-wallet buys (Helius), swap-verified, majors dropped
- *   discover   Dex boosts/profiles, pump movers, CoinGecko — waiting room
- *   vitals     Dex / pump.fun prints. Public tape suggests; wallet buys can lock
- *   snapshots  10m / 15m / 1h series with memory and survival
- *   archive    random dead/exited sample for momentum
- *   book       live stats on passes (research notes, not a trade bot)
- *   reporter   census + prune
+ * Desk runtime — wallet buys in, 15-minute MC prints, nothing else.
  */
 import { ensureSchema } from "../core/db";
 import { logger } from "../core/log";
 import { intakeTick } from "../agents/intake";
-import { discoverTick } from "../agents/discover";
-import { archiveTick, vitalsTick } from "../agents/vitals";
-import { snapshotsTick } from "../agents/snapshots";
-import { bookTick } from "../agents/book";
-import { reporterTick } from "../agents/reporter";
-import { stashFreshCounts } from "../agents/stash";
+import { scanTick } from "../agents/scan";
 import { scrubReceives } from "../agents/scrub";
 
 const log = logger.child({ module: "runtime" });
@@ -26,18 +13,12 @@ let started = false;
 let bootPromise: Promise<void> | null = null;
 
 const INTAKE_MS = 40_000;
-const DISCOVER_MS = 90_000;
-const VITALS_MS = 18_000;
-const SNAP_MS = 22_000;
-const ARCHIVE_MS = 90_000;
-const BOOK_MS = 25_000;
-const REPORT_MS = 120_000;
+const SCAN_CHECK_MS = 30_000;
+const SCRUB_MS = 10 * 60_000;
+const SCAN_EVERY_MS = 15 * 60_000;
 
-let last = { intake: 0, discover: 0, vitals: 0, snapshots: 0, archive: 0, book: 0, reporter: 0 };
-let running = {
-  intake: false, discover: false, vitals: false, snapshots: false,
-  archive: false, book: false, reporter: false,
-};
+let last = { intake: 0, scan: 0, scrub: 0 };
+let running = { intake: false, scan: false, scrub: false };
 
 async function guarded(name: keyof typeof running, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -52,10 +33,8 @@ export async function ensureRuntime(): Promise<void> {
   if (!bootPromise) {
     bootPromise = (async () => {
       await ensureSchema();
-      await stashFreshCounts();
-      void guarded("intake", () => scrubReceives());
-      last.discover = Date.now() - DISCOVER_MS + 18_000;
-      last.vitals = Date.now() - VITALS_MS + 8_000;
+      void guarded("scrub", () => scrubReceives());
+      void guarded("scan", scanTick).then(() => { last.scan = Date.now(); });
       setInterval(() => {
         if (running.intake || Date.now() - last.intake < INTAKE_MS) return;
         running.intake = true;
@@ -63,54 +42,21 @@ export async function ensureRuntime(): Promise<void> {
         void guarded("intake", intakeTick).finally(() => { running.intake = false; });
       }, 5_000);
       setInterval(() => {
-        if (running.discover || Date.now() - last.discover < DISCOVER_MS) return;
-        running.discover = true;
-        last.discover = Date.now();
-        void guarded("discover", discoverTick).finally(() => { running.discover = false; });
-      }, 8_000);
+        if (running.scan) return;
+        running.scan = true;
+        void guarded("scan", scanTick).finally(() => {
+          running.scan = false;
+          last.scan = Date.now();
+        });
+      }, SCAN_CHECK_MS);
       setInterval(() => {
-        if (running.vitals || Date.now() - last.vitals < VITALS_MS) return;
-        running.vitals = true;
-        last.vitals = Date.now();
-        void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
-      }, 5_000);
-      setInterval(() => {
-        if (running.snapshots || Date.now() - last.snapshots < SNAP_MS) return;
-        running.snapshots = true;
-        last.snapshots = Date.now();
-        void guarded("snapshots", snapshotsTick).finally(() => { running.snapshots = false; });
-      }, 8_000);
-      setInterval(() => {
-        if (running.archive || Date.now() - last.archive < ARCHIVE_MS) return;
-        running.archive = true;
-        last.archive = Date.now();
-        void guarded("archive", archiveTick).finally(() => { running.archive = false; });
-      }, 12_000);
-      setInterval(() => {
-        if (running.book || Date.now() - last.book < BOOK_MS) return;
-        running.book = true;
-        last.book = Date.now();
-        void guarded("book", bookTick).finally(() => { running.book = false; });
-      }, 8_000);
-      setInterval(() => {
-        if (running.reporter || Date.now() - last.reporter < REPORT_MS) return;
-        running.reporter = true;
-        last.reporter = Date.now();
-        void guarded("reporter", reporterTick).finally(() => { running.reporter = false; });
-      }, 15_000);
-      setInterval(() => {
-        if (running.vitals) return;
-        if (last.vitals && Date.now() - last.vitals < VITALS_MS * 4) return;
-        running.vitals = true;
-        last.vitals = Date.now();
-        log.warn("vitals watchdog — loop was quiet, kicking a print");
-        void guarded("vitals", vitalsTick).finally(() => { running.vitals = false; });
+        if (running.scrub || Date.now() - last.scrub < SCRUB_MS) return;
+        running.scrub = true;
+        last.scrub = Date.now();
+        void guarded("scrub", scrubReceives).finally(() => { running.scrub = false; });
       }, 30_000);
-      setInterval(() => {
-        void guarded("intake", () => scrubReceives());
-      }, 10 * 60_000);
       started = true;
-      log.info("desk started 24/7 (intake · discover · vitals · snapshots · archive · book · reporter)");
+      log.info("desk started — wallet buys · 15m MC scan");
     })().catch((err) => {
       bootPromise = null;
       throw err;
@@ -129,15 +75,7 @@ export function agentStatus(): {
     started,
     last: { ...last },
     running: { ...running },
-    intervalsMs: {
-      intake: INTAKE_MS,
-      discover: DISCOVER_MS,
-      vitals: VITALS_MS,
-      snapshots: SNAP_MS,
-      archive: ARCHIVE_MS,
-      book: BOOK_MS,
-      reporter: REPORT_MS,
-    },
+    intervalsMs: { intake: INTAKE_MS, scan: SCAN_EVERY_MS, scrub: SCRUB_MS },
   };
 }
 
@@ -145,11 +83,7 @@ export async function runFullTick(): Promise<Record<string, unknown>> {
   await ensureRuntime();
   const out: Record<string, unknown> = {};
   await guarded("intake", async () => { out.intake = await intakeTick(); });
-  await guarded("intake", async () => { out.scrub = await scrubReceives(); });
-  await guarded("vitals", async () => { out.vitals = await vitalsTick(); });
-  await guarded("snapshots", async () => { out.snapshots = await snapshotsTick(); });
-  await guarded("archive", async () => { out.archive = await archiveTick(); });
-  await guarded("book", async () => { out.book = await bookTick(); });
-  await guarded("reporter", async () => { out.reporter = await reporterTick(); });
+  await guarded("scan", async () => { out.scan = await scanTick(); });
+  await guarded("scrub", async () => { out.scrub = await scrubReceives(); });
   return out;
 }

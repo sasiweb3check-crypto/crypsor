@@ -255,7 +255,11 @@ const SCHEMA: string[] = [
   `ALTER TABLE ward_memory ADD COLUMN IF NOT EXISTS hour jsonb NOT NULL DEFAULT '{}'::jsonb`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS last_momentum text`,
   `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS hotness integer`,
-  `CREATE INDEX IF NOT EXISTS idx_f2_tokens_hotness ON f2_tokens (hotness DESC NULLS LAST)`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS detected_mc real`,
+  `UPDATE f2_tokens SET detected_mc = COALESCE(detected_mc, admission_mc, mc_at_discovery)
+     WHERE detected_mc IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_f2_tokens_wallet_buys_scan
+     ON f2_tokens (last_scan_at ASC NULLS FIRST) WHERE wallet_buys > 0`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,

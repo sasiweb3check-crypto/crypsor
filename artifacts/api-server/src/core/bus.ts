@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import type { Request, Response } from "express";
 import { cacheBust } from "./cache";
 
-const BUST_EVENTS = new Set(["alert:new", "watch:update", "desk:update", "vitals:tick", "stats:live", "pass:new"]);
+const BUST_EVENTS = new Set(["alert:new", "desk:update"]);
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(100);

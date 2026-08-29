@@ -1,6 +1,6 @@
 /**
  * Standalone host (Render / VPS / local): binds 0.0.0.0:$PORT, starts the
- * ward agents immediately, and serves the desk SPA when WEB_DIST is present.
+ * wallet-buy desk immediately, and serves the SPA when WEB_DIST is present.
  */
 import app from "./app";
 import { pool } from "./core/db";
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   }
 
   const server = app.listen(port, "0.0.0.0", () => {
-    logger.info({ port }, "crypsor ward api listening");
+    logger.info({ port }, "crypsor desk api listening");
   });
 
   server.on("error", (err) => {
