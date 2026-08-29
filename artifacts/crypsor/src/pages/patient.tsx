@@ -1,7 +1,7 @@
 import { useLocation, useParams } from "wouter";
 import { api, fmtUsd, fmtGainPct, gmgnUrl, shortMint, shortWallet, timeAgo, type TokenChart } from "../lib/api";
 import { usePoll } from "../hooks/use-data";
-import { Gain, TokenImg } from "../components/pass-card";
+import { Gain, LabelChip, TokenImg } from "../components/pass-card";
 
 export default function TokenPage() {
   const { id } = useParams<{ id: string }>();
@@ -38,6 +38,7 @@ export default function TokenPage() {
           <div className="hero-cta">
             <a className="chip on" href={gmgnUrl(t.mint)} target="_blank" rel="noreferrer">Open GMGN</a>
             <span className={`st ${t.status}`}>{t.status === "dead" ? "archived" : t.status}</span>
+            <LabelChip label={t.label} />
           </div>
         </div>
       </div>
@@ -69,6 +70,17 @@ export default function TokenPage() {
         <div key={`${a.wallet}-${a.at}`} className="line">
           <b>{a.label || shortWallet(a.wallet)}</b>
           <span className="muted">{timeAgo(a.at)}</span>
+        </div>
+      ))}
+
+      <div className="h">Memory</div>
+      {(q.data?.memory ?? []).length === 0 ? <div className="empty">No snapshots yet. Scans still print below.</div> : null}
+      {(q.data?.memory ?? []).slice(0, 12).map((s) => (
+        <div key={s.at} className="line">
+          <b>{fmtUsd(s.mc_usd)}</b>
+          <Gain pct={s.gain_pct} />
+          <LabelChip label={s.label} />
+          <span className="muted">{s.survived === false ? "dead" : s.wallets ? `${s.wallets}w` : ""} · {timeAgo(s.at)}</span>
         </div>
       ))}
 

@@ -270,6 +270,21 @@ const SCHEMA: string[] = [
       ELSE 1
     END
     WHERE notified_rung IS NULL`,
+  `ALTER TABLE f2_tokens ADD COLUMN IF NOT EXISTS desk_label text`,
+  `CREATE TABLE IF NOT EXISTS desk_memory (
+     id          serial PRIMARY KEY,
+     token_id    integer NOT NULL REFERENCES f2_tokens(id),
+     at          timestamptz NOT NULL DEFAULT NOW(),
+     mc_usd      real,
+     liq_usd     real,
+     detected_mc real,
+     gain_pct    real,
+     wallets     integer,
+     status      text,
+     label       text,
+     survived    boolean
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_desk_memory_token_at ON desk_memory (token_id, at DESC)`,
 
   `CREATE TABLE IF NOT EXISTS ward_watch (
      id serial PRIMARY KEY,

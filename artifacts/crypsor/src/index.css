@@ -165,6 +165,25 @@ button { cursor: pointer; }
 .st.running { color: var(--green); }
 .st.live { color: var(--blue); }
 .st.dead { color: var(--muted); }
+.lb {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  color: var(--muted);
+}
+.lb.watch { color: var(--muted); }
+.lb.heat { color: var(--blue); }
+.lb.call { color: #7ee0a8; }
+.lb.runner { color: var(--green); }
+.lb.late { color: #c9b07a; }
+.matrix { margin: 8px 0 4px; }
+.matrix-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.matrix .num .v { font-size: 16px; }
 .gain { font-variant-numeric: tabular-nums; font-weight: 600; }
 .gain.up { color: var(--green); }
 .gain.down { color: var(--red); }
@@ -265,4 +284,5 @@ button { cursor: pointer; }
 
 @media (max-width: 700px) {
   .meta { display: none; }
+  .matrix-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

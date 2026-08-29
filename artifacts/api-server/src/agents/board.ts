@@ -1,11 +1,15 @@
 /**
  * Token list — wallet buys only. Search, pagination, performers by gain %.
+ * Optional early band ($5k–$30k detected) is a filter, never a gate.
  */
 import { pool } from "../core/db";
 import { tokenImageUrl } from "../scoring/image";
-import { gainPct, statusOf, type TokenStatus } from "../scoring/desk";
+import {
+  gainMatrix, gainPct, inEarlyBand, labelOf, statusOf,
+  type DeskLabel, type GainMatrix, type TokenStatus,
+} from "../scoring/desk";
 
-export type { TokenStatus };
+export type { DeskLabel, GainMatrix, TokenStatus };
 
 export type TokenCard = {
   id: number;
@@ -21,8 +25,20 @@ export type TokenCard = {
   ath_pct: number | null;
   wallet_buys: number;
   status: TokenStatus;
+  label: DeskLabel;
   discovered_at: string;
   last_scan_at: string | null;
+};
+
+export type DeskMemory = {
+  at: string;
+  mc_usd: number | null;
+  liq_usd: number | null;
+  gain_pct: number | null;
+  wallets: number | null;
+  status: string | null;
+  label: string | null;
+  survived: boolean | null;
 };
 
 const SELECT = `SELECT t.id, t.mint, t.symbol, t.name, t.image, t.wallet_buys,
@@ -38,6 +54,7 @@ function card(row: Record<string, unknown>): TokenCard {
   const last = row.last_mc != null ? Number(row.last_mc) : null;
   const peak = row.peak_mc != null ? Number(row.peak_mc) : last;
   const mint = String(row.mint);
+  const walletBuys = Number(row.wallet_buys ?? 0);
   return {
     id: Number(row.id),
     mint,
@@ -50,8 +67,9 @@ function card(row: Record<string, unknown>): TokenCard {
     last_liq: row.last_liq != null ? Number(row.last_liq) : null,
     gain_pct: gainPct(last, detected),
     ath_pct: gainPct(peak, detected),
-    wallet_buys: Number(row.wallet_buys ?? 0),
+    wallet_buys: walletBuys,
     status: statusOf(last, detected),
+    label: labelOf({ lastMc: last, detectedMc: detected, walletBuys }),
     discovered_at: new Date(row.discovered_at as string).toISOString(),
     last_scan_at: row.last_scan_at ? new Date(row.last_scan_at as string).toISOString() : null,
   };
@@ -60,6 +78,7 @@ function card(row: Record<string, unknown>): TokenCard {
 export type BoardQuery = {
   q?: string;
   status?: TokenStatus | "all";
+  band?: "early" | "all";
   page?: number;
   limit?: number;
 };
@@ -68,7 +87,9 @@ export type TokenBoard = {
   at: string;
   items: TokenCard[];
   performers: TokenCard[];
-  census: { all: number; live: number; running: number; dead: number };
+  census: { all: number; live: number; running: number; dead: number; early: number };
+  matrix: GainMatrix | null;
+  band: "early" | "all";
   page: number;
   pages: number;
   total: number;
@@ -81,6 +102,7 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
   const offset = (page - 1) * limit;
   const q = (opts.q ?? "").trim();
   const want = opts.status && opts.status !== "all" ? opts.status : null;
+  const band = opts.band === "early" ? "early" : "all";
 
   const all = await pool.query(
     `${SELECT} WHERE ${WHERE_BUYS}
@@ -88,10 +110,6 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
      LIMIT 5000`,
   );
   const cards = all.rows.map((r) => card(r as Record<string, unknown>));
-  const performers = [...cards]
-    .filter((c) => c.gain_pct != null)
-    .sort((a, b) => (b.gain_pct ?? -999) - (a.gain_pct ?? -999))
-    .slice(0, 8);
 
   const needle = q.toLowerCase();
   const searched = needle
@@ -100,14 +118,26 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
       || (c.name ?? "").toLowerCase().includes(needle)
       || c.mint.toLowerCase().includes(needle))
     : cards;
+
+  const earlyN = searched.filter((c) => inEarlyBand(c.detected_mc)).length;
+  const banded = band === "early"
+    ? searched.filter((c) => inEarlyBand(c.detected_mc))
+    : searched;
+
+  const performers = [...banded]
+    .filter((c) => c.gain_pct != null)
+    .sort((a, b) => (b.gain_pct ?? -999) - (a.gain_pct ?? -999))
+    .slice(0, 8);
+
   const census = {
-    all: searched.length,
-    live: searched.filter((c) => c.status === "live").length,
-    running: searched.filter((c) => c.status === "running").length,
-    dead: searched.filter((c) => c.status === "dead").length,
+    all: banded.length,
+    live: banded.filter((c) => c.status === "live").length,
+    running: banded.filter((c) => c.status === "running").length,
+    dead: banded.filter((c) => c.status === "dead").length,
+    early: earlyN,
   };
 
-  const filtered = want ? searched.filter((c) => c.status === want) : searched;
+  const filtered = want ? banded.filter((c) => c.status === want) : banded;
   const total = filtered.length;
   const items = filtered.slice(offset, offset + limit);
 
@@ -116,6 +146,8 @@ export async function listTokens(opts: BoardQuery = {}): Promise<TokenBoard> {
     items,
     performers,
     census,
+    matrix: band === "early" ? gainMatrix(banded) : null,
+    band,
     page,
     pages: Math.max(1, Math.ceil(total / limit)),
     total,
@@ -127,6 +159,7 @@ export async function getToken(id: number): Promise<{
   token: TokenCard;
   admissions: Array<{ wallet: string; sig: string | null; at: string; label: string | null }>;
   scans: Array<{ at: string; mc_usd: number | null; liq_usd: number | null; phase: string | null }>;
+  memory: DeskMemory[];
 } | null> {
   const r = await pool.query(`${SELECT} WHERE t.id = $1 AND ${WHERE_BUYS}`, [id]);
   if (!r.rows[0]) return null;
@@ -144,6 +177,35 @@ export async function getToken(id: number): Promise<{
      FROM f2_scans WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
     [id],
   );
+  let memory: DeskMemory[] = [];
+  try {
+    const mem = await pool.query(
+      `SELECT at, mc_usd, liq_usd, gain_pct, wallets, status, label, survived
+       FROM desk_memory WHERE token_id = $1 ORDER BY at DESC LIMIT 40`,
+      [id],
+    );
+    memory = mem.rows.map((s: {
+      at: string | Date;
+      mc_usd: number | null;
+      liq_usd: number | null;
+      gain_pct: number | null;
+      wallets: number | null;
+      status: string | null;
+      label: string | null;
+      survived: boolean | null;
+    }) => ({
+      at: new Date(s.at).toISOString(),
+      mc_usd: s.mc_usd != null ? Number(s.mc_usd) : null,
+      liq_usd: s.liq_usd != null ? Number(s.liq_usd) : null,
+      gain_pct: s.gain_pct != null ? Number(s.gain_pct) : null,
+      wallets: s.wallets != null ? Number(s.wallets) : null,
+      status: s.status,
+      label: s.label,
+      survived: s.survived,
+    }));
+  } catch {
+    memory = [];
+  }
   return {
     token,
     admissions: ads.rows.map((a: { wallet: string; sig: string | null; at: string | Date; label: string | null }) => ({
@@ -158,5 +220,6 @@ export async function getToken(id: number): Promise<{
       liq_usd: s.liq_usd != null ? Number(s.liq_usd) : null,
       phase: s.phase,
     })),
+    memory,
   };
 }

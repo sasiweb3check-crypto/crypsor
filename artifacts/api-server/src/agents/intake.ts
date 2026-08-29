@@ -8,10 +8,11 @@ import { recentBuys } from "../sources/helius";
 import { coin as pumpCoin, pumpMc } from "../sources/pumpfun";
 import { imageOf, mcOf, pairsForMints } from "../sources/dexscreener";
 import { isNoiseToken } from "../scoring/noise";
-import { fmtMc, statusOf } from "../scoring/desk";
+import { fmtMc, labelOf, statusOf } from "../scoring/desk";
 import { httpsImage } from "../scoring/image";
 import { agentNote } from "./log";
 import { raiseAlert } from "./alerts";
+import { insertDeskMemory } from "./memory";
 
 let walletCursor = 0;
 
@@ -109,7 +110,7 @@ async function admit(
             WHEN f2_tokens.phase IN ('dead','deceased') THEN NOW()
             ELSE f2_tokens.revived_at END
         RETURNING id, (xmax = 0) AS inserted, phase, symbol, name, wallet_buys,
-                  detected_mc, admission_mc, last_mc
+                  detected_mc, admission_mc, last_mc, last_liq
      )
      SELECT u.*, e.phase AS prev_phase, e.wallet_buys AS prev_buys
      FROM upsert u
@@ -130,7 +131,7 @@ async function admit(
     id: number; inserted: boolean; phase: string; prev_phase: string | null;
     symbol: string | null; name: string | null; wallet_buys: number;
     detected_mc: number | null; admission_mc: number | null; last_mc: number | null;
-    prev_buys: number | null;
+    last_liq: number | null; prev_buys: number | null;
   } | undefined;
   if (!row?.id) return false;
   await pool.query(
@@ -143,6 +144,23 @@ async function admit(
   const who = label || `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
   const detected = row.detected_mc ?? row.admission_mc;
   const nowMc = row.last_mc ?? detected;
+  const prevBuys = row.prev_buys ?? 0;
+  const extraWallet = !row.inserted && row.wallet_buys > prevBuys;
+  if (row.inserted || extraWallet) {
+    const deskLabel = labelOf({ lastMc: nowMc, detectedMc: detected, walletBuys: row.wallet_buys });
+    try {
+      await pool.query(`UPDATE f2_tokens SET desk_label = $2 WHERE id = $1`, [row.id, deskLabel]);
+    } catch {
+      // desk_label lands after schema pass
+    }
+    await insertDeskMemory({
+      tokenId: row.id,
+      mc: nowMc,
+      liq: row.last_liq != null ? Number(row.last_liq) : null,
+      detected,
+      wallets: row.wallet_buys,
+    });
+  }
 
   if (row.inserted) {
     await agentNote("intake", "ADMIT", `$${ticker} buy via ${who} @ ${fmtMc(detected)}`, {
@@ -160,8 +178,7 @@ async function admit(
     return true;
   }
 
-  const prevBuys = row.prev_buys ?? 0;
-  if (row.wallet_buys > prevBuys && row.wallet_buys >= 2) {
+  if (extraWallet && row.wallet_buys >= 2) {
     await agentNote("intake", "CONFIRM", `$${ticker} wallet ${row.wallet_buys} via ${who}`, {
       tokenId: row.id, mint,
     });
