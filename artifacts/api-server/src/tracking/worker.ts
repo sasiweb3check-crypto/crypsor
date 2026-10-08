@@ -20,11 +20,10 @@ export async function syncWallet(address: string): Promise<Result> {
   const maxPages = Number(process.env.WALLET_PAGES_PER_JOB ?? 3);
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(
-      `https://api.helius.xyz/v0/addresses/${address}/transactions`,
+      `https://api-mainnet.helius-rpc.com/v0/addresses/${address}/transactions`,
     );
     url.searchParams.set("api-key", key);
     url.searchParams.set("limit", "100");
-    url.searchParams.set("type", "SWAP");
     if (before) url.searchParams.set("before-signature", before);
     const txs = await request<Transaction[]>(
       "helius",

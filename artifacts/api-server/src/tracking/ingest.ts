@@ -1,9 +1,18 @@
 import { pool } from "./store.ts";
 import { extractBuys, type Transaction } from "./buys.ts";
 export async function ingestTransactions(wallet: string, txs: Transaction[]) {
+  // Commit bounded chunks so catchup cannot monopolize the worker's small pool
+  // and block job lease heartbeats. Retries remain idempotent at buy level.
+  if (txs.length > 20) {
+    const ordered = [...txs].sort((a, b) => a.timestamp - b.timestamp);
+    for (let i = 0; i < ordered.length; i += 20)
+      await ingestTransactions(wallet, ordered.slice(i, i + 20));
+    return;
+  }
   const buys = txs
     .flatMap((tx) => extractBuys(tx, wallet))
     .sort((a, b) => a.timestamp - b.timestamp);
+  if (!buys.length) return;
   const client = await pool.connect();
   const mints = new Set<string>();
   try {
@@ -34,7 +43,7 @@ export async function ingestTransactions(wallet: string, txs: Transaction[]) {
         ],
       );
       const inserted = await client.query(
-        `INSERT INTO cw_buys(wallet,mint,signature,bought_at,purchase_price,parser_version) VALUES($1,$2,$3,to_timestamp($4),$5,'buys-v2') ON CONFLICT DO NOTHING RETURNING signature`,
+        `INSERT INTO cw_buys(wallet,mint,signature,bought_at,purchase_price,parser_version) VALUES($1,$2,$3,to_timestamp($4),$5,'buys-v3') ON CONFLICT DO NOTHING RETURNING signature`,
         [wallet, buy.mint, buy.signature, buy.timestamp, buy.purchasePrice],
       );
       if (!inserted.rowCount) continue;

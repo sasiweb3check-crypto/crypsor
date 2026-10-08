@@ -42,9 +42,14 @@ Redis, PostgreSQL consumers process them. Redis downtime cannot erase the outbox
 Use the same queue backend across worker instances. Lease recovery and an elected
 scheduler permit multiple worker consumers without duplicate scheduling.
 
-The first scan imports the latest 100 SWAP transactions, using Helius's type filter
-so incoming transfers do not consume the scan window. A one-time migration rechecks
-buy-less wallets; wallet cards show how many swaps were examined. Subsequent backlogs
+The first scan examines the latest 100 transactions without relying on Helius's
+SWAP label. Pump.fun buy/buy_v2/buy_v3 and exact-input variants are decoded from
+the official program, instruction discriminator and user/mint account positions.
+This covers Token-2022 buys missing from enhanced events; ordinary transfers,
+other users' buys, failed calls and sell instructions remain excluded.
+Program layouts come from https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json.
+Other protocols use confirmed enhanced swap events or the conservative transfer fallback.
+One-time migrations recheck buy-less wallets; cards show transactions examined. Subsequent backlogs
 are processed in bounded chunks, saving progress and retaining the stable cursor
 until caught up. Idempotent `(wallet, mint, signature)` records handle retries
 and webhook duplicates. A signed Helius enhanced-transaction webhook can accelerate

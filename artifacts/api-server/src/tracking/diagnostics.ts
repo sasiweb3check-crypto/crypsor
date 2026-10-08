@@ -38,11 +38,12 @@ export function scanDiagnostics(transactions: Transaction[], wallet: string) {
         type: tx.type,
         source: detail.source,
         feePayer: detail.feePayer,
+        instructions: (tx.instructions ?? []).slice(0, 20),
         swap: tx.events?.swap ?? null,
         tokenTransfers: (tx.tokenTransfers ?? []).slice(0, 30),
         nativeTransfers: (tx.nativeTransfers ?? []).slice(0, 30),
       });
     }
   }
-  return { parser: "buys-v2", checked: transactions.length, reasons, samples };
+  return { parser: "buys-v3", checked: transactions.length, reasons, samples };
 }

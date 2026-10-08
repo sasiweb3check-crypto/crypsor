@@ -32,6 +32,7 @@ type SourceWallet = {
   tokens: number;
   synced_at: string | null;
   scanned_swaps?: number;
+  scanned_transactions?: number;
   sync_error: string | null;
   catching_up?: boolean;
   avg_gain?: number | null;
@@ -425,8 +426,8 @@ function App() {
                 : totals.tokens
                   ? "No performers yet"
                   : wallets.length
-                    ? wallets.some((w) => (w.scanned_swaps ?? 0) > 0)
-                      ? "No buys in scanned swaps"
+                    ? wallets.some((w) => (w.scanned_transactions ?? 0) > 0)
+                      ? "No buys in recent history"
                       : "Scanning your wallets"
                     : "Good signals start with a wallet."}
             </h3>
@@ -1030,7 +1031,7 @@ function App() {
                           <Activity size={13} />
                           <span>
                             {w.sync_error ||
-                              `${since(w.synced_at)} · ${w.scanned_swaps ?? 0} swaps checked`}
+                              `${since(w.synced_at)} · ${w.scanned_transactions ?? 0} transactions checked`}
                           </span>
                         </div>
                       </article>

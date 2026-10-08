@@ -2,6 +2,7 @@ import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
+import { readFileSync } from "node:fs";
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !["127.0.0.1", "localhost"].includes(new URL(testUrl).hostname))
   throw new Error(
@@ -142,7 +143,7 @@ test("more than 1,000 transactions recover across bounded jobs without advancing
     1200,
   );
 });
-test("swap-filtered import rechecks empty wallets and reaches buys behind transfer traffic", async () => {
+test("history import rechecks empty wallets and records buys with transfer exclusion", async () => {
   await pool.query(
     "INSERT INTO cw_wallets(address,cursor) VALUES('wallet','sale')",
   );
@@ -154,7 +155,7 @@ test("swap-filtered import rechecks empty wallets and reaches buys behind transf
   );
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
-    assert.equal(url.searchParams.get("type"), "SWAP");
+    assert.equal(url.searchParams.has("type"), false);
     return Response.json([
       {
         signature: "sale",
@@ -209,6 +210,51 @@ test("swap-filtered import rechecks empty wallets and reaches buys behind transf
     1,
   );
   assert.equal(result.summary.tokens, 1);
+});
+test("Token-2022 Pump buy_v2 missing from enhanced SWAP labels is ingested; incoming spam stays out", async () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL("../tracking/fixtures/pump-buy-v2.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  await pool.query("INSERT INTO cw_wallets(address) VALUES($1)", [
+    fixture.wallet,
+  ]);
+  globalThis.fetch = async () =>
+    Response.json([
+      {
+        signature: fixture.signature,
+        timestamp: fixture.timestamp,
+        type: "UNKNOWN",
+        instructions: [fixture.instruction],
+        tokenTransfers: [
+          { mint: "spam", toUserAccount: fixture.wallet, tokenAmount: 100 },
+        ],
+      },
+      {
+        signature: "plain-transfer",
+        timestamp: fixture.timestamp - 1,
+        type: "TRANSFER",
+        tokenTransfers: [
+          { mint: "spam", toUserAccount: fixture.wallet, tokenAmount: 100 },
+        ],
+      },
+    ]);
+  await syncWallet(fixture.wallet);
+  assert.equal(
+    (await pool.query("SELECT mint,parser_version FROM cw_buys")).rows[0].mint,
+    fixture.mint,
+  );
+  assert.equal(
+    (await pool.query("SELECT parser_version FROM cw_buys")).rows[0]
+      .parser_version,
+    "buys-v3",
+  );
+  assert.equal(
+    Number((await pool.query("SELECT count(*) FROM cw_tokens")).rows[0].count),
+    1,
+  );
 });
 test("failed providers keep progress, honor retry delays, and jobs survive expired worker leases", async () => {
   await enqueue("wallet", "test", { address: "wallet" });

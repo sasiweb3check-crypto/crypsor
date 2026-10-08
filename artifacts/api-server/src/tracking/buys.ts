@@ -1,3 +1,4 @@
+import { pumpPurchases, type Instruction } from "./pump.ts";
 export const SOL = "So11111111111111111111111111111111111111112";
 export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
@@ -18,6 +19,7 @@ export type Transaction = {
   timestamp: number;
   type?: string;
   transactionError?: unknown;
+  instructions?: Instruction[];
   tokenTransfers?: Transfer[];
   nativeTransfers?: {
     fromUserAccount?: string;
@@ -45,15 +47,18 @@ function quantity(t: SwapToken) {
 }
 /** Match the wallet's swap output, rather than every token transferred in the transaction. */
 export function extractBuys(tx: Transaction, wallet: string): Buy[] {
-  if (
-    !tx.signature ||
-    !tx.timestamp ||
-    tx.transactionError ||
-    tx.type !== "SWAP"
-  )
-    return [];
+  if (!tx.signature || !tx.timestamp || tx.transactionError) return [];
   const swap = tx.events?.swap;
-  const buys: Buy[] = [];
+  const buys: Buy[] = pumpPurchases(tx.instructions ?? [], wallet)
+    .filter((mint) => !quotes.has(mint))
+    .map((mint) => ({
+      mint,
+      signature: tx.signature,
+      timestamp: tx.timestamp,
+      wallet,
+      purchasePrice: null,
+    }));
+  if (tx.type !== "SWAP") return buys;
   if (swap) {
     const inputs = (swap.tokenInputs ?? []).filter(
       (t) => t.userAccount === wallet && quantity(t) > 0,
@@ -61,7 +66,7 @@ export function extractBuys(tx: Transaction, wallet: string): Buy[] {
     const nativeSpend =
       swap.nativeInput?.account === wallet &&
       Number(swap.nativeInput.amount) > 0;
-    if (!inputs.length && !nativeSpend) return [];
+    if (!inputs.length && !nativeSpend) return buys;
     const outputs = (swap.tokenOutputs ?? []).filter(
       (t) => t.userAccount === wallet && quantity(t) > 0 && !quotes.has(t.mint),
     );
@@ -94,9 +99,9 @@ export function extractBuys(tx: Transaction, wallet: string): Buy[] {
         !quotes.has(t.mint),
     );
     const mints = [...new Set(incoming.map((t) => t.mint))];
-    if (mints.length !== 1) return [];
+    if (mints.length !== 1) return buys;
     const output = incoming[0];
-    if (!output.fromUserAccount) return [];
+    if (!output.fromUserAccount) return buys;
     const paid = (tx.tokenTransfers ?? []).filter(
       (t) =>
         t.fromUserAccount === wallet &&
@@ -110,7 +115,7 @@ export function extractBuys(tx: Transaction, wallet: string): Buy[] {
         t.toUserAccount === output.fromUserAccount &&
         t.amount > 0,
     );
-    if (!paid.length && !nativePaid) return [];
+    if (!paid.length && !nativePaid) return buys;
     const amount = incoming.reduce((n, t) => n + t.tokenAmount, 0);
     const stableOnly =
       !nativePaid && paid.every((t) => t.mint === USDC || t.mint === USDT);

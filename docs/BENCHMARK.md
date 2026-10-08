@@ -21,15 +21,16 @@ Broad searches, concurrent writes and richer metadata can have different costs.
 
 Also verified:
 
-- 26 unit tests: swap/transfer discrimination, provider retry delay, price tiers,
-  cursor validation, query-state isolation, startup retries and bounded scan diagnostics.
+- 31 unit tests: swap/transfer discrimination, provider retry delay, price tiers,
+  cursor validation, startup retries, scan diagnostics and Pump.fun instruction decoding.
 - Integration suites on PostgreSQL and Redis/BullMQ: bounded concurrent ingestion
   for 50 wallets using mocked providers; repeated deliveries; saved cursor recovery
   through 1,200 transactions; fixed entry and sampled peak; global summaries and
   keyset pages; metadata independent of trading pairs.
 - Public wallet add/remove without credentials; authenticated provider webhook
   delivery/deduplication; gzip object archival through a local S3-compatible fixture.
-- Nine integration tests now include filtered SWAP import and rescan of buy-less wallets.
+- Ten integration tests include history rescan, transfer exclusion and a confirmed
+  public Token-2022 Pump.fun buy_v2 fixture missed by the enhanced SWAP label.
 - Actual PostgreSQL connection exhaustion: four occupied slots on a five-slot test
   role, API readiness succeeds using the final slot, worker retries SQLSTATE 53300,
   then resumes once the simulated old connections drain. Run `node tools/startup-budget.mjs`
