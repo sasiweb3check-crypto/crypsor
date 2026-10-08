@@ -20,6 +20,10 @@ import type { Transaction } from "./tracking/buys.ts";
 
 const app = express();
 app.disable("x-powered-by");
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use((req, res, next) => {
   const started = performance.now();
   res.on("finish", () => {
@@ -71,7 +75,10 @@ app.get("/api/healthz", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     res.json({ ok: true, tracking: await trackingStatus() });
-  } catch {
+  } catch (e) {
+    console.error("Database health check failed", {
+      code: (e as { code?: string })?.code,
+    });
     res.status(503).json({ ok: false, error: "Database unavailable" });
   }
 });
@@ -92,6 +99,9 @@ app.get("/api/dashboard", async (req, res) => {
     ]);
     res.json({ ...totals, ...page, tracking });
   } catch (e) {
+    console.error("Dashboard query failed", {
+      code: (e as { code?: string })?.code,
+    });
     res
       .status(
         e instanceof Error && e.message === "Invalid page cursor" ? 400 : 503,

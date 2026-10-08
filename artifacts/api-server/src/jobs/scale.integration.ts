@@ -289,6 +289,16 @@ test("public wallet changes need no password; webhook deliveries require their p
     assert.equal(response.status, 201);
     response = await originalFetch(base + "/api/auth");
     assert.equal(response.status, 404);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    await enqueue("maintenance", "maintenance", {});
+    await pool.query(
+      "UPDATE cw_jobs SET created_at=now()-interval '5 hours',available_at=now()+interval '1 minute' WHERE kind='maintenance'",
+    );
+    response = await originalFetch(base + "/api/monitoring");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const monitoring = (await response.json()) as { oldestJobSeconds: number };
+    assert.ok(monitoring.oldestJobSeconds < 5);
     const body = JSON.stringify([tx(wallet, "mint", "webhook-sig")]);
     response = await originalFetch(base + "/api/webhooks/helius", {
       method: "POST",

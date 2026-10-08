@@ -23,11 +23,15 @@ export const pool = new pg.Pool({
           : {}),
       }
     : undefined,
-  max: Number(
-    process.env.PG_POOL_MAX ?? (process.env.PROCESS_ROLE === "worker" ? 8 : 4),
-  ),
+  max: Number(process.env.PG_POOL_MAX ?? 4),
   connectionTimeoutMillis: 10_000,
   statement_timeout: 15_000,
+});
+pool.on("error", (error) => {
+  // Idle connection failures must not terminate the API. Log codes, never credentials.
+  console.error("Database pool connection failed", {
+    code: (error as { code?: string }).code,
+  });
 });
 export const configured = Boolean(connectionString);
 export async function initialize() {

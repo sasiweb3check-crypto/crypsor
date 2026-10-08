@@ -21,7 +21,8 @@ pnpm run start:render
 `start:render` supervises separate API and worker Node processes on the existing
 web service. `start:api` and `start:worker` let them run on separate services later.
 The worker restarts with backoff; API health remains independent. Each process
-uses its own bounded database pool (API 4, worker 8 by default).
+uses its own bounded database pool (API 4, worker 4 by default). Budget connections
+for overlapping instances during Render deployments; PG_POOL_MAX overrides each pool.
 
 Wallet addition, removal and manual scans are public at the user's request.
 There is no password, sign-in, session cookie or `/api/auth`. Public mutations

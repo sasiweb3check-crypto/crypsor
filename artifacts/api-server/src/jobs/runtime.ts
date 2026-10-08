@@ -211,7 +211,7 @@ export async function startRuntime() {
 export async function trackingStatus() {
   const [jobs, workers, errors, last] = await Promise.all([
     pool.query(
-      "SELECT state,count(*)::int AS n,extract(epoch FROM now()-min(created_at))::int AS oldest_seconds FROM cw_jobs WHERE state IN('queued','running','dead') GROUP BY state",
+      "SELECT state,count(*)::int AS n,extract(epoch FROM now()-min(available_at) FILTER(WHERE state='queued' AND available_at<=now()))::int AS oldest_seconds FROM cw_jobs WHERE state IN('queued','running','dead') GROUP BY state",
     ),
     pool.query(
       "SELECT id,seen_at,details FROM cw_workers WHERE seen_at>now()-interval '2 minutes' ORDER BY seen_at DESC",
