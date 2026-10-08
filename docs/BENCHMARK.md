@@ -21,8 +21,8 @@ Broad searches, concurrent writes and richer metadata can have different costs.
 
 Also verified:
 
-- 23 unit tests: swap/transfer discrimination, provider retry delay, price tiers,
-  cursor validation, query-state isolation and bounded database startup retries.
+- 26 unit tests: swap/transfer discrimination, provider retry delay, price tiers,
+  cursor validation, query-state isolation, startup retries and bounded scan diagnostics.
 - Integration suites on PostgreSQL and Redis/BullMQ: bounded concurrent ingestion
   for 50 wallets using mocked providers; repeated deliveries; saved cursor recovery
   through 1,200 transactions; fixed entry and sampled peak; global summaries and

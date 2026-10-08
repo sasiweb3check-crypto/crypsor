@@ -209,6 +209,19 @@ function validAddress(address: string) {
   }
   return bytes + (address.match(/^1*/)?.[0].length ?? 0) === 32;
 }
+app.get("/api/wallets/:address/diagnostics", async (req, res) => {
+  const row = (
+    await pool.query(
+      "SELECT address,last_scan_at,scanned_swaps,sync_error,scan_diagnostics FROM cw_wallets WHERE address=$1",
+      [req.params.address],
+    )
+  ).rows[0];
+  if (!row) {
+    res.status(404).json({ error: "Wallet not found" });
+    return;
+  }
+  res.json(row);
+});
 app.post("/api/wallets", async (req, res) => {
   const address =
     typeof req.body?.address === "string" ? req.body.address.trim() : "";

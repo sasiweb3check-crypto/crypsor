@@ -96,6 +96,15 @@ export async function migrate(pool: Pool) {
       `);
       await c.query("COMMIT");
     }
+    if (!(await c.query("SELECT 1 FROM cw_schema WHERE version=4")).rowCount) {
+      await c.query("BEGIN");
+      await c.query(`
+        ALTER TABLE cw_wallets ADD COLUMN IF NOT EXISTS scan_diagnostics jsonb;
+        UPDATE cw_wallets w SET cursor=NULL,next_sync_at=now() WHERE catchup_before IS NULL AND NOT EXISTS(SELECT 1 FROM cw_buys b WHERE b.wallet=w.address);
+        INSERT INTO cw_schema(version) VALUES(4);
+      `);
+      await c.query("COMMIT");
+    }
   } catch (e) {
     await c.query("ROLLBACK");
     throw e;

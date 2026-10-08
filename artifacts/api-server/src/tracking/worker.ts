@@ -3,6 +3,7 @@ import { ingestTransactions } from "./ingest.ts";
 import type { Transaction } from "./buys.ts";
 import { enqueue, type Result } from "../jobs/queue.ts";
 import { request, httpsUrl } from "../services/providers.ts";
+import { scanDiagnostics } from "./diagnostics.ts";
 
 export async function syncWallet(address: string): Promise<Result> {
   const key = process.env.HELIUS_API_KEY;
@@ -44,12 +45,13 @@ export async function syncWallet(address: string): Promise<Result> {
     }
     await ingestTransactions(address, relevant);
     await pool.query(
-      "UPDATE cw_wallets SET scanned_transactions=scanned_transactions+$2,scanned_swaps=scanned_swaps+$3,last_scan_at=now() WHERE address=$1",
+      "UPDATE cw_wallets SET scanned_transactions=scanned_transactions+$2,scanned_swaps=scanned_swaps+$3,last_scan_at=now(),scan_diagnostics=CASE WHEN $2>0 THEN $4::jsonb ELSE scan_diagnostics END WHERE address=$1",
       [
         address,
         relevant.length,
         relevant.filter((tx) => tx.type === "SWAP" && !tx.transactionError)
           .length,
+        JSON.stringify(scanDiagnostics(relevant, address)),
       ],
     );
     if (!target || caught || txs.length < 100) {

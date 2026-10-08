@@ -186,6 +186,13 @@ test("swap-filtered import rechecks empty wallets and reaches buys behind transf
   const result = await summary();
   assert.equal(result.wallets[0].buys, 1);
   assert.equal(result.wallets[0].scanned_swaps, 2);
+  const diagnostics = (
+    await pool.query(
+      "SELECT scan_diagnostics FROM cw_wallets WHERE address='wallet'",
+    )
+  ).rows[0].scan_diagnostics;
+  assert.equal(diagnostics.reasons["purchase-recognized"], 1);
+  assert.equal(diagnostics.reasons["no-nonquote-wallet-output"], 1);
   assert.equal(result.summary.tokens, 1);
 });
 test("failed providers keep progress, honor retry delays, and jobs survive expired worker leases", async () => {

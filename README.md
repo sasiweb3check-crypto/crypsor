@@ -100,3 +100,7 @@ readiness does not compete with worker monitoring for scarce connection slots.
 `/api/monitoring` exposes queue depth, age, failures, stale wallets and pool pressure.
 The dashboard warns on failed jobs, missing workers and stale prices. Retry terminal
 jobs with `/api/jobs/retry`. No old Settings, Ward, scoring or trading APIs remain.
+
+`/api/wallets/:address/diagnostics` retains the latest nonempty scan's parser reasons
+and bounded transaction samples for investigating missed buys. Samples contain
+public transaction fields; incoming transfers are never admitted for debugging.
