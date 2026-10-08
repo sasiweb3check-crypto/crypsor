@@ -1,7 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "include": [
-    "vite.config.ts"
+    "vite.config.ts",
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",
@@ -11,7 +12,7 @@
   ],
   "compilerOptions": {
     "noEmit": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "lib": [
       "esnext",
       "dom",

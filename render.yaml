@@ -1,15 +1,4 @@
-# Crypsor — one always-on web service (desk SPA + Express API + ward agents).
-# Blueprint: https://render.com/docs/infrastructure-as-code
-#
-# Deploy: https://dashboard.render.com/select-repo?type=blueprint
-# (connect this GitHub repo, then fill in sync: false secrets).
-#
-# One instance only — the agents run in-process; extra instances would
-# duplicate scans and Telegram alerts.
-#
-# plan: starter stays up 24/7 (~$7/mo). `free` spins down after ~15 min idle
-# and the pipeline dies with it — only use free if you also ping /api/keepalive.
-
+# One always-on Node service serves the dashboard, API and wallet-buy poller.
 services:
   - type: web
     name: crypsor
@@ -20,7 +9,7 @@ services:
     numInstances: 1
     autoDeployTrigger: commit
     healthCheckPath: /api/healthz
-    buildCommand: pnpm install --no-frozen-lockfile --prod=false && pnpm run build:render
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm run build:render
     startCommand: pnpm run start:render
     envVars:
       - key: NODE_ENV
@@ -33,18 +22,9 @@ services:
         sync: false
       - key: HELIUS_API_KEY
         sync: false
-      - key: GMGN_API_KEY
-        sync: false
-      - key: GMGN_PROXIES
+      - key: WALLET_ADMIN_PASSWORD
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      - key: CRON_SECRET
-        generateValue: true
-      - key: TELEGRAM_PUSH_ENABLED
-        value: "true"
-      # Same-origin deploy: do NOT set VITE_API_URL (desk calls /api on this host).
-      # REDIS_URL is optional. One instance uses in-memory TTL + SSE — do not add Redis.
-      # Split-host only:
-      # - key: CORS_ORIGIN
-      #   sync: false
+# Optional: add AIVEN_CA_CERT (the service's PEM CA) if Aiven uses a private CA.
+# Keep TLS certificate verification enabled. No Redis or separate frontend service.
