@@ -66,10 +66,10 @@ test("Pump sells, invalid instruction data and zero purchase amount are excluded
     assert.deepEqual(extractBuys(t, fixture.wallet), []);
   }
 });
-test("nested Pump buy matches only its actual user and mint", () => {
+test("an inner Pump call alone cannot prove purchase because its caller may catch failure", () => {
   const t = tx();
   t.instructions = [{ programId: "router", innerInstructions: t.instructions }];
-  assert.equal(extractBuys(t, fixture.wallet)[0].mint, fixture.mint);
+  assert.deepEqual(extractBuys(t, fixture.wallet), []);
 });
 test("v3 Pump buy layouts use their documented user account index", () => {
   const t = tx(),

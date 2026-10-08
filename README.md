@@ -43,7 +43,7 @@ Use the same queue backend across worker instances. Lease recovery and an electe
 scheduler permit multiple worker consumers without duplicate scheduling.
 
 The first scan examines the latest 100 transactions without relying on Helius's
-SWAP label. Pump.fun buy/buy_v2/buy_v3 and exact-input variants are decoded from
+SWAP label. Direct Pump.fun buy/buy_v2/buy_v3 and exact-input variants are decoded from
 the official program, instruction discriminator and user/mint account positions.
 This covers Token-2022 buys missing from enhanced events; ordinary transfers,
 other users' buys, failed calls and sell instructions remain excluded.

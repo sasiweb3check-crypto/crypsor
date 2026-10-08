@@ -40,8 +40,7 @@ export function pumpPurchases(
   wallet: string,
 ): string[] {
   const mints = new Set<string>();
-  const visit = (items: Instruction[], depth = 0) => {
-    if (depth > 8) return;
+  const visit = (items: Instruction[]) => {
     for (const i of items) {
       if (i.programId === program && typeof i.data === "string") {
         const bytes = decode(i.data);
@@ -61,8 +60,8 @@ export function pumpPurchases(
         )
           mints.add(mint);
       }
-      if (Array.isArray(i.innerInstructions))
-        visit(i.innerInstructions, depth + 1);
+      // A caller may catch an inner CPI failure. Overall transaction success proves
+      // top-level Pump calls; nested routes still need enhanced swap attribution.
     }
   };
   visit(instructions);
