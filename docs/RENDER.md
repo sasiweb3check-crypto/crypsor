@@ -1,21 +1,43 @@
-# Render
+# Render deployment
 
-One paid always-on Node Web Service, Node 22, pnpm 10, one instance.
+Use the existing Node Web Service at https://crypsor-xxgm.onrender.com.
+The older https://crypsor.onrender.com is a separate deployment.
 
 - Build: `pnpm install --frozen-lockfile --prod=false && pnpm run build:render`
 - Start: `pnpm run start:render`
 - Health: `/api/healthz`
+- Node 22, pnpm 10.34.4, paid always-on plan.
 
-Set `AIVEN_DATABASE_URL`, `HELIUS_API_KEY`, `WALLET_ADMIN_PASSWORD` and
-`SESSION_SECRET` in Render's secure Environment settings. Add the service's
-PEM CA as `AIVEN_CA_CERT` if its TLS certificate needs a private CA.
-The application verifies database TLS certificates; do not disable verification.
+The existing service starts separate API and worker processes. No new paid service
+or Redis instance is automatically created. Wallet management is public; old
+WALLET_ADMIN_PASSWORD / SESSION_SECRET settings are unused and can be removed.
 
-Add wallets in the dashboard after signing in with `WALLET_ADMIN_PASSWORD`.
-Only confirmed wallet swaps become token discoveries. No minimum spend or scoring.
-The initial scan reads the latest 100 transactions, not a wallet's full history.
-See README.md for performance and parser limits.
+Set AIVEN_DATABASE_URL, HELIUS_API_KEY, and the complete Aiven PEM CA certificate
+as AIVEN_CA_CERT when required. Certificate verification stays enabled. AIVEN URL
+has precedence over DATABASE_URL. PostgreSQL must permit the trusted pg_trgm extension.
+Only cw_* tables are migrated; old application tables are not read or deleted.
 
-Do not set VITE_API_URL, CORS_ORIGIN or REDIS_URL. The frontend and API share an origin.
-Use the new service at https://crypsor-xxgm.onrender.com; the earlier
-https://crypsor.onrender.com remains a separate deployment and is not this dashboard.
+For additional throughput, run the web service with PROCESS_ROLE=api and deploy
+an independently provisioned Render background worker with PROCESS_ROLE=worker
+and start `pnpm run start:worker`. Give both the same database and queue settings.
+Adding that paid worker requires a hosting-plan choice; the current default does
+not provision it. Budget total database pool connections across all instances.
+
+Optional Redis/BullMQ: provision Redis separately and enter REDIS_URL securely
+on API and workers. Use the same backend everywhere. PostgreSQL persists the outbox;
+Redis unavailability is visible as unhealthy workers/queued jobs.
+
+Optional Helius webhook: create an enhanced-transactions webhook for the tracked
+addresses, URL https://crypsor-xxgm.onrender.com/api/webhooks/helius and Authorization
+matching HELIUS_WEBHOOK_SECRET. Update the provider subscription when your wallet
+list changes; polling continues to reconcile all tracked wallets even without it.
+Helius subscription creation and its billing are not automated by this deployment.
+
+Optional archival: configure ARCHIVE_BUCKET and AWS-compatible credentials/region
+(or ARCHIVE_ENDPOINT for another compatible provider). Set bucket retention and
+lifecycle policies. Failed uploads retain unarchived receipts.
+
+Monitor /api/monitoring and the dashboard worker/queue indicators. Configure your
+monitoring service to alert on missing workers, persistent dead jobs and queue age.
+Defaults do not constitute a production quota or ten-million-token live-feed guarantee.
+Provision Aiven storage, IOPS, backups and provider quotas for the measured workload.

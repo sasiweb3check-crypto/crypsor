@@ -6,12 +6,16 @@
   "scripts": {
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
-    "start": "node --enable-source-maps ./dist/index.mjs",
+    "start": "node launch.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test src/tracking/*.test.ts"
+    "test": "node --experimental-strip-types --test src/tracking/*.test.ts src/jobs/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test src/jobs/scale.integration.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1147.0",
+    "bullmq": "^6.3.11",
     "express": "^5.2.1",
+    "ioredis": "^6.0.0",
     "pg": "8.22.0"
   },
   "devDependencies": {

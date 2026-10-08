@@ -8,7 +8,10 @@
     "typecheck": "pnpm --filter @workspace/api-server run typecheck && pnpm --filter @workspace/crypsor run typecheck",
     "test": "pnpm --filter @workspace/api-server test",
     "build:render": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/crypsor run build",
-    "start:render": "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+    "start:render": "node artifacts/api-server/launch.mjs",
+    "start:api": "PROCESS_ROLE=api node artifacts/api-server/launch.mjs",
+    "start:worker": "PROCESS_ROLE=worker node artifacts/api-server/launch.mjs",
+    "test:integration": "pnpm --filter @workspace/api-server test:integration"
   },
   "engines": {
     "node": ">=22 <25"

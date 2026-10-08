@@ -22,9 +22,5 @@ services:
         sync: false
       - key: HELIUS_API_KEY
         sync: false
-      - key: WALLET_ADMIN_PASSWORD
-        sync: false
-      - key: SESSION_SECRET
-        generateValue: true
 # Optional: add AIVEN_CA_CERT (the service's PEM CA) if Aiven uses a private CA.
-# Keep TLS certificate verification enabled. No Redis or separate frontend service.
+# Keep TLS verification enabled. REDIS_URL is optional; default jobs use PostgreSQL.
