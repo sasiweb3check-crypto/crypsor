@@ -21,7 +21,10 @@ pnpm run start:render
 `start:render` supervises separate API and worker Node processes on the existing
 web service. `start:api` and `start:worker` let them run on separate services later.
 The worker restarts with backoff; API health remains independent. Each process
-uses its own bounded database pool (API 4, worker 4 by default). Budget connections
+uses its own bounded database pool (API 2, worker 2 by default). The worker starts
+after the API has initialized PostgreSQL and opened its port. Temporary connection
+exhaustion retries at startup; invalid credentials and TLS failures still fail.
+Budget connections
 for overlapping instances during Render deployments; PG_POOL_MAX overrides each pool.
 
 Wallet addition, removal and manual scans are public at the user's request.
@@ -39,7 +42,9 @@ Redis, PostgreSQL consumers process them. Redis downtime cannot erase the outbox
 Use the same queue backend across worker instances. Lease recovery and an elected
 scheduler permit multiple worker consumers without duplicate scheduling.
 
-The first scan imports the latest 100 wallet transactions. Subsequent backlogs
+The first scan imports the latest 100 SWAP transactions, using Helius's type filter
+so incoming transfers do not consume the scan window. A one-time migration rechecks
+buy-less wallets; wallet cards show how many swaps were examined. Subsequent backlogs
 are processed in bounded chunks, saving progress and retaining the stable cursor
 until caught up. Idempotent `(wallet, mint, signature)` records handle retries
 and webhook duplicates. A signed Helius enhanced-transaction webhook can accelerate
@@ -90,7 +95,8 @@ Aiven uses a private CA. Remote TLS certificates are verified. Optional:
 Set credentials securely in Render. Do not commit `.env` values. No password is
 needed for wallet management. See docs/RENDER.md and docs/BENCHMARK.md.
 
-`/api/healthz` verifies database/API readiness and reports worker state separately.
+`/api/healthz` verifies database/API readiness with one query, so deployment
+readiness does not compete with worker monitoring for scarce connection slots.
 `/api/monitoring` exposes queue depth, age, failures, stale wallets and pool pressure.
 The dashboard warns on failed jobs, missing workers and stale prices. Retry terminal
 jobs with `/api/jobs/retry`. No old Settings, Ward, scoring or trading APIs remain.

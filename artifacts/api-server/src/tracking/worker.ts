@@ -23,7 +23,8 @@ export async function syncWallet(address: string): Promise<Result> {
     );
     url.searchParams.set("api-key", key);
     url.searchParams.set("limit", "100");
-    if (before) url.searchParams.set("before", before);
+    url.searchParams.set("type", "SWAP");
+    if (before) url.searchParams.set("before-signature", before);
     const txs = await request<Transaction[]>(
       "helius",
       url.toString(),
@@ -42,6 +43,15 @@ export async function syncWallet(address: string): Promise<Result> {
       relevant.push(tx);
     }
     await ingestTransactions(address, relevant);
+    await pool.query(
+      "UPDATE cw_wallets SET scanned_transactions=scanned_transactions+$2,scanned_swaps=scanned_swaps+$3,last_scan_at=now() WHERE address=$1",
+      [
+        address,
+        relevant.length,
+        relevant.filter((tx) => tx.type === "SWAP" && !tx.transactionError)
+          .length,
+      ],
+    );
     if (!target || caught || txs.length < 100) {
       await pool.query(
         `UPDATE cw_wallets SET cursor=COALESCE($2,cursor),catchup_before=NULL,catchup_head=NULL,catchup_target=NULL,synced_at=now(),sync_error=NULL,next_sync_at=now()+$3*interval '1 second' WHERE address=$1`,

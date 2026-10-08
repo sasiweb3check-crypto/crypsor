@@ -129,7 +129,7 @@ export async function summary() {
       "SELECT sum(tokens)::text AS tokens,sum(priced)::text AS priced,sum(positive)::text AS positive,COALESCE(sum(gain_sum),0) AS gain_sum FROM cw_stats",
     ),
     pool.query(
-      `SELECT w.address,w.label,w.created_at,w.synced_at,w.sync_error,w.catchup_before IS NOT NULL AS catching_up,COALESCE(s.buys,0)::text AS buys,COALESCE(s.tokens,0)::text AS tokens,COALESCE(s.priced,0)::text AS priced,CASE WHEN s.priced>0 THEN s.gain_sum/s.priced END AS avg_gain,CASE WHEN s.priced>0 THEN s.positive*100.0/s.priced END AS positive_rate FROM cw_wallets w LEFT JOIN cw_wallet_stats s ON s.address=w.address ORDER BY w.created_at DESC`,
+      `SELECT w.address,w.label,w.created_at,w.synced_at,w.sync_error,w.scanned_transactions,w.scanned_swaps,w.last_scan_at,w.catchup_before IS NOT NULL AS catching_up,COALESCE(s.buys,0)::text AS buys,COALESCE(s.tokens,0)::text AS tokens,COALESCE(s.priced,0)::text AS priced,CASE WHEN s.priced>0 THEN s.gain_sum/s.priced END AS avg_gain,CASE WHEN s.priced>0 THEN s.positive*100.0/s.priced END AS positive_rate FROM cw_wallets w LEFT JOIN cw_wallet_stats s ON s.address=w.address ORDER BY w.created_at DESC`,
     ),
     pool.query(
       "SELECT mint,symbol,name,gain,peak_gain FROM cw_tokens WHERE gain>0 ORDER BY gain DESC NULLS LAST,mint DESC LIMIT 3",
@@ -141,6 +141,8 @@ export async function summary() {
         ...w,
         buys: Number(w.buys),
         tokens: Number(w.tokens),
+        scanned_transactions: Number(w.scanned_transactions),
+        scanned_swaps: Number(w.scanned_swaps),
       })),
       summary: {
         wallets: wallets.rowCount,

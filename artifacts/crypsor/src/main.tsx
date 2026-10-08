@@ -31,6 +31,7 @@ type SourceWallet = {
   buys: number;
   tokens: number;
   synced_at: string | null;
+  scanned_swaps?: number;
   sync_error: string | null;
   catching_up?: boolean;
   avg_gain?: number | null;
@@ -424,7 +425,9 @@ function App() {
                 : totals.tokens
                   ? "No performers yet"
                   : wallets.length
-                    ? "Your first buy is on its way"
+                    ? wallets.some((w) => (w.scanned_swaps ?? 0) > 0)
+                      ? "No buys in scanned swaps"
+                      : "Scanning your wallets"
                     : "Good signals start with a wallet."}
             </h3>
             <p>
@@ -433,7 +436,7 @@ function App() {
                 : totals.tokens
                   ? "Tokens with positive current gains will appear here."
                   : wallets.length
-                    ? "New tokens appear when a tracked wallet makes a confirmed swap. Transfers stay out of your feed."
+                    ? "We check swap history for purchases. Incoming transfers and sales into SOL or stablecoins stay out of your feed."
                     : "Add a Solana wallet. We’ll follow its buys and track every token from entry to its next move."}
             </p>
             {!wallets.length && !query && (
@@ -545,7 +548,9 @@ function App() {
                       </span>
                       <small>
                         {t.wallet_count ?? t.wallets.length} wallet
-                        {(t.wallet_count ?? t.wallets.length) === 1 ? "" : "s"}{" "}
+                        {(t.wallet_count ?? t.wallets.length) === 1
+                          ? ""
+                          : "s"}{" "}
                         · {t.buys} buy{t.buys === 1 ? "" : "s"}
                       </small>
                     </td>
@@ -1023,7 +1028,10 @@ function App() {
                         </div>
                         <div className="wallet-card-footer">
                           <Activity size={13} />
-                          <span>{w.sync_error || since(w.synced_at)}</span>
+                          <span>
+                            {w.sync_error ||
+                              `${since(w.synced_at)} · ${w.scanned_swaps ?? 0} swaps checked`}
+                          </span>
                         </div>
                       </article>
                     ))}

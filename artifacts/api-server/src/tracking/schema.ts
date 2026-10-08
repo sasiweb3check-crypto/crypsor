@@ -6,10 +6,9 @@ export async function migrate(pool: Pool) {
     await c.query(
       `CREATE TABLE IF NOT EXISTS cw_schema(version int PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())`,
     );
-    if ((await c.query("SELECT 1 FROM cw_schema WHERE version=2")).rowCount)
-      return;
-    await c.query("BEGIN");
-    await c.query(`
+    if (!(await c.query("SELECT 1 FROM cw_schema WHERE version=2")).rowCount) {
+      await c.query("BEGIN");
+      await c.query(`
    CREATE EXTENSION IF NOT EXISTS pg_trgm;
    CREATE TABLE IF NOT EXISTS cw_wallets(address text PRIMARY KEY,label text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),cursor text,synced_at timestamptz,sync_error text);
    CREATE TABLE IF NOT EXISTS cw_tokens(mint text PRIMARY KEY,symbol text,name text,image text,entry_price double precision,entry_source text,entry_at timestamptz NOT NULL,detected_at timestamptz NOT NULL DEFAULT now(),current_price double precision,peak_price double precision,priced_at timestamptz);
@@ -84,7 +83,19 @@ export async function migrate(pool: Pool) {
    CREATE TRIGGER cw_token_stats AFTER INSERT OR UPDATE OR DELETE ON cw_tokens FOR EACH ROW EXECUTE FUNCTION cw_token_stats_change();
    INSERT INTO cw_schema(version) VALUES(2);
   `);
-    await c.query("COMMIT");
+      await c.query("COMMIT");
+    }
+    if (!(await c.query("SELECT 1 FROM cw_schema WHERE version=3")).rowCount) {
+      await c.query("BEGIN");
+      await c.query(`
+        ALTER TABLE cw_wallets ADD COLUMN IF NOT EXISTS scanned_transactions bigint NOT NULL DEFAULT 0;
+        ALTER TABLE cw_wallets ADD COLUMN IF NOT EXISTS scanned_swaps bigint NOT NULL DEFAULT 0;
+        ALTER TABLE cw_wallets ADD COLUMN IF NOT EXISTS last_scan_at timestamptz;
+        UPDATE cw_wallets w SET cursor=NULL,next_sync_at=now() WHERE catchup_before IS NULL AND NOT EXISTS(SELECT 1 FROM cw_buys b WHERE b.wallet=w.address);
+        INSERT INTO cw_schema(version) VALUES(3);
+      `);
+      await c.query("COMMIT");
+    }
   } catch (e) {
     await c.query("ROLLBACK");
     throw e;

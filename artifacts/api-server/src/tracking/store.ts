@@ -1,5 +1,6 @@
 import pg from "pg";
 import { migrate } from "./schema.ts";
+import { retryStartup } from "./startup.ts";
 let connectionString =
   process.env.AIVEN_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
 const remote = connectionString
@@ -13,6 +14,9 @@ if (connectionString && remote) {
     url.searchParams.delete(key);
   connectionString = url.toString();
 }
+const max = Number(process.env.PG_POOL_MAX ?? 2);
+if (!Number.isInteger(max) || max < 2 || max > 100)
+  throw new Error("PG_POOL_MAX must be an integer between 2 and 100");
 export const pool = new pg.Pool({
   connectionString,
   ssl: remote
@@ -23,7 +27,7 @@ export const pool = new pg.Pool({
           : {}),
       }
     : undefined,
-  max: Number(process.env.PG_POOL_MAX ?? 4),
+  max,
   connectionTimeoutMillis: 10_000,
   statement_timeout: 15_000,
 });
@@ -36,5 +40,11 @@ pool.on("error", (error) => {
 export const configured = Boolean(connectionString);
 export async function initialize() {
   if (!configured) throw new Error("Set AIVEN_DATABASE_URL or DATABASE_URL");
-  await migrate(pool);
+  await retryStartup(() => migrate(pool), {
+    report: (code, attempt) =>
+      console.warn("Database startup temporarily unavailable; retrying", {
+        code,
+        attempt,
+      }),
+  });
 }

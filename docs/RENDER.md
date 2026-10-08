@@ -17,6 +17,16 @@ as AIVEN_CA_CERT when required. Certificate verification stays enabled. AIVEN UR
 has precedence over DATABASE_URL. PostgreSQL must permit the trusted pg_trgm extension.
 Only cw_* tables are migrated; old application tables are not read or deleted.
 
+Small Aiven plans have limited PostgreSQL connection slots. Set PG_POOL_MAX=2
+on the existing Render service if an older setting overrides the default. API and
+worker then use at most four connections together; a rolling deployment can use
+eight. Other services, SQL consoles and tools consume additional slots. The API
+starts before its worker and retries temporary startup failures (including 53300).
+If slots remain exhausted, close unused database clients or upgrade capacity.
+The "no open ports" message follows database startup failure; keep Render's PORT.
+Readiness performs one database query; worker state is available in the dashboard
+and /api/monitoring.
+
 For additional throughput, run the web service with PROCESS_ROLE=api and deploy
 an independently provisioned Render background worker with PROCESS_ROLE=worker
 and start `pnpm run start:worker`. Give both the same database and queue settings.

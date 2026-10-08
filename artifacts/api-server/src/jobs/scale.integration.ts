@@ -117,7 +117,7 @@ test("more than 1,000 transactions recover across bounded jobs without advancing
     tx("wallet", "mint", `s${1200 - i}`, 1700000000 + 1200 - i),
   );
   globalThis.fetch = async (url) => {
-    const before = new URL(String(url)).searchParams.get("before");
+    const before = new URL(String(url)).searchParams.get("before-signature");
     const start = before ? txs.findIndex((t) => t.signature === before) + 1 : 0;
     return Response.json(txs.slice(start, start + 100));
   };
@@ -141,6 +141,52 @@ test("more than 1,000 transactions recover across bounded jobs without advancing
     Number((await pool.query("SELECT count(*) FROM cw_buys")).rows[0].count),
     1200,
   );
+});
+test("swap-filtered import rechecks empty wallets and reaches buys behind transfer traffic", async () => {
+  await pool.query(
+    "INSERT INTO cw_wallets(address,cursor) VALUES('wallet','sale')",
+  );
+  await pool.query("DELETE FROM cw_schema WHERE version=3");
+  await initialize();
+  assert.equal(
+    (await pool.query("SELECT cursor FROM cw_wallets")).rows[0].cursor,
+    null,
+  );
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    assert.equal(url.searchParams.get("type"), "SWAP");
+    return Response.json([
+      {
+        signature: "sale",
+        timestamp: 1700000001,
+        type: "SWAP",
+        events: {
+          swap: {
+            tokenInputs: [
+              {
+                mint: "mint",
+                userAccount: "wallet",
+                rawTokenAmount: { tokenAmount: "1", decimals: 0 },
+              },
+            ],
+            tokenOutputs: [
+              {
+                mint: "So11111111111111111111111111111111111111112",
+                userAccount: "wallet",
+                rawTokenAmount: { tokenAmount: "1", decimals: 0 },
+              },
+            ],
+          },
+        },
+      },
+      tx("wallet", "mint", "historical-buy"),
+    ]);
+  };
+  await syncWallet("wallet");
+  const result = await summary();
+  assert.equal(result.wallets[0].buys, 1);
+  assert.equal(result.wallets[0].scanned_swaps, 2);
+  assert.equal(result.summary.tokens, 1);
 });
 test("failed providers keep progress, honor retry delays, and jobs survive expired worker leases", async () => {
   await enqueue("wallet", "test", { address: "wallet" });
@@ -290,6 +336,9 @@ test("public wallet changes need no password; webhook deliveries require their p
     response = await originalFetch(base + "/api/auth");
     assert.equal(response.status, 404);
     assert.equal(response.headers.get("cache-control"), "no-store");
+    response = await originalFetch(base + "/api/healthz");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
     await enqueue("maintenance", "maintenance", {});
     await pool.query(
       "UPDATE cw_jobs SET created_at=now()-interval '5 hours',available_at=now()+interval '1 minute' WHERE kind='maintenance'",

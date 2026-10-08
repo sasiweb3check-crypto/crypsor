@@ -18,6 +18,8 @@ services:
         value: "22"
       - key: PNPM_VERSION
         value: "10"
+      - key: PG_POOL_MAX
+        value: "2"
       - key: AIVEN_DATABASE_URL
         sync: false
       - key: HELIUS_API_KEY

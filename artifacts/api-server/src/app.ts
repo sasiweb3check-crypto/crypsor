@@ -74,7 +74,9 @@ app.use(["/api/wallets", "/api/sync", "/api/jobs/retry"], (req, res, next) => {
 app.get("/api/healthz", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ ok: true, tracking: await trackingStatus() });
+    // Readiness must use the connection already obtained, not open four status queries
+    // while the previous Render instance still occupies the database's limited slots.
+    res.json({ ok: true });
   } catch (e) {
     console.error("Database health check failed", {
       code: (e as { code?: string })?.code,

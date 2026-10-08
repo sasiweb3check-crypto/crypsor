@@ -6,6 +6,7 @@ if (!["all", "api", "worker"].includes(role))
 let stopping = false;
 const children = new Set();
 let workerRestarts = 0;
+let workerStarted = false;
 function start(kind) {
   const child = spawn(
     process.execPath,
@@ -17,9 +18,24 @@ function start(kind) {
         kind === "api" ? "index.mjs" : "worker-entry.mjs",
       ),
     ],
-    { stdio: "inherit", env: { ...process.env, PROCESS_ROLE: kind } },
+    {
+      stdio: ["inherit", "inherit", "inherit", "ipc"],
+      env: { ...process.env, PROCESS_ROLE: kind },
+    },
   );
   children.add(child);
+  child.on("message", (message) => {
+    if (
+      kind === "api" &&
+      message === "api-ready" &&
+      role === "all" &&
+      !workerStarted &&
+      !stopping
+    ) {
+      workerStarted = true;
+      start("worker");
+    }
+  });
   child.on("error", () => {
     if (!stopping) {
       stopping = true;
@@ -46,7 +62,7 @@ function start(kind) {
   });
 }
 if (role !== "worker") start("api");
-if (role !== "api") start("worker");
+if (role === "worker") start("worker");
 for (const signal of ["SIGINT", "SIGTERM"])
   process.on(signal, () => {
     stopping = true;
