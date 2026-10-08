@@ -1,45 +1,22 @@
 # Crypsor
 
-Hospital for Solana tokens bought by **your** wallets. The only data source
-is wallet buys (Helius). Each mint is a patient: intake → ward / ICU →
-recovery, deceased, or revived. Survival is scored from tape leadership
-(omo-style 5m/1h/6h), liquidity, holder behaviour, and holder quality
-(hold share, not bot counts).
+Clean development starting point. The page displays `clen`.
 
-- **Ward:** live patients by phase, survival rate, TRADE alerts
-- **Patient chart:** every factor, tape, holder quality, admitting wallets
-- **Agents:** intake, vitals, holders, reporter, backtest (self-tuning weights)
-- **Alerts:** Telegram + in-app for admit, trade, ICU, death, revival
+Deployment configuration and dependency lockfile are retained. Application logic,
+background agents, database schemas, tests, and old assets have been removed.
+The placeholder does not connect to the database or external APIs.
 
-## Deploy (Render)
+## Build and run
 
-One Node process on **Render** serves the desk, `/api`, and the agents.
+Use Node 22 and pnpm 10.
 
-See **[docs/RENDER.md](docs/RENDER.md)** — Blueprint file is `render.yaml`.
-
-```bash
-# after secrets are set in the Render dashboard
-# Build:  pnpm run build:render
-# Start:  pnpm run start:render
+```sh
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm run build:render
+pnpm run start:render
 ```
 
-## Keep it running 24/7
-
-On Render **Starter** the process does not sleep — no pinger needed.
-
-On Render **free** or **Vercel Hobby**, the instance sleeps without traffic.
-Point a free pinger at `GET /api/keepalive`: [docs/UPTIME.md](docs/UPTIME.md).
-A GitHub Actions baseline (`.github/workflows/keepalive.yml`) pings every
-30 minutes if you set the `APP_URL` repo variable.
-
-## Development
-
-```bash
-pnpm install
-pnpm --filter @workspace/api-server dev   # API on :3000
-pnpm --filter @workspace/crypsor dev      # Vite desk
-```
-
-Env: `DATABASE_URL` or `AIVEN_DATABASE_URL`, `HELIUS_API_KEY`, optional
-`GMGN_API_KEY`, Telegram via Settings, `CRON_SECRET` for `/api/cron/tick`.
-Add wallets in Settings — that is the entire discovery surface.
+Render uses one Node Web Service. The health check is `/api/healthz`, which
+returns `{"ok":true}`. Existing Render environment values can stay configured.
+No database data is deleted by this reset.

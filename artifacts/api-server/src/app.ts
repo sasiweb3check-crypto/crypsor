@@ -1,27 +1,14 @@
-import express, { type Express } from "express";
-import cors from "cors";
-import routes from "./routes/index";
-import { mountSpa } from "./spa";
+import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const app: Express = express();
-
+const app = express();
 app.disable("x-powered-by");
-app.set("trust proxy", 1);
-
-const corsOrigins = (process.env.CORS_ORIGIN ?? "")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-app.use(
-  cors(
-    corsOrigins.length > 0
-      ? { origin: corsOrigins, credentials: true }
-      : undefined,
-  ),
+app.get("/api/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/api/keepalive", (_req, res) => res.json({ ok: true }));
+const publicDir = process.env.WEB_DIST ?? path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)), "../../crypsor/dist/public",
 );
-app.use(express.json({ limit: "256kb" }));
-app.use("/api", routes);
-mountSpa(app);
-
+app.use(express.static(publicDir));
+app.use((_req, res) => res.status(404).type("text").send("Not found"));
 export default app;
