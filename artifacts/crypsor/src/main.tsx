@@ -1,1321 +1,1920 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
-  ArrowUpRight,
-  ArrowDownRight,
-  ArrowRight,
-  Layers3,
-  LayoutDashboard,
-  Wallet,
   Activity,
-  Plus,
-  Search,
-  RefreshCw,
-  X,
-  ExternalLink,
-  Trash2,
-  LockKeyhole,
-  Radio,
-  ChevronDown,
-  Copy,
+  ArrowDownLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Bell,
+  BookOpen,
   Check,
-  TrendingUp,
-  Menu,
+  CheckCheck,
+  ChevronRight,
   CircleHelp,
+  ClipboardList,
+  Clock3,
+  Database,
+  ExternalLink,
+  Fingerprint,
+  Globe2,
+  KeyRound,
+  Layers3,
+  LockKeyhole,
+  LogOut,
+  Menu,
+  Plus,
+  Radar,
+  RefreshCw,
+  Search,
+  Shield,
+  ShieldCheck,
+  SlidersHorizontal,
+  Square,
+  Target,
+  Trash2,
+  Wallet,
+  X,
+  Zap,
 } from "lucide-react";
 import "./style.css";
 
-type SourceWallet = {
-  address: string;
+type Row = Record<string, any>;
+type Page = "radar" | "room" | "decisions" | "memory" | "operations";
+const navigation: {
+  id: Page;
   label: string;
-  buys: number;
-  tokens: number;
-  synced_at: string | null;
-  scanned_swaps?: number;
-  scanned_transactions?: number;
-  sync_error: string | null;
-  catching_up?: boolean;
-  avg_gain?: number | null;
-  positive_rate?: number | null;
+  icon: typeof Radar;
+  index: string;
+}[] = [
+  { id: "radar", label: "Radar", icon: Radar, index: "01" },
+  { id: "room", label: "Token room", icon: Layers3, index: "02" },
+  { id: "decisions", label: "Decisions", icon: ClipboardList, index: "03" },
+  { id: "memory", label: "Cabin / memory", icon: Database, index: "04" },
+  {
+    id: "operations",
+    label: "Operations",
+    icon: SlidersHorizontal,
+    index: "05",
+  },
+];
+const human = (s: unknown) =>
+  String(s ?? "Unknown")
+    .replaceAll("_", " ")
+    .toLowerCase();
+const short = (s: unknown, n = 7) => {
+  const v = String(s ?? "");
+  return v.length > n * 2 + 3
+    ? `${v.slice(0, n)}…${v.slice(-n)}`
+    : v || "Unknown";
 };
-type Token = {
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  entry_price: number | null;
-  entry_source: string | null;
-  current_price: number | null;
-  entry_at: string;
-  detected_at: string;
-  priced_at: string | null;
-  gain: number | null;
-  peak_gain: number | null;
-  buys: number;
-  wallet_count?: number;
-  priceStale?: boolean;
-  metadata_at?: string | null;
-  wallets: { address: string; label: string }[];
-  history: number[];
-};
-type Data = {
-  wallets: SourceWallet[];
-  tokens: Token[];
-  summary: {
-    wallets: number;
-    tokens: number;
-    priced: number;
-    positive: number;
-    averageGain: number | null;
-  };
-  leaders: Token[];
-  page: { nextCursor: string | null; hasMore: boolean };
-  tracking: {
-    heliusConfigured: boolean;
-    running: boolean;
-    lastSync: string | null;
-    error: string | null;
-    intervalSeconds: number;
-    backend: string;
-    queued: number;
-    failed: number;
-    workers: number;
-    workersHealthy: boolean;
-    oldestJobSeconds: number;
-  };
-};
-const short = (s: string) => `${s.slice(0, 4)}…${s.slice(-4)}`;
-const price = (n: number | null) =>
-  n == null
-    ? "—"
-    : new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        maximumSignificantDigits: 5,
-      }).format(n);
-const gain = (n: number | null) =>
-  n == null ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
-function since(s: string | null) {
-  if (!s) return "Not synced yet";
-  const mins = Math.max(
-    0,
-    Math.floor((Date.now() - new Date(s).getTime()) / 60000),
-  );
-  return mins < 1
-    ? "Just now"
-    : mins < 60
-      ? `${mins}m ago`
-      : `${Math.floor(mins / 60)}h ago`;
-}
-async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const r = await fetch(`/api/${path}`, {
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const text = await r.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(
-      "The service returned an unexpected response. Please try again.",
-    );
-  }
-  if (!r.ok) throw new Error(data.error ?? "Request failed");
-  return data;
-}
-function Sparkline({
-  values,
-  positive,
-}: {
-  values: number[];
-  positive: boolean;
-}) {
-  if (values.length < 2)
-    return <span className="spark-pending">Awaiting prices</span>;
-  const min = Math.min(...values),
-    max = Math.max(...values),
-    range = max - min || 1;
-  const points = values
-    .map(
-      (v, i) =>
-        `${(i / (values.length - 1)) * 100},${31 - ((v - min) / range) * 26}`,
-    )
-    .join(" ");
-  return (
-    <svg
-      className={`spark ${positive ? "positive" : "negative"}`}
-      viewBox="0 0 100 36"
-      aria-label="Recent observed price trend"
-      role="img"
-    >
-      <polyline
-        points={points}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  );
-}
-function Brand() {
-  return (
-    <span className="brand">
-      <span className="brand-mark">
-        <Layers3 size={22} />
-      </span>
-      crypsor<span className="brand-dot">.</span>
-    </span>
-  );
-}
-function App() {
-  const [page, setPage] = useState<"overview" | "tokens" | "wallets">(
-    "overview",
-  );
-  const [data, setData] = useState<Data | null>(null),
-    [error, setError] = useState(""),
-    [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState(""),
-    [debounced, setDebounced] = useState(""),
-    [filter, setFilter] = useState("all"),
-    [cursors, setCursors] = useState<(string | undefined)[]>([undefined]),
-    [detail, setDetail] = useState<any | null>(null),
-    [detailBusy, setDetailBusy] = useState(false),
-    [modal, setModal] = useState<"wallet" | null>(null);
-  const [busy, setBusy] = useState(false),
-    [formError, setFormError] = useState("");
-  const [notice, setNotice] = useState(""),
-    [removing, setRemoving] = useState<SourceWallet | null>(null),
-    [copied, setCopied] = useState("");
-  const [menu, setMenu] = useState(false),
-    [refreshing, setRefreshing] = useState(false);
-  const modalRef = useRef<HTMLDivElement>(null),
-    returnFocus = useRef<HTMLElement | null>(null);
-  const requestId = useRef(0);
-  const cursor = cursors[cursors.length - 1];
-  const load = useCallback(async () => {
-    const id = ++requestId.current;
-    try {
-      const params = new URLSearchParams({
-        q: debounced,
-        sort:
-          filter === "performers"
-            ? "gain"
-            : filter === "peak"
-              ? "peak"
-              : "recent",
-        limit: "25",
+const when = (s: unknown) => {
+  if (!s) return "Not recorded";
+  const d = new Date(String(s));
+  return Number.isNaN(d.getTime())
+    ? "Unknown"
+    : d.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
       });
-      if (cursor) params.set("cursor", cursor);
-      const next = await api<Data>(`dashboard?${params}`);
-      if (id === requestId.current) {
-        setData(next);
-        setError("");
+};
+const money = (v: unknown) =>
+  v === null || v === undefined || v === ""
+    ? "Unknown"
+    : Number.isFinite(Number(v))
+      ? new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: "USD",
+          maximumFractionDigits: Number(v) < 1 ? 8 : 2,
+        }).format(Number(v))
+      : "Unknown";
+const number = (v: unknown) =>
+  v === null || v === undefined ? "—" : Number(v).toLocaleString();
+const array = (v: any): Row[] => (Array.isArray(v) ? v : []);
+const list = (v: any): any[] =>
+  Array.isArray(v)
+    ? v
+    : v == null
+      ? []
+      : typeof v === "object"
+        ? Object.entries(v).map(([name, value]) => ({
+            name,
+            ...(typeof value === "object" && value !== null
+              ? value
+              : { value }),
+          }))
+        : [];
+function safeUrl(v: unknown) {
+  try {
+    const u = new URL(String(v));
+    return ["https:", "http:"].includes(u.protocol) ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+function Badge({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: string;
+}) {
+  return <span className={`badge ${tone}`}>{children}</span>;
+}
+function Status({
+  value,
+  kind = "state",
+}: {
+  value: unknown;
+  kind?: "state" | "confidence" | "priority" | "risk";
+}) {
+  const s = String(value ?? "UNKNOWN").toUpperCase();
+  const tone =
+    kind === "confidence"
+      ? s === "HIGH"
+        ? "green"
+        : s === "MEDIUM"
+          ? "amber"
+          : "neutral"
+      : kind === "priority"
+        ? s === "HIGH"
+          ? "amber"
+          : "neutral"
+        : [
+              "HIGH",
+              "STOP_ALL",
+              "DEAD",
+              "FAILED",
+              "CONTRADICTION",
+              "REJECTED",
+            ].includes(s)
+          ? "danger"
+          : [
+                "VERIFIED",
+                "DONE",
+                "SENT",
+                "CONFIRMED",
+                "FINALIZED",
+                "FULL",
+                "HEALTHY",
+              ].includes(s)
+            ? "green"
+            : [
+                  "MEDIUM",
+                  "WATCH",
+                  "WATCH_ONLY",
+                  "RECHECK",
+                  "QUEUED",
+                  "UNVERIFIED",
+                ].includes(s)
+              ? "amber"
+              : "neutral";
+  return <Badge tone={tone}>{human(s)}</Badge>;
+}
+function Empty({
+  icon: Icon = Radar,
+  title,
+  children,
+}: {
+  icon?: typeof Radar;
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="empty">
+      <span className="empty-icon">
+        <Icon size={25} />
+      </span>
+      <h3>{title}</h3>
+      <p>{children}</p>
+    </div>
+  );
+}
+function Section({
+  title,
+  kicker,
+  action,
+  children,
+  className = "",
+}: {
+  title: string;
+  kicker?: string;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`panel ${className}`}>
+      <div className="panel-heading">
+        <div>
+          {kicker && <span className="eyebrow">{kicker}</span>}
+          <h2>{title}</h2>
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+function Json({ value }: { value: unknown }) {
+  return <pre className="json">{JSON.stringify(value, null, 2)}</pre>;
+}
+function Source({ url, label }: { url: unknown; label?: string }) {
+  const href = safeUrl(url);
+  return href ? (
+    <a
+      className="source-link"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {label ?? new URL(href).hostname}
+      <ExternalLink size={12} />
+    </a>
+  ) : (
+    <span className="muted">Source URL not recorded</span>
+  );
+}
+
+function App() {
+  const [token, setToken] = useState(
+    () => sessionStorage.getItem("hunter.access") ?? "",
+  );
+  const requestGeneration = useRef(0);
+  const [input, setInput] = useState("");
+  const [page, setPage] = useState<Page>("radar");
+  const [mint, setMint] = useState("");
+  const [data, setData] = useState<Row | null>(null);
+  const [overview, setOverview] = useState<Row | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [mobile, setMobile] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [verified, setVerified] = useState(false);
+  const [modeDialog, setModeDialog] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
+  const [walletLabel, setWalletLabel] = useState("");
+  const logout = useCallback(() => {
+    sessionStorage.removeItem("hunter.access");
+    setToken("");
+    setData(null);
+    setOverview(null);
+    setVerified(false);
+    setInput("");
+  }, []);
+  const api = useCallback(
+    async (path: string, options: RequestInit = {}) => {
+      const response = await fetch(`/api${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          ...options.headers,
+        },
+      });
+      const result = await response
+        .json()
+        .catch(() => ({ error: "The API returned an unreadable response." }));
+      if (!response.ok) {
+        if (response.status === 401) {
+          logout();
+          throw new Error("Access denied. Check your private API token.");
+        }
+        throw new Error(result.error ?? `Request failed (${response.status}).`);
+      }
+      return result;
+    },
+    [token, logout],
+  );
+  const refresh = useCallback(async () => {
+    if (!token) return;
+    const generation = ++requestGeneration.current;
+    setLoading(true);
+    setError("");
+    try {
+      const base = await api("/overview");
+      if (generation !== requestGeneration.current) return;
+      setOverview(base);
+      setVerified(true);
+      let result = base;
+      if (page === "room" && mint)
+        result = await api(`/tokens/${encodeURIComponent(mint)}`);
+      if (page === "decisions") result = await api("/decisions");
+      if (page === "memory")
+        result = await api(`/memory?q=${encodeURIComponent(search)}`);
+      if (page === "operations") result = await api("/operations");
+      if (generation === requestGeneration.current) {
+        setData(result);
+        setLastRefresh(new Date());
       }
     } catch (e) {
-      if (id === requestId.current) setError((e as Error).message);
+      if (generation === requestGeneration.current)
+        setError(e instanceof Error ? e.message : "Unable to reach Hunter.");
     } finally {
-      if (id === requestId.current) setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [debounced, filter, cursor]);
+  }, [api, token, page, mint, search]);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebounced(query);
-      setCursors([undefined]);
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [query]);
+    setData(null);
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 30000);
+    return () => window.clearInterval(interval);
+  }, [refresh]);
   useEffect(() => {
-    setLoading(true);
-    void load();
-    const id = setInterval(() => {
-      if (!document.hidden) void load();
-    }, 15000);
-    return () => {
-      clearInterval(id);
-      requestId.current++;
-    };
-  }, [load]);
-  async function inspect(mint: string) {
-    setDetailBusy(true);
-    try {
-      setDetail(await api(`tokens/${mint}`));
-    } catch (e) {
-      setNotice((e as Error).message);
-    } finally {
-      setDetailBusy(false);
-    }
-  }
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(""), 4000);
-    return () => clearTimeout(t);
+    if (!notice) return undefined;
+    const t = window.setTimeout(() => setNotice(""), 7000);
+    return () => window.clearTimeout(t);
   }, [notice]);
   useEffect(() => {
-    if (!modal && !removing && !detail) return;
-    returnFocus.current = document.activeElement as HTMLElement;
-    document.body.style.overflow = "hidden";
-    const t = setTimeout(
-      () =>
-        modalRef.current?.querySelector<HTMLElement>("input,button")?.focus(),
-      20,
-    );
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) {
-        setModal(null);
-        setRemoving(null);
-        setDetail(null);
+    if (!modeDialog) return undefined;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setModeDialog(null);
+        return;
       }
       if (e.key === "Tab") {
-        const elements = modalRef.current?.querySelectorAll<HTMLElement>(
-          "button:not(:disabled),input,a[href]",
+        const controls = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            ".modal button:not([disabled]), .modal textarea, .modal input",
+          ),
         );
-        if (!elements?.length) return;
-        const first = elements[0],
-          last = elements[elements.length - 1];
+        const first = controls[0],
+          last = controls.at(-1);
         if (e.shiftKey && document.activeElement === first) {
           e.preventDefault();
-          last.focus();
+          last?.focus();
         } else if (!e.shiftKey && document.activeElement === last) {
           e.preventDefault();
-          first.focus();
+          first?.focus();
         }
       }
     };
-    document.addEventListener("keydown", key);
-    return () => {
-      clearTimeout(t);
-      document.body.style.overflow = "";
-      document.removeEventListener("keydown", key);
-      returnFocus.current?.focus();
-    };
-  }, [modal, removing, busy, detail]);
-  function openWallet() {
-    setFormError("");
-    setModal("wallet");
-  }
-  function navigate(next: typeof page) {
-    setPage(next);
-    setMenu(false);
-    setQuery("");
-    setFilter("all");
-    setCursors([undefined]);
-  }
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [modeDialog]);
+  const mutate = async (path: string, body?: Row, method = "POST") => {
     setBusy(true);
-    setFormError("");
-    const fields = new FormData(e.currentTarget);
+    setError("");
     try {
-      await api("wallets", {
-        method: "POST",
-        body: JSON.stringify({
-          address: fields.get("address"),
-          label: fields.get("label"),
-        }),
+      await api(path, {
+        method,
+        body: body ? JSON.stringify(body) : undefined,
       });
-      setModal(null);
-      setNotice(
-        "Wallet added. Its recent buys will appear after the next scan.",
-      );
-      await load();
+      setNotice("Saved. The journal and current state have been refreshed.");
+      await refresh();
+      return true;
     } catch (e) {
-      setFormError((e as Error).message);
+      setError(e instanceof Error ? e.message : "Unable to save.");
+      return false;
     } finally {
       setBusy(false);
     }
-  }
-  async function sync() {
-    setRefreshing(true);
-    try {
-      await api("sync", { method: "POST" });
-      setNotice("Scan requested. New buys will appear as they’re detected.");
-      await load();
-    } catch (e) {
-      setNotice((e as Error).message);
-    } finally {
-      setRefreshing(false);
-    }
-  }
-  const wallets = data?.wallets ?? [],
-    tokens = data?.tokens ?? [];
-  const totals = data?.summary ?? {
-    wallets: 0,
-    tokens: 0,
-    priced: 0,
-    positive: 0,
-    averageGain: null,
   };
-  const avg = totals.averageGain,
-    visible = tokens,
-    best = data?.leaders ?? [];
-  const connected = data?.tracking.heliusConfigured;
-  const nav = [
-    { id: "overview", title: "Overview", icon: LayoutDashboard },
-    { id: "tokens", title: "Tokens", icon: Layers3 },
-    { id: "wallets", title: "Wallets", icon: Wallet },
-  ] as const;
-  function tokenTable() {
+  const navigate = (p: Page) => {
+    setPage(p);
+    setMobile(false);
+    setError("");
+    setNotice("");
+  };
+  const openToken = (m: string) => {
+    setMint(m);
+    navigate("room");
+  };
+  const unlock = (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+    sessionStorage.setItem("hunter.access", input.trim());
+    setToken(input.trim());
+    setError("");
+  };
+  const walletSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (
+      await mutate("/wallets", {
+        address: walletAddress.trim(),
+        label: walletLabel.trim(),
+      })
+    ) {
+      setWalletAddress("");
+      setWalletLabel("");
+    }
+  };
+  const stat = overview?.stats ?? {};
+  const tokens = array(overview?.tokens);
+  const heading = {
+    radar: [
+      "Discovery surface",
+      "Radar",
+      "Every watched wallet. Every observed discovery.",
+    ],
+    room: [
+      "Evidence workspace",
+      "Token room",
+      "Facts, hypotheses, and the gaps between them.",
+    ],
+    decisions: [
+      "Read → think → gate → journal → revisit",
+      "Decisions",
+      "A versioned record of what was known, and when.",
+    ],
+    memory: [
+      "Permanent research memory",
+      "Cabin / memory",
+      "Watch wallets. Revisit claims. Follow the evidence.",
+    ],
+    operations: [
+      "Control plane",
+      "Operations",
+      "Keep the pipeline observable and the operator in control.",
+    ],
+  }[page];
+  const mode = String(data?.mode ?? overview?.mode ?? "UNKNOWN");
+
+  if (!token || !verified)
     return (
-      <section className="panel token-panel">
-        <div className="panel-heading">
-          <div>
-            <h2>
-              {page === "tokens" ? "Token feed" : "The watchlist"}{" "}
-              <span className="count">{totals.tokens}</span>
-            </h2>
-            <p>Every detected buy. One fixed entry.</p>
+      <div className="unlock-shell">
+        <div className="unlock-mast">
+          <Brand />
+          <Badge tone="amber">Private research system</Badge>
+        </div>
+        <main className="unlock-main">
+          <div className="unlock-intro">
+            <span className="eyebrow amber-text">
+              SOLANA INTELLIGENCE / V0.2
+            </span>
+            <h1>
+              Observe everything.
+              <br />
+              <em>Conclude carefully.</em>
+            </h1>
+            <p>
+              Your private workspace for wallet discoveries, reproducible
+              evidence, and decisions that remember their own uncertainty.
+            </p>
+            <div className="unlock-principles">
+              <span>
+                <ShieldCheck size={17} /> Read-only by design
+              </span>
+              <span>
+                <Fingerprint size={17} /> Evidence before inference
+              </span>
+              <span>
+                <BookOpen size={17} /> Memory that keeps its history
+              </span>
+            </div>
           </div>
+          <form className="unlock-card" onSubmit={unlock}>
+            <div className="unlock-lock">
+              <LockKeyhole size={26} />
+            </div>
+            <span className="eyebrow">OPERATOR ACCESS</span>
+            <h2>Enter your cabin.</h2>
+            <p>
+              Use the private API token configured for this Hunter instance.
+            </p>
+            <label htmlFor="access-token">API token</label>
+            <div className="input-icon">
+              <KeyRound size={16} />
+              <input
+                id="access-token"
+                type="password"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                autoComplete="off"
+                required
+                placeholder="Private access token"
+              />
+            </div>
+            {error && (
+              <div className="inline-error" role="alert">
+                {error}
+              </div>
+            )}
+            <button className="button primary" type="submit" disabled={loading}>
+              {loading ? (
+                <RefreshCw size={16} className="spin" />
+              ) : (
+                <ArrowRight size={16} />
+              )}
+              Unlock workspace
+            </button>
+            <small>
+              The token stays in this browser tab’s session storage. No wallet
+              connection or signing key is needed.
+            </small>
+          </form>
+        </main>
+        <footer className="unlock-footer">
+          <span>HUNTER / PERSONAL RESEARCH</span>
+          <span>No trade execution. No guaranteed outcomes.</span>
+        </footer>
+      </div>
+    );
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobile ? "open" : ""}`}>
+        <div className="sidebar-brand">
+          <Brand />
           <button
-            className="icon-button"
-            onClick={() => void sync()}
-            aria-label="Refresh tracked buys"
-            title="Request a scan"
+            className="icon-button mobile-only"
+            aria-label="Close navigation"
+            onClick={() => setMobile(false)}
           >
-            <RefreshCw
-              size={17}
-              className={refreshing || data?.tracking.running ? "spin" : ""}
-            />
+            <X size={18} />
           </button>
         </div>
-        <div className="table-tools">
-          <div className="tabs" aria-label="Token filters">
-            {[
-              ["all", "All tokens"],
-              ["performers", "Performers"],
-              ["peak", "Peak gain"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                className={filter === id ? "active" : ""}
-                onClick={() => {
-                  setFilter(id);
-                  setCursors([undefined]);
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <label className="search">
-            <Search size={15} />
-            <input
-              aria-label="Search tokens"
-              placeholder="Search token or address"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-            <span>/</span>
-          </label>
+        <div className="workspace-tag">
+          <span className="signal-dot" />
+          PRIVATE WORKSPACE
         </div>
-        {loading && !data ? (
-          <div className="loading-state">
-            <RefreshCw className="spin" size={20} /> Loading your watchlist…
-          </div>
-        ) : !visible.length ? (
-          <div className="empty-state">
-            <div className="empty-art">
-              <Layers3 size={28} />
-              <span className="empty-dot" />
+        <nav aria-label="Main navigation">
+          {navigation.map(({ id, label, icon: Icon, index }) => (
+            <button
+              key={id}
+              className={`nav-item ${page === id ? "active" : ""}`}
+              onClick={() => navigate(id)}
+              aria-current={page === id ? "page" : undefined}
+            >
+              <Icon size={18} />
+              <span>{label}</span>
+              <span className="nav-index">{index}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="pilot-box">
+            <div>
+              <Target size={16} />
+              <span>FREE-CAPPED PILOT</span>
             </div>
-            <h3>
-              {query
-                ? "No matching tokens"
-                : totals.tokens
-                  ? "No performers yet"
-                  : wallets.length
-                    ? wallets.some((w) => (w.scanned_transactions ?? 0) > 0)
-                      ? "No buys in recent history"
-                      : "Scanning your wallets"
-                    : "Good signals start with a wallet."}
-            </h3>
             <p>
-              {query
-                ? "Try another symbol or mint address."
-                : totals.tokens
-                  ? "Tokens with positive current gains will appear here."
-                  : wallets.length
-                    ? "We check swap history for purchases. Incoming transfers and sales into SOL or stablecoins stay out of your feed."
-                    : "Add a Solana wallet. We’ll follow its buys and track every token from entry to its next move."}
+              Observe, verify, revisit.
+              <br />
+              Spend only within configured caps.
             </p>
-            {!wallets.length && !query && (
-              <button className="button primary" onClick={openWallet}>
-                <Plus size={16} />
-                Add your first wallet
+            <span
+              className="text-link"
+              onClick={() => navigate("operations")}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") navigate("operations");
+              }}
+            >
+              View operations <ArrowUpRight size={13} />
+            </span>
+          </div>
+          <div className="sidebar-meta">
+            <Shield size={13} />
+            <span>Solana-first · Read-only</span>
+          </div>
+          <button className="logout" onClick={logout}>
+            <LogOut size={14} />
+            Lock workspace
+          </button>
+        </div>
+      </aside>
+      {mobile && (
+        <button
+          className="sidebar-overlay"
+          aria-label="Close navigation"
+          onClick={() => setMobile(false)}
+        />
+      )}
+      <div className="content-shell">
+        <header className="topbar">
+          <div className="breadcrumb">
+            <button
+              className="icon-button mobile-only"
+              onClick={() => setMobile(true)}
+              aria-label="Open navigation"
+            >
+              <Menu size={20} />
+            </button>
+            <span>WORKSPACE</span>
+            <ChevronRight size={13} />
+            <b>{heading[1]}</b>
+          </div>
+          <div className="topbar-right">
+            <span className="read-only">
+              <ShieldCheck size={13} />
+              READ ONLY
+            </span>
+            <span className="topbar-divider" />
+            <span className="operator-avatar">OP</span>
+          </div>
+        </header>
+        <main className="main">
+          <div className="page-heading">
+            <div>
+              <span className="eyebrow">{heading[0]}</span>
+              <h1>
+                {heading[1]}
+                <span className="heading-square" />
+              </h1>
+              <p>{heading[2]}</p>
+            </div>
+            <div className="heading-actions">
+              <span className="refresh-time">
+                {lastRefresh
+                  ? `Updated ${lastRefresh.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
+                  : "Awaiting first response"}
+              </span>
+              <button
+                className="button secondary"
+                onClick={() => void refresh()}
+                disabled={loading}
+              >
+                <RefreshCw size={14} className={loading ? "spin" : ""} />
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+          {error && (
+            <div className="notice error" role="alert">
+              <CircleHelp size={16} />
+              <span>{error}</span>
+              <button
+                className="icon-button"
+                onClick={() => setError("")}
+                aria-label="Dismiss error"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+          {notice && (
+            <div className="notice success" role="status">
+              <Check size={16} />
+              <span>{notice}</span>
+            </div>
+          )}
+          {!data && loading ? (
+            <div className="loading-state">
+              <RefreshCw size={23} className="spin" />
+              <span>Reading the evidence store…</span>
+            </div>
+          ) : (
+            <>
+              {page === "radar" && (
+                <>
+                  <div className="radar-banner">
+                    <div className="radar-banner-icon">
+                      <Radar size={25} />
+                    </div>
+                    <div>
+                      <span className="eyebrow">WATCHED-WALLET DISCOVERY</span>
+                      <p>Facts arrive first. Interpretation follows.</p>
+                    </div>
+                    <div className="radar-mode">
+                      <span className="tiny-label">OPERATOR MODE</span>
+                      <Status value={mode} />
+                    </div>
+                  </div>
+                  <div className="stats-grid">
+                    {[
+                      {
+                        label: "Watched wallets",
+                        value: stat.wallets,
+                        icon: Wallet,
+                      },
+                      {
+                        label: "Discovered tokens",
+                        value: stat.tokens,
+                        icon: Radar,
+                      },
+                      {
+                        label: "Observed events",
+                        value: stat.events,
+                        icon: Activity,
+                      },
+                      {
+                        label: "Journal decisions",
+                        value: stat.decisions,
+                        icon: BookOpen,
+                      },
+                    ].map((s) => (
+                      <div className="stat-card" key={s.label}>
+                        <div>
+                          <span>{s.label}</span>
+                          <s.icon size={16} />
+                        </div>
+                        <strong>{number(s.value)}</strong>
+                        <small>
+                          {s.label === "Watched wallets"
+                            ? "Unconditional discovery sensors"
+                            : s.label === "Discovered tokens"
+                              ? "Retained without quality thresholds"
+                              : s.label === "Observed events"
+                                ? "Persisted on-chain observations"
+                                : "Append-only, known-at versions"}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                  <Section
+                    title="Discovery radar"
+                    kicker="LIVE CANDIDATES"
+                    action={
+                      <Badge>
+                        <span className="signal-dot" />
+                        {number(stat.pendingJobs)} pending jobs
+                      </Badge>
+                    }
+                  >
+                    <TokenTable tokens={tokens} openToken={openToken} />
+                  </Section>
+                  <div className="two-column">
+                    <Section
+                      title="The evidence contract"
+                      kicker="HOW HUNTER THINKS"
+                    >
+                      <div className="contract-grid">
+                        {[
+                          [
+                            "01",
+                            "Read",
+                            "Collect timestamped observations and reproducible source links.",
+                          ],
+                          [
+                            "02",
+                            "Think & gate",
+                            "Separate provisional hypotheses from deterministic safety checks.",
+                          ],
+                          [
+                            "03",
+                            "Journal & revisit",
+                            "Keep the original judgment. Append corrections and recheck triggers.",
+                          ],
+                        ].map(([n, t, d]) => (
+                          <div className="contract-item" key={n}>
+                            <span>{n}</span>
+                            <div>
+                              <h3>{t}</h3>
+                              <p>{d}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Section>
+                    <Section
+                      title="Three independent signals"
+                      kicker="NO SINGLE MAGIC SCORE"
+                    >
+                      <div className="signal-explainer">
+                        <div>
+                          <Target size={16} />
+                          <span>Research priority</span>
+                          <small>What deserves attention</small>
+                        </div>
+                        <div>
+                          <Shield size={16} />
+                          <span>Structural risk</span>
+                          <small>What may cause harm</small>
+                        </div>
+                        <div>
+                          <Fingerprint size={16} />
+                          <span>Evidence confidence</span>
+                          <small>What the sources support</small>
+                        </div>
+                      </div>
+                    </Section>
+                  </div>
+                </>
+              )}
+              {page === "room" &&
+                (!mint ? (
+                  <Section
+                    title="Choose a token to investigate"
+                    kicker="TOKEN ROOM"
+                  >
+                    <TokenTable tokens={tokens} openToken={openToken} />
+                  </Section>
+                ) : (
+                  <TokenRoom
+                    data={data ?? {}}
+                    mint={mint}
+                    busy={busy}
+                    requestResearch={() =>
+                      void mutate(
+                        `/tokens/${encodeURIComponent(mint)}/research`,
+                      )
+                    }
+                    onBack={() => {
+                      setMint("");
+                      setData(null);
+                    }}
+                  />
+                ))}
+              {page === "decisions" && (
+                <>
+                  <div className="flow-strip">
+                    {["READ", "THINK", "GATE", "JOURNAL", "REVISIT"].map(
+                      (s, i) => (
+                        <span key={s}>
+                          <b>{String(i + 1).padStart(2, "0")}</b>
+                          {s}
+                          {i < 4 && <ArrowRight size={12} />}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                  <Section
+                    title="Decision journal"
+                    kicker="APPEND-ONLY MEMORY"
+                    action={
+                      <Badge>
+                        {number(array(data?.decisions).length)} versions
+                        returned
+                      </Badge>
+                    }
+                  >
+                    {array(data?.decisions).length ? (
+                      <div className="decision-list">
+                        {array(data?.decisions).map((d, i) => (
+                          <Decision
+                            key={d.id ?? i}
+                            d={d}
+                            openToken={openToken}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <Empty
+                        icon={BookOpen}
+                        title="No judgments without evidence"
+                      >
+                        Decisions appear after a discovered token has completed
+                        a research pass. Unknowns remain visible.
+                      </Empty>
+                    )}
+                  </Section>
+                </>
+              )}
+              {page === "memory" && (
+                <>
+                  <div className="memory-toolbar">
+                    <form
+                      className="search-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        setSearch(query);
+                      }}
+                    >
+                      <Search size={17} />
+                      <input
+                        aria-label="Search permanent memory"
+                        placeholder="Search wallets, tokens, and evidence claims…"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                      <button className="button secondary" type="submit">
+                        Search
+                      </button>
+                    </form>
+                  </div>
+                  <div className="two-column memory-layout">
+                    <Section
+                      title="Watched wallets"
+                      kicker="DISCOVERY SENSORS"
+                      action={
+                        <Badge>
+                          {number(array(data?.wallets).length)} returned
+                        </Badge>
+                      }
+                    >
+                      <div className="wallet-list">
+                        {array(data?.wallets).length ? (
+                          array(data?.wallets).map((w) => (
+                            <div className="wallet-row" key={w.address}>
+                              <span className="wallet-icon">
+                                <Wallet size={17} />
+                              </span>
+                              <div>
+                                <strong>{w.label || "Unlabeled wallet"}</strong>
+                                <code title={w.address}>
+                                  {short(w.address, 10)}
+                                </code>
+                                <small>
+                                  Last success: {when(w.last_success_at)}
+                                  {w.cursor
+                                    ? ` · Cursor ${short(w.cursor)}`
+                                    : ""}
+                                </small>
+                              </div>
+                              <Status
+                                value={
+                                  w.active === false ? "INACTIVE" : "WATCHING"
+                                }
+                              />
+                              {w.active !== false && (
+                                <button
+                                  className="icon-button"
+                                  disabled={busy}
+                                  aria-label={`Stop watching ${w.label || w.address}`}
+                                  onClick={() => {
+                                    if (
+                                      window.confirm(
+                                        "Stop watching this wallet? Its historical discoveries will be retained.",
+                                      )
+                                    )
+                                      void mutate(
+                                        `/wallets/${encodeURIComponent(w.address)}`,
+                                        undefined,
+                                        "DELETE",
+                                      );
+                                  }}
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <Empty icon={Wallet} title="No watched wallets">
+                            Add a public Solana wallet address to start your
+                            discovery surface.
+                          </Empty>
+                        )}
+                      </div>
+                      <form className="wallet-form" onSubmit={walletSubmit}>
+                        <h3>
+                          <Plus size={15} /> Watch a wallet
+                        </h3>
+                        <label htmlFor="wallet-address">
+                          Public Solana address
+                        </label>
+                        <input
+                          id="wallet-address"
+                          className="mono"
+                          value={walletAddress}
+                          onChange={(e) => setWalletAddress(e.target.value)}
+                          pattern="[1-9A-HJ-NP-Za-km-z]{32,44}"
+                          required
+                          placeholder="Public address only"
+                          autoComplete="off"
+                        />
+                        <label htmlFor="wallet-label">
+                          Label <span className="muted">(optional)</span>
+                        </label>
+                        <input
+                          id="wallet-label"
+                          value={walletLabel}
+                          onChange={(e) => setWalletLabel(e.target.value)}
+                          maxLength={100}
+                          placeholder="A name you will recognize"
+                        />
+                        <button
+                          className="button primary"
+                          disabled={busy}
+                          type="submit"
+                        >
+                          <Plus size={15} />
+                          Watch wallet
+                        </button>
+                        <small>
+                          No private key, connection, or signing permission is
+                          requested.
+                        </small>
+                      </form>
+                    </Section>
+                    <div>
+                      <Section title="Memory matches" kicker="TOKENS & CLAIMS">
+                        <div className="memory-results">
+                          {array(data?.tokens).map((t) => (
+                            <button
+                              className="memory-token"
+                              key={t.mint}
+                              onClick={() => openToken(t.mint)}
+                            >
+                              <span className="token-avatar">
+                                {String(t.symbol ?? "?").slice(0, 2)}
+                              </span>
+                              <div>
+                                <strong>{t.name || short(t.mint)}</strong>
+                                <code>
+                                  {t.symbol || "Unknown symbol"} ·{" "}
+                                  {short(t.mint)}
+                                </code>
+                              </div>
+                              <ArrowUpRight size={16} />
+                            </button>
+                          ))}
+                          {array(data?.claims).map((c, i) => (
+                            <div className="claim" key={c.id ?? i}>
+                              <Status value={c.status} />
+                              <p>
+                                {typeof c.claim === "string"
+                                  ? c.claim
+                                  : JSON.stringify(c.claim ?? c.data)}
+                              </p>
+                              <small>
+                                {when(c.known_at)} · confidence{" "}
+                                {human(c.confidence)}
+                              </small>
+                              {c.mint && (
+                                <button
+                                  className="text-link"
+                                  onClick={() => openToken(c.mint)}
+                                >
+                                  Open token <ArrowUpRight size={12} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          {!array(data?.tokens).length &&
+                            !array(data?.claims).length && (
+                              <Empty icon={Search} title="No matching memory">
+                                Search only returns retained records. Hunter
+                                does not populate this space with sample
+                                research.
+                              </Empty>
+                            )}
+                        </div>
+                      </Section>
+                      {array(data?.relations).length > 0 && (
+                        <Section
+                          title="Observed relationships"
+                          kicker="RELATION MEMORY"
+                        >
+                          <div className="record-list">
+                            {array(data?.relations).map((r, i) => (
+                              <div key={r.id ?? i}>
+                                <Status
+                                  value={
+                                    r.relation_kind ?? r.kind ?? "OBSERVED"
+                                  }
+                                />
+                                <Json value={r} />
+                              </div>
+                            ))}
+                          </div>
+                        </Section>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+              {page === "operations" && (
+                <Operations
+                  data={data ?? {}}
+                  mode={mode}
+                  busy={busy}
+                  setModeDialog={setModeDialog}
+                  retry={(id) => void mutate(`/jobs/${id}/retry`)}
+                />
+              )}
+            </>
+          )}
+          <footer className="page-footer">
+            <span>
+              <ShieldCheck size={12} />
+              PRIVATE · READ-ONLY · SOLANA
+            </span>
+            <span>Observations are facts. Interpretations are hypotheses.</span>
+          </footer>
+        </main>
+      </div>
+      {modeDialog && (
+        <div className="modal-backdrop" role="presentation">
+          <form
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mode-title"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (
+                await mutate("/operator/mode", { mode: modeDialog, reason })
+              ) {
+                setModeDialog(null);
+                setReason("");
+              }
+            }}
+          >
+            <div className="modal-title">
+              <span className="eyebrow">OPERATOR CONTROL</span>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setModeDialog(null)}
+                aria-label="Cancel"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <h2 id="mode-title">Switch to {human(modeDialog)}?</h2>
+            <p>
+              {modeDialog === "STOP_ALL"
+                ? "New event handling and jobs will stop where this application controls them. Vendor subscriptions and upstream providers are not automatically canceled."
+                : modeDialog === "FULL"
+                  ? "Enable research within configured free-tier caps. Optional AI remains subject to its separate opt-in and quota settings."
+                  : "This change is recorded in the operator audit log. Existing evidence and historical decisions will be retained."}
+            </p>
+            <label htmlFor="mode-reason">Reason for this change</label>
+            <textarea
+              id="mode-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              required
+              minLength={3}
+              maxLength={500}
+              placeholder="Record the reason for your future self."
+              autoFocus
+            />
+            <div className="modal-actions">
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => setModeDialog(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className={`button ${modeDialog === "STOP_ALL" ? "danger-button" : "primary"}`}
+                disabled={busy}
+                type="submit"
+              >
+                Confirm mode change
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <span className="brand-symbol">
+        <Target size={22} strokeWidth={1.7} />
+      </span>
+      <span>
+        HUNTER<b>RESEARCH TERMINAL</b>
+      </span>
+    </div>
+  );
+}
+function TokenTable({
+  tokens,
+  openToken,
+}: {
+  tokens: Row[];
+  openToken: (mint: string) => void;
+}) {
+  return tokens.length ? (
+    <div className="table-scroll">
+      <table className="token-table">
+        <thead>
+          <tr>
+            <th>Token / identity</th>
+            <th>Discovery</th>
+            <th>Market context</th>
+            <th>Priority</th>
+            <th>Risk</th>
+            <th>Confidence</th>
+            <th>Pipeline</th>
+            <th>
+              <span className="sr-only">Open</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {tokens.map((t) => (
+            <tr key={t.mint}>
+              <td>
+                <button
+                  className="token-button"
+                  onClick={() => openToken(t.mint)}
+                >
+                  <span className="token-avatar">
+                    {String(t.symbol ?? "?").slice(0, 2)}
+                  </span>
+                  <span>
+                    <strong>{t.name || "Unresolved token"}</strong>
+                    <small>
+                      {t.symbol || "Unknown symbol"} <span>·</span>{" "}
+                      <code title={t.mint}>{short(t.mint, 5)}</code>
+                    </small>
+                  </span>
+                </button>
+              </td>
+              <td>
+                <span>{when(t.discovered_at)}</span>
+                <small>
+                  {Array.isArray(t.wallets)
+                    ? `${t.wallets.length} source wallet${t.wallets.length === 1 ? "" : "s"}`
+                    : "Source not recorded"}
+                </small>
+              </td>
+              <td>
+                <span className="mono">{money(t.price_usd)}</span>
+                <small>Liquidity {money(t.liquidity_usd)}</small>
+              </td>
+              <td>
+                <Status value={t.priority} kind="priority" />
+              </td>
+              <td>
+                <Status value={t.risk} kind="risk" />
+              </td>
+              <td>
+                <Status value={t.confidence} kind="confidence" />
+              </td>
+              <td>
+                <Status value={t.alert_status} />
+                <small>{human(t.job_status ?? "Not scheduled")}</small>
+              </td>
+              <td>
+                <button
+                  className="icon-button"
+                  aria-label={`Investigate ${t.name || t.mint}`}
+                  onClick={() => openToken(t.mint)}
+                >
+                  <ArrowUpRight size={16} />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : (
+    <Empty title="Your radar is quiet" icon={Radar}>
+      Watch a wallet in Cabin / memory. Authenticated intake will populate
+      discoveries here; no sample tokens are added.
+    </Empty>
+  );
+}
+
+function Decision({
+  d,
+  openToken,
+}: {
+  d: Row;
+  openToken?: (mint: string) => void;
+}) {
+  return (
+    <article className="decision-card">
+      <div className="decision-head">
+        <div>
+          <span className="version-label">
+            VERSION {d.version ?? "?"} <span>·</span> {when(d.known_at)}
+          </span>
+          <h3>
+            {d.symbol || short(d.mint, 8)}
+            {openToken && (
+              <button
+                className="icon-button"
+                aria-label="Open token room"
+                onClick={() => openToken(d.mint)}
+              >
+                <ArrowUpRight size={15} />
               </button>
             )}
-            {wallets.length > 0 && !totals.tokens && (
-              <span className="empty-note">
-                <Radio size={13} />{" "}
-                {connected
-                  ? "Scanning every 30 seconds"
-                  : "Helius connection required"}
+          </h3>
+        </div>
+        <Status value={d.action} />
+      </div>
+      <div className="thesis-grid">
+        <div>
+          <span className="tiny-label">
+            <ArrowUpRight size={12} />
+            PROVISIONAL THESIS
+          </span>
+          <p>
+            {typeof d.thesis === "string"
+              ? d.thesis
+              : JSON.stringify(d.thesis ?? "Not recorded")}
+          </p>
+        </div>
+        <div>
+          <span className="tiny-label">
+            <ArrowDownLeft size={12} />
+            COMPETING HYPOTHESIS
+          </span>
+          <p>
+            {typeof d.counter_thesis === "string"
+              ? d.counter_thesis
+              : JSON.stringify(d.counter_thesis ?? "Not recorded")}
+          </p>
+        </div>
+      </div>
+      {Array.isArray(d.unknowns) && d.unknowns.length > 0 && (
+        <div className="unknown-list">
+          <span className="tiny-label">UNRESOLVED QUESTIONS</span>
+          <ul>
+            {d.unknowns.map((u: any, i: number) => (
+              <li key={i}>{typeof u === "string" ? u : JSON.stringify(u)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="decision-foot">
+        <span>
+          <Clock3 size={12} />
+          Next recheck: {when(d.next_recheck_at)}
+        </span>
+        <span>
+          Rule {d.rule_version ?? "unrecorded"} · Model{" "}
+          {d.model_version ?? "none"}
+        </span>
+      </div>
+      <details>
+        <summary>
+          Gate result & provenance <ChevronRight size={12} />
+        </summary>
+        <Json
+          value={{
+            gate: d.gate,
+            reviewer: d.reviewer_result,
+            evidence_ids: d.evidence_ids,
+            contradictions: d.contradictions,
+            context: d.context,
+            spend_usd: d.spend_usd,
+          }}
+        />
+      </details>
+    </article>
+  );
+}
+
+function TokenRoom({
+  data,
+  mint,
+  busy,
+  requestResearch,
+  onBack,
+}: {
+  data: Row;
+  mint: string;
+  busy: boolean;
+  requestResearch: () => void;
+  onBack: () => void;
+}) {
+  const t = data.token ?? {};
+  return (
+    <>
+      <div className="token-room-top">
+        <button className="text-link" onClick={onBack}>
+          ← All discovered tokens
+        </button>
+        <button
+          className="button secondary"
+          onClick={requestResearch}
+          disabled={busy}
+        >
+          <RefreshCw size={14} />
+          Request research pass
+        </button>
+      </div>
+      <div className="token-identity">
+        <span className="token-avatar large">
+          {String(t.symbol ?? "?").slice(0, 2)}
+        </span>
+        <div>
+          <h2>
+            {t.name || "Unresolved token"}
+            <Badge>{t.symbol || "Symbol unknown"}</Badge>
+          </h2>
+          <span className="mint">
+            <code>{mint}</code>
+            <button
+              className="icon-button"
+              aria-label="Copy token mint"
+              onClick={() => void navigator.clipboard.writeText(mint)}
+            >
+              <ClipboardList size={13} />
+            </button>
+            <Source url={`https://solscan.io/token/${mint}`} label="Explorer" />
+          </span>
+        </div>
+        <div className="token-identity-time">
+          <span className="tiny-label">FIRST OBSERVED</span>
+          <span>{when(t.discovered_at)}</span>
+        </div>
+      </div>
+      <div className="stats-grid room-stats">
+        <div className="stat-card">
+          <div>
+            <span>Observed price</span>
+            <Activity size={16} />
+          </div>
+          <strong>{money(t.price_usd)}</strong>
+          <small>Market source: {when(t.market_updated_at)}</small>
+        </div>
+        <div className="stat-card">
+          <div>
+            <span>Liquidity</span>
+            <Layers3 size={16} />
+          </div>
+          <strong>{money(t.liquidity_usd)}</strong>
+          <small>Source-reported, not a guarantee</small>
+        </div>
+        <div className="stat-card">
+          <div>
+            <span>Research priority / risk</span>
+            <Target size={16} />
+          </div>
+          <div className="signal-pair">
+            <Status value={t.priority} kind="priority" />
+            <Status value={t.risk} kind="risk" />
+          </div>
+          <small>Independent, never a composite score</small>
+        </div>
+        <div className="stat-card">
+          <div>
+            <span>Evidence confidence</span>
+            <Fingerprint size={16} />
+          </div>
+          <div className="signal-pair">
+            <Status value={t.confidence} kind="confidence" />
+          </div>
+          <small>Based on cited, timestamped observations</small>
+        </div>
+      </div>
+      <div className="two-column token-room-layout">
+        <div>
+          <Section title="Research timeline" kicker="VERSIONED DECISIONS">
+            {array(data.decisions).length ? (
+              <div className="decision-list">
+                {array(data.decisions).map((d, i) => (
+                  <Decision key={d.id ?? i} d={d} />
+                ))}
+              </div>
+            ) : (
+              <Empty icon={BookOpen} title="The dossier is not ready yet">
+                The discovery remains recorded while research is pending. No
+                thesis is inferred from missing evidence.
+              </Empty>
+            )}
+          </Section>
+          <Section title="Evidence ledger" kicker="CITABLE OBSERVATIONS">
+            {array(data.evidence).length ? (
+              <div className="evidence-list">
+                {array(data.evidence).map((e, i) => (
+                  <div className="evidence-item" key={e.id ?? i}>
+                    <div>
+                      <Badge>EV-{e.id ?? i + 1}</Badge>
+                      <Status value={e.status} />
+                      <span>{when(e.known_at)}</span>
+                    </div>
+                    <h3>
+                      {typeof e.claim === "string"
+                        ? e.claim
+                        : JSON.stringify(e.claim ?? e.data)}
+                    </h3>
+                    <div className="evidence-source">
+                      <Source url={e.url ?? e.source_url} label={e.provider} />
+                      <small>Confidence: {human(e.confidence)}</small>
+                    </div>
+                    <details>
+                      <summary>
+                        Recorded evidence <ChevronRight size={12} />
+                      </summary>
+                      <Json
+                        value={{
+                          claim_id: e.id,
+                          known_at: e.known_at,
+                          source_timestamp: e.source_timestamp,
+                          source_provider: e.provider,
+                          source_url: e.url,
+                          data: e.data,
+                        }}
+                      />
+                    </details>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Empty icon={Fingerprint} title="No evidence claims recorded">
+                Unavailable information remains unknown.
+              </Empty>
+            )}
+          </Section>
+        </div>
+        <div>
+          <Section title="On-chain discoveries" kicker="SOURCE ATTRIBUTION">
+            {array(data.events).length ? (
+              <div className="event-list">
+                {array(data.events).map((e, i) => (
+                  <div className="event" key={e.id ?? i}>
+                    <span className="event-dot" />
+                    <div>
+                      <div className="event-head">
+                        <strong>{human(e.event_kind ?? "Observation")}</strong>
+                        <Status value={e.commitment} />
+                      </div>
+                      <p>
+                        Wallet{" "}
+                        <code>{short(e.wallet_address ?? e.wallet)}</code>
+                      </p>
+                      <Source
+                        url={`https://solscan.io/tx/${e.signature}`}
+                        label={short(e.signature)}
+                      />
+                      <small>
+                        {when(e.block_time ?? e.observed_at)} · path{" "}
+                        {e.instruction_path ?? "unknown"}
+                      </small>
+                      <details>
+                        <summary>Normalized observation</summary>
+                        <Json value={e.observations} />
+                      </details>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Empty icon={Activity} title="No source events">
+                No on-chain event is recorded for this token.
+              </Empty>
+            )}
+          </Section>
+          <Section
+            title="Identity & holder memory"
+            kicker="VERSIONED SOURCE RECORDS"
+          >
+            <div className="record-list">
+              <details>
+                <summary>
+                  Metadata versions <Badge>{array(data.metadata).length}</Badge>
+                </summary>
+                {array(data.metadata).length ? (
+                  <Json value={data.metadata} />
+                ) : (
+                  <p className="muted">
+                    Identity metadata has not been resolved.
+                  </p>
+                )}
+              </details>
+              <details>
+                <summary>
+                  Holder snapshots <Badge>{array(data.holders).length}</Badge>
+                </summary>
+                {array(data.holders).length ? (
+                  <Json value={data.holders} />
+                ) : (
+                  <p className="muted">
+                    No holder snapshot is recorded. Concentration, common
+                    funding, and churn remain unknown.
+                  </p>
+                )}
+              </details>
+              <details>
+                <summary>
+                  Relationship evidence{" "}
+                  <Badge>{array(data.relations).length}</Badge>
+                </summary>
+                {array(data.relations).length ? (
+                  <Json value={data.relations} />
+                ) : (
+                  <p className="muted">No relationship edges are recorded.</p>
+                )}
+              </details>
+              <details>
+                <summary>
+                  Alerts & jobs{" "}
+                  <Badge>
+                    {array(data.alerts).length + array(data.jobs).length}
+                  </Badge>
+                </summary>
+                <Json
+                  value={{ alerts: data.alerts ?? [], jobs: data.jobs ?? [] }}
+                />
+              </details>
+            </div>
+          </Section>
+          <div className="research-note">
+            <CircleHelp size={17} />
+            <p>
+              “Earliest found” is scoped to covered datasets. It does not
+              establish originality, affiliation, or future performance.
+            </p>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Operations({
+  data,
+  mode,
+  busy,
+  setModeDialog,
+  retry,
+}: {
+  data: Row;
+  mode: string;
+  busy: boolean;
+  setModeDialog: (s: string) => void;
+  retry: (id: string) => void;
+}) {
+  const jobs = array(data.jobs);
+  return (
+    <>
+      <div className="control-panel">
+        <div className="control-heading">
+          <div>
+            <span className="eyebrow">OPERATOR STATE</span>
+            <h2>You're in control.</h2>
+            <p>Mode changes are audited. Historical evidence is retained.</p>
+          </div>
+          <Status value={mode} />
+        </div>
+        <div className="mode-grid">
+          {[
+            {
+              id: "FULL",
+              title: "Full research",
+              desc: "Ingest, alert, and research within free caps.",
+              icon: Zap,
+            },
+            {
+              id: "WATCH_ONLY",
+              title: "Watch only",
+              desc: "Ingest discoveries and send factual alerts.",
+              icon: Radar,
+            },
+            {
+              id: "PAUSE_RESEARCH",
+              title: "Pause research",
+              desc: "Preserve intake; pause new reasoning work.",
+              icon: Clock3,
+            },
+            {
+              id: "STOP_ALL",
+              title: "Stop all",
+              desc: "Stop intake and jobs under app control.",
+              icon: Square,
+            },
+          ].map((m) => (
+            <button
+              key={m.id}
+              disabled={busy || mode === m.id}
+              className={`mode-card ${mode === m.id ? "selected" : ""} ${m.id === "STOP_ALL" ? "stop" : ""}`}
+              onClick={() => setModeDialog(m.id)}
+            >
+              <div>
+                <m.icon size={18} />
+                {mode === m.id && <Check size={14} />}
+              </div>
+              <h3>{m.title}</h3>
+              <p>{m.desc}</p>
+              <span>
+                {mode === m.id ? "CURRENT MODE" : "SWITCH MODE"}
+                <ArrowRight size={12} />
               </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="two-column operations-layout">
+        <Section title="Provider readiness" kicker="CONFIGURATION STATUS">
+          <div className="provider-list">
+            {list(data.providers).length ? (
+              list(data.providers).map((p, i) => (
+                <div className="provider" key={p.name ?? p.provider ?? i}>
+                  <span className="provider-icon">
+                    <Globe2 size={17} />
+                  </span>
+                  <div>
+                    <strong>
+                      {p.name ?? p.provider ?? `Provider ${i + 1}`}
+                    </strong>
+                    <small>
+                      {p.reason ??
+                        p.note ??
+                        p.message ??
+                        (p.last_success_at
+                          ? `Last success: ${when(p.last_success_at)}`
+                          : "No live success recorded")}
+                    </small>
+                  </div>
+                  <Status
+                    value={
+                      p.status ??
+                      p.state ??
+                      (p.configured === true
+                        ? "CONFIGURED"
+                        : p.configured === false
+                          ? "MISSING"
+                          : p.value)
+                    }
+                  />
+                </div>
+              ))
+            ) : (
+              <Empty icon={Globe2} title="No provider status returned">
+                Check the API configuration before enabling live sources.
+              </Empty>
             )}
           </div>
-        ) : (
+          {data.configuration && (
+            <details className="configuration-details">
+              <summary>
+                Configuration requirements <ChevronRight size={12} />
+              </summary>
+              <Json value={data.configuration} />
+            </details>
+          )}
+        </Section>
+        <Section title="Usage ledger" kicker="MEASURE FIRST, UPGRADE LATER">
+          <div className="budget-callout">
+            <ShieldCheck size={19} />
+            <p>
+              The target is $0 incremental infrastructure. Local metering does
+              not replace vendor billing safeguards.
+            </p>
+          </div>
+          {list(data.usage).length ? (
+            <div className="table-scroll">
+              <table className="compact-table">
+                <thead>
+                  <tr>
+                    <th>Provider / period</th>
+                    <th>Requests</th>
+                    <th>Recorded cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list(data.usage).map((u, i) => (
+                    <tr key={i}>
+                      <td>
+                        {u.provider ?? u.name ?? "Unspecified"}
+                        <small>
+                          {u.day ??
+                            u.period ??
+                            when(
+                              u.recorded_at ??
+                                u.created_at ??
+                                u.last_request_at,
+                            )}
+                        </small>
+                      </td>
+                      <td>{number(u.requests ?? u.calls ?? u.units)}</td>
+                      <td>
+                        {money(
+                          u.cost_usd ?? u.spend_usd ?? u.estimated_cost_usd,
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty icon={ClipboardList} title="No metered requests">
+              No provider calls have been recorded in the returned ledger.
+            </Empty>
+          )}
+        </Section>
+      </div>
+      <Section
+        title="Job queue & recovery"
+        kicker="DURABLE WORK"
+        action={<Badge>{jobs.length} returned</Badge>}
+      >
+        {jobs.length ? (
           <div className="table-scroll">
-            <table>
+            <table className="compact-table">
               <thead>
                 <tr>
-                  <th>Token</th>
-                  <th>Entry price</th>
-                  <th>Current price</th>
-                  <th>Gain</th>
-                  <th>Peak gain</th>
-                  <th>Price trend</th>
-                  <th>Source</th>
-                  <th />
+                  <th>Job</th>
+                  <th>Target</th>
+                  <th>Status</th>
+                  <th>Attempts</th>
+                  <th>Next / last run</th>
+                  <th>Recovery</th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((t) => (
-                  <tr key={t.mint}>
+                {jobs.map((j) => (
+                  <tr key={j.id}>
                     <td>
-                      <button
-                        className="token-name token-inspect"
-                        onClick={() => void inspect(t.mint)}
-                        disabled={detailBusy}
-                      >
-                        <span className="token-avatar">
-                          {t.image ? (
-                            <img
-                              src={t.image}
-                              loading="lazy"
-                              alt=""
-                              onError={(e) => {
-                                e.currentTarget.style.display = "none";
-                              }}
-                            />
-                          ) : null}
-                          <span>{(t.symbol ?? "?").slice(0, 2)}</span>
-                        </span>
-                        <span>
-                          <strong>{t.symbol ?? short(t.mint)}</strong>
-                          <small>{t.name ?? short(t.mint)}</small>
-                        </span>
-                      </button>
+                      <strong>{human(j.kind)}</strong>
+                      <small>#{j.id}</small>
                     </td>
                     <td>
-                      <strong className="number">{price(t.entry_price)}</strong>
-                      <small className="price-source">
-                        {t.entry_source === "purchase"
-                          ? "Wallet purchase"
-                          : t.entry_source === "detection"
-                            ? "At detection"
-                            : "Awaiting price"}
-                      </small>
-                    </td>
-                    <td className="number">
-                      {price(t.current_price)}
-                      <small className="price-source">
-                        {t.priceStale
-                          ? "Price stale"
-                          : t.priced_at
-                            ? since(t.priced_at)
-                            : "Not priced yet"}
-                      </small>
+                      <code>
+                        {short(
+                          j.mint ??
+                            j.payload?.wallet ??
+                            j.payload?.address ??
+                            "—",
+                        )}
+                      </code>
                     </td>
                     <td>
-                      <span
-                        className={`gain-pill ${t.gain == null ? "neutral" : t.gain >= 0 ? "positive" : "negative"}`}
-                      >
-                        {t.gain != null &&
-                          (t.gain >= 0 ? (
-                            <ArrowUpRight size={13} />
-                          ) : (
-                            <ArrowDownRight size={13} />
-                          ))}
-                        {gain(t.gain)}
-                      </span>
-                    </td>
-                    <td
-                      className={`number ${(t.peak_gain ?? 0) >= 0 ? "positive" : "negative"}`}
-                    >
-                      {gain(t.peak_gain)}
+                      <Status value={j.status} />
+                      {j.last_error && (
+                        <small className="error-text">{j.last_error}</small>
+                      )}
                     </td>
                     <td>
-                      <Sparkline
-                        values={t.history}
-                        positive={(t.gain ?? 0) >= 0}
-                      />
+                      {j.attempts ?? 0} / {j.max_attempts ?? "—"}
                     </td>
+                    <td>{when(j.run_after ?? j.created_at)}</td>
                     <td>
-                      <span className="wallet-source">
-                        {t.wallets[0]?.label ||
-                          short(t.wallets[0]?.address ?? "")}
-                      </span>
-                      <small>
-                        {t.wallet_count ?? t.wallets.length} wallet
-                        {(t.wallet_count ?? t.wallets.length) === 1
-                          ? ""
-                          : "s"}{" "}
-                        · {t.buys} buy{t.buys === 1 ? "" : "s"}
-                      </small>
-                    </td>
-                    <td>
-                      <a
-                        className="external"
-                        aria-label={`View ${t.symbol ?? "token"} on Solscan`}
-                        href={`https://solscan.io/token/${t.mint}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <ArrowUpRight size={16} />
-                      </a>
+                      {["dead", "failed"].includes(
+                        String(j.status).toLowerCase(),
+                      ) ? (
+                        <button
+                          className="button tiny secondary"
+                          disabled={busy}
+                          onClick={() => retry(String(j.id))}
+                        >
+                          <RefreshCw size={12} />
+                          Retry
+                        </button>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        ) : (
+          <Empty icon={CheckCheck} title="No queued work returned">
+            Jobs appear after intake, reconciliation, or a requested research
+            pass.
+          </Empty>
         )}
-        <div className="pagination">
-          <span>
-            {visible.length} shown · Page {cursors.length}
-          </span>
-          <div>
-            <button
-              disabled={cursors.length === 1 || loading}
-              onClick={() => setCursors((c) => c.slice(0, -1))}
-            >
-              Previous
-            </button>
-            <button
-              disabled={!data?.page.hasMore || loading}
-              onClick={() => setCursors((c) => [...c, data!.page.nextCursor!])}
-            >
-              Next <ArrowRight size={13} />
-            </button>
-          </div>
-        </div>
-        <div className="table-footer">
-          <span>
-            <span className="tiny-dot" /> {totals.tokens.toLocaleString()}{" "}
-            tokens tracked
-          </span>
-          <span>
-            Entry stays fixed. Peak tracks observed prices.{" "}
-            <CircleHelp size={13} />
-          </span>
-        </div>
-      </section>
-    );
-  }
-  return (
-    <div className="app-shell">
-      {menu && (
-        <button
-          className="nav-backdrop"
-          aria-label="Close navigation"
-          onClick={() => setMenu(false)}
-        />
-      )}
-      <aside className={`sidebar ${menu ? "open" : ""}`}>
-        <a
-          href="#"
-          className="brand-link"
-          onClick={(e) => {
-            e.preventDefault();
-            navigate("overview");
-          }}
-        >
-          <Brand />
-        </a>
-        <div className="workspace">
-          <span className="workspace-icon">C</span>
-          <div>
-            <strong>My workspace</strong>
-            <small>Solana mainnet</small>
-          </div>
-          <ChevronDown size={14} />
-        </div>
-        <span className="nav-label">WORKSPACE</span>
-        <nav>
-          {nav.map((n) => (
-            <button
-              key={n.id}
-              className={page === n.id ? "selected" : ""}
-              onClick={() => navigate(n.id)}
-            >
-              <n.icon size={18} />
-              {n.title}
-              {n.id === "wallets" && (
-                <span className="nav-count">{wallets.length}</span>
-              )}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="tracking-note">
-            <span className="network-mark">
-              <Radio size={18} />
-            </span>
-            <strong>Your wallets. Your edge.</strong>
-            <p>
-              Only buys enter the feed.
-              <br />
-              Every move starts at entry.
-            </p>
-            <button onClick={() => navigate("wallets")}>
-              Manage sources <ArrowRight size={14} />
-            </button>
-          </div>
-          <div className="profile">
-            <span className="profile-avatar">
-              <Wallet size={17} />
-            </span>
-            <div>
-              <strong>Wallet intelligence</strong>
-              <small>Built for conviction</small>
+      </Section>
+      <div className="two-column">
+        <Section title="Pipeline measurements" kicker="OBSERVED, NOT PROJECTED">
+          {data.metrics ? (
+            <div className="metrics-list">
+              {Object.entries(data.metrics).map(([key, value]) => (
+                <div key={key}>
+                  <span>{human(key)}</span>
+                  <b>
+                    {value == null
+                      ? "Not measured"
+                      : typeof value === "object"
+                        ? JSON.stringify(value)
+                        : String(value)}
+                  </b>
+                </div>
+              ))}
             </div>
-          </div>
-        </div>
-      </aside>
-      <div className="main-wrap">
-        <header className="topbar">
-          <div className="breadcrumbs">
-            <button
-              className="mobile-menu icon-button"
-              aria-label="Open navigation"
-              onClick={() => setMenu(true)}
-            >
-              <Menu size={20} />
-            </button>
-            <span className="breadcrumb-root">Workspace</span>
-            <span className="divider">/</span>
-            <strong>
-              {page === "overview"
-                ? "Overview"
-                : page === "wallets"
-                  ? "Wallets"
-                  : "Tokens"}
-            </strong>
-          </div>
-          <div className="topbar-right">
-            <span className="network">
-              <span className="solana-logo">≋</span>Solana{" "}
-              <span className="tiny-dot" />
-            </span>
-            <span className="topbar-rule" />
-            <span className="live-status">
-              <span className={`status-dot ${connected ? "" : "muted"}`} />
-              {connected ? "Tracking enabled" : "Not connected"}
-            </span>
-          </div>
-        </header>
-        <main>
-          <div className="page-heading">
-            <div>
-              <div className="eyebrow">
-                <span className="tiny-dot" /> WALLET INTELLIGENCE
-              </div>
-              <h1>
-                {page === "wallets"
-                  ? "Your source of signal."
-                  : page === "tokens"
-                    ? "Every buy. Every move."
-                    : "Follow conviction."}
-              </h1>
-              <p>
-                {page === "wallets"
-                  ? "The wallets you follow shape the tokens you see."
-                  : page === "tokens"
-                    ? "A clear view of the tokens your wallets are buying."
-                    : "Turn wallet buys into a clear view of what happens next."}
-              </p>
-            </div>
-            <button className="button primary" onClick={openWallet}>
-              <Plus size={17} />
-              Add wallet
-            </button>
-          </div>
-          {error && (
-            <div className="alert error" role="alert">
-              <Activity size={17} />
-              <span>
-                {error}
-                {data ? " Showing the last loaded data." : ""}
-              </span>
-              <button onClick={() => void load()}>Retry</button>
-            </div>
+          ) : (
+            <Empty icon={Activity} title="No measurements returned">
+              Latency and coverage need a live pilot before they can be claimed.
+            </Empty>
           )}
-          {data && !connected && (
-            <div className="alert">
-              <Radio size={17} />
-              <span>
-                Connect Helius to start tracking wallet buys. Add{" "}
-                <code>HELIUS_API_KEY</code> in your Render environment.
-              </span>
-            </div>
-          )}
-          {data && connected && !data.tracking.workersHealthy && (
-            <div className="alert error">
-              <Activity size={17} />
-              <span>
-                Background workers are not healthy. Your saved data is
-                available; new tracking may be delayed.
-              </span>
-            </div>
-          )}
-          {data?.tracking.error && (
-            <div className="alert error" role="alert">
-              <Activity size={17} />
-              <span>
-                Tracking needs attention: {data.tracking.error}. Stored tokens
-                remain visible.
-              </span>
-            </div>
-          )}
-          {page !== "wallets" && (
-            <>
-              <section className="metrics" aria-label="Tracking summary">
-                {[
-                  {
-                    label: "Tracked wallets",
-                    value: totals.wallets,
-                    detail: "Your discovery sources",
-                    icon: Wallet,
-                  },
-                  {
-                    label: "Tokens discovered",
-                    value: totals.tokens.toLocaleString(),
-                    detail: "From confirmed wallet buys",
-                    icon: Layers3,
-                  },
-                  {
-                    label: "Average gain",
-                    value: gain(avg),
-                    detail: `Across ${totals.priced.toLocaleString()} priced tokens`,
-                    icon: TrendingUp,
-                  },
-                  {
-                    label: "Positive performers",
-                    value: totals.positive.toLocaleString(),
-                    detail: "Above their entry price",
-                    icon: ArrowUpRight,
-                  },
-                ].map((m, i) => (
-                  <div className="metric" key={m.label}>
-                    <div className="metric-top">
-                      <span>{m.label}</span>
-                      <m.icon size={17} />
-                    </div>
-                    <strong
-                      className={
-                        i === 2 && avg != null
-                          ? avg >= 0
-                            ? "positive"
-                            : "negative"
-                          : ""
-                      }
-                    >
-                      {loading && !data ? "—" : m.value}
+        </Section>
+        <Section title="Operator audit" kicker="CONTROL HISTORY">
+          {array(data.audit).length ? (
+            <div className="audit-list">
+              {array(data.audit).map((a, i) => (
+                <div key={a.id ?? i}>
+                  <span className="audit-dot" />
+                  <div>
+                    <strong>
+                      {human(
+                        a.action ?? a.mode ?? a.to_mode ?? "Operator change",
+                      )}
                     </strong>
-                    <small>{m.detail}</small>
-                  </div>
-                ))}
-              </section>
-              {page === "overview" && (
-                <section className="highlights">
-                  <div className="signal-card">
-                    <div className="signal-tag">
-                      <span className="status-dot" /> THE BUY SIGNAL
-                    </div>
-                    <h2>
-                      Follow the wallet.
-                      <br />
-                      <span>Watch the token.</span>
-                    </h2>
                     <p>
-                      No scores. No guesses. Just confirmed buys
-                      <br className="desktop-br" /> and performance from a fixed
-                      entry.
+                      {a.reason ?? a.details?.reason ?? "No reason recorded"}
                     </p>
-                    <button onClick={() => navigate("wallets")}>
-                      Explore your sources <ArrowRight size={15} />
-                    </button>
-                    <div className="signal-visual" aria-hidden="true">
-                      <div className="orbit orbit-one" />
-                      <div className="orbit orbit-two" />
-                      <div className="signal-center">
-                        <Wallet size={30} />
-                      </div>
-                      <span className="orbit-chip chip-one">
-                        <ArrowUpRight size={15} />
-                      </span>
-                      <span className="orbit-chip chip-two">
-                        <Layers3 size={18} />
-                      </span>
-                      <span className="orbit-chip chip-three">
-                        <Activity size={16} />
-                      </span>
-                    </div>
+                    <small>{when(a.created_at ?? a.changed_at)}</small>
+                    <details>
+                      <summary>Audit record</summary>
+                      <Json value={a} />
+                    </details>
                   </div>
-                  <div className="performer-card">
-                    <div className="performer-heading">
-                      <h2>
-                        <TrendingUp size={17} />
-                        Leading the move
-                      </h2>
-                      <button
-                        onClick={() => {
-                          navigate("tokens");
-                          setFilter("performers");
-                          setCursors([undefined]);
-                        }}
-                        aria-label="View performers"
-                      >
-                        <ArrowUpRight size={18} />
-                      </button>
-                    </div>
-                    {best.length ? (
-                      best.map((t, i) => (
-                        <a
-                          className="leader"
-                          key={t.mint}
-                          href={`https://dexscreener.com/solana/${t.mint}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <span className="leader-rank">0{i + 1}</span>
-                          <span className="leader-name">
-                            <strong>{t.symbol ?? short(t.mint)}</strong>
-                            <small>{t.name ?? "Solana token"}</small>
-                          </span>
-                          <strong className="positive">{gain(t.gain)}</strong>
-                        </a>
-                      ))
-                    ) : (
-                      <div className="leader-empty">
-                        <span className="mini-bars">
-                          <i />
-                          <i />
-                          <i />
-                          <i />
-                          <i />
-                        </span>
-                        <strong>The next move starts here.</strong>
-                        <p>
-                          Your top positive performers will rise to the surface
-                          as prices update.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )}
-              {tokenTable()}
-            </>
-          )}
-          {page === "wallets" && (
-            <section className="panel wallets-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>
-                    Wallets <span className="count">{wallets.length}</span>
-                  </h2>
-                  <p>Solana addresses that power your token feed.</p>
                 </div>
-                <span className="soft-badge">
-                  <span className="tiny-dot" /> Buys only
-                </span>
-              </div>
-              {!wallets.length ? (
-                <div className="empty-state">
-                  <div className="empty-art">
-                    <Wallet size={28} />
-                  </div>
-                  <h3>Your feed starts here.</h3>
-                  <p>
-                    Add the wallets you want to follow. We track swap purchases
-                    and leave incoming transfers out.
-                  </p>
-                  <button className="button primary" onClick={openWallet}>
-                    <Plus size={16} />
-                    Add your first wallet
-                  </button>
-                </div>
-              ) : (
-                <div className="wallet-grid">
-                  {wallets
-                    .filter((w) =>
-                      `${w.label} ${w.address}`
-                        .toLowerCase()
-                        .includes(query.toLowerCase()),
-                    )
-                    .map((w) => (
-                      <article className="wallet-card" key={w.address}>
-                        <div className="wallet-card-head">
-                          <span className="wallet-icon">
-                            <Wallet size={21} />
-                          </span>
-                          <span
-                            className={`wallet-state ${w.sync_error ? "failed" : ""}`}
-                          >
-                            <span className="tiny-dot" />
-                            {w.sync_error
-                              ? "Needs attention"
-                              : w.catching_up
-                                ? "Catching up"
-                                : w.synced_at
-                                  ? "Synced"
-                                  : "Waiting"}
-                          </span>
-                          <button
-                            className="icon-button"
-                            aria-label={`Remove ${w.label || short(w.address)}`}
-                            onClick={() => {
-                              setFormError("");
-                              setRemoving(w);
-                            }}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                        <h3>{w.label || "Unnamed wallet"}</h3>
-                        <div className="address-line">
-                          <a
-                            href={`https://solscan.io/account/${w.address}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {short(w.address)}
-                            <ExternalLink size={12} />
-                          </a>
-                          <button
-                            className="icon-button"
-                            aria-label="Copy wallet address"
-                            onClick={() =>
-                              void navigator.clipboard
-                                .writeText(w.address)
-                                .then(() => {
-                                  setCopied(w.address);
-                                  setTimeout(() => setCopied(""), 2000);
-                                })
-                                .catch(() =>
-                                  setNotice("Unable to copy address"),
-                                )
-                            }
-                          >
-                            {copied === w.address ? (
-                              <Check size={13} />
-                            ) : (
-                              <Copy size={13} />
-                            )}
-                          </button>
-                        </div>
-                        <div className="wallet-stats">
-                          <div>
-                            <strong>{w.buys}</strong>
-                            <span>Detected buys</span>
-                          </div>
-                          <div>
-                            <strong>{w.tokens}</strong>
-                            <span>Unique tokens</span>
-                          </div>
-                        </div>
-                        <div className="source-performance">
-                          <span>Tracked token performance</span>
-                          <strong
-                            className={
-                              (w.avg_gain ?? 0) >= 0 ? "positive" : "negative"
-                            }
-                          >
-                            {gain(w.avg_gain ?? null)} avg
-                          </strong>
-                        </div>
-                        <div className="wallet-card-footer">
-                          <Activity size={13} />
-                          <span>
-                            {w.sync_error ||
-                              `${since(w.synced_at)} · ${w.scanned_transactions ?? 0} transactions checked`}
-                          </span>
-                        </div>
-                      </article>
-                    ))}
-                </div>
-              )}
-              <div className="wallet-info">
-                <LockKeyhole size={16} />
-                <p>
-                  Watch-only. No wallet connection, signatures, or private keys.
-                  <br />
-                  <span>
-                    First sync scans the latest 100 transactions. Removing a
-                    wallet stops future tracking and keeps its detected tokens.
-                  </span>
-                </p>
-              </div>
-            </section>
-          )}
-          {data && (
-            <div className="system-status">
-              <span>
-                <Activity size={13} /> {data.tracking.workers} worker
-                {data.tracking.workers === 1 ? "" : "s"} ·{" "}
-                {data.tracking.queued} queued · {data.tracking.failed} failed
-              </span>
-              {data.tracking.failed > 0 && (
-                <button
-                  onClick={() =>
-                    void api("jobs/retry", { method: "POST" })
-                      .then(() => {
-                        setNotice("Failed jobs queued for retry.");
-                        return load();
-                      })
-                      .catch((e) => setNotice(e.message))
-                  }
-                >
-                  Retry failed jobs
-                </button>
-              )}
+              ))}
             </div>
+          ) : (
+            <Empty icon={Shield} title="No operator changes returned">
+              Mode changes and manual controls leave an audit record.
+            </Empty>
           )}
-          <footer className="footer">
-            <span>
-              <span className="tiny-dot" />{" "}
-              {data?.tracking.lastSync
-                ? `Last scan ${since(data.tracking.lastSync).toLowerCase()}`
-                : "Waiting for the first scan"}
-            </span>
-            <span>
-              Made for the moves that matter.{" "}
-              <span className="footer-brand">crypsor.</span>
-            </span>
-          </footer>
-        </main>
+        </Section>
       </div>
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {notice}
-          <button
-            aria-label="Dismiss notification"
-            onClick={() => setNotice("")}
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-      {(modal || removing || detail) && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !busy) {
-              setModal(null);
-              setRemoving(null);
-              setDetail(null);
-            }
-          }}
-        >
-          <div
-            className="modal"
-            ref={modalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-title"
-          >
-            <button
-              className="modal-close icon-button"
-              aria-label="Close dialog"
-              disabled={busy}
-              onClick={() => {
-                setModal(null);
-                setRemoving(null);
-                setDetail(null);
-              }}
-            >
-              <X size={19} />
-            </button>
-            <span className="modal-icon">
-              <Wallet size={23} />
-            </span>
-            <h2 id="modal-title">
-              {detail
-                ? detail.name || detail.symbol || short(detail.mint)
-                : removing
-                  ? "Stop following this wallet?"
-                  : "Follow a wallet"}
-            </h2>
-            <p>
-              {detail
-                ? "Token identity, source and observed performance."
-                : removing
-                  ? "Future scans will stop. Previously detected buys and tokens stay in your feed."
-                  : "Add a Solana address. We’ll follow its buys from here."}
-            </p>
-            {formError && (
-              <div className="form-error" role="alert">
-                {formError}
-              </div>
-            )}
-            {detail ? (
-              <div className="token-details">
-                <code className="mint-detail">{detail.mint}</code>
-                <div className="detail-grid">
-                  {[
-                    ["Entry", price(detail.entry_price)],
-                    ["Current", price(detail.current_price)],
-                    ["Current gain", gain(detail.gain)],
-                    ["Peak gain", gain(detail.peak_gain)],
-                    [
-                      "Decimals",
-                      detail.metadata?.identity?.decimals ?? "Unknown",
-                    ],
-                    [
-                      "Raw supply",
-                      detail.metadata?.identity?.supply ?? "Unknown",
-                    ],
-                    [
-                      "Token program",
-                      detail.metadata?.identity?.tokenProgram ?? "Unknown",
-                    ],
-                    [
-                      "Metadata source",
-                      detail.metadata_source ?? "Awaiting metadata",
-                    ],
-                    [
-                      "Observed",
-                      detail.metadata_at
-                        ? since(detail.metadata_at)
-                        : "Not yet",
-                    ],
-                    [
-                      "Mint authority",
-                      detail.metadata?.identity?.mintAuthority ??
-                        (detail.metadata?.identity?.mintAuthorityKnown
-                          ? "None"
-                          : "Unknown"),
-                    ],
-                    [
-                      "Freeze authority",
-                      detail.metadata?.identity?.freezeAuthority ??
-                        (detail.metadata?.identity?.freezeAuthorityKnown
-                          ? "None"
-                          : "Unknown"),
-                    ],
-                  ].map(([label, value]) => (
-                    <div key={String(label)}>
-                      <span>{label}</span>
-                      <strong>{String(value)}</strong>
-                    </div>
-                  ))}
-                </div>
-                {detail.metadata?.identity?.description && (
-                  <p className="token-description">
-                    {detail.metadata.identity.description}
-                  </p>
-                )}
-                <h3>Observed intelligence</h3>
-                <p className="detail-facts">
-                  {detail.wallet_count} source wallets ·{" "}
-                  {Number(detail.buy_count)} buys
-                  <br />
-                  Version: {detail.insight?.version ?? "Awaiting computation"}
-                  <br />
-                  Observed momentum:{" "}
-                  {gain(
-                    detail.insight?.facts?.observedMomentum ?? null,
-                  )} across {detail.insight?.facts?.sampleCount ?? 0} samples
-                </p>
-                <div className="detail-links">
-                  {[
-                    ...(detail.metadata?.market?.websites ?? []),
-                    ...(detail.metadata?.market?.socials ?? []),
-                  ].map((link: any) => (
-                    <a
-                      href={link.url}
-                      key={link.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {link.label ?? link.type}
-                      <ExternalLink size={12} />
-                    </a>
-                  ))}
-                </div>
-                <a
-                  className="button secondary"
-                  href={`https://solscan.io/token/${detail.mint}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  View on Solscan <ArrowUpRight size={14} />
-                </a>
-              </div>
-            ) : removing ? (
-              <div className="modal-actions">
-                <button
-                  className="button secondary"
-                  disabled={busy}
-                  onClick={() => setRemoving(null)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="button danger"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      await api(`wallets/${removing.address}`, {
-                        method: "DELETE",
-                      });
-                      setRemoving(null);
-                      await load();
-                      setNotice(
-                        "Wallet removed. Its detected tokens are retained.",
-                      );
-                    } catch (e) {
-                      setFormError((e as Error).message);
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  {busy ? "Removing…" : "Remove wallet"}
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={submit} key={modal}>
-                <>
-                  <label className="form-label">
-                    Wallet address
-                    <input
-                      name="address"
-                      placeholder="Paste a Solana wallet address"
-                      required
-                      autoComplete="off"
-                      spellCheck={false}
-                      maxLength={44}
-                    />
-                  </label>
-                  <label className="form-label">
-                    Label <span>optional</span>
-                    <input
-                      name="label"
-                      placeholder="e.g. My conviction wallet"
-                      maxLength={60}
-                    />
-                  </label>
-                  <div className="form-note">
-                    <Radio size={15} />
-                    Only confirmed buys. No transfers. No spend minimum.
-                  </div>
-                </>
-                <button className="button primary submit" disabled={busy}>
-                  {busy ? "Please wait…" : "Start tracking"}
-                  <ArrowRight size={16} />
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
+
 createRoot(document.getElementById("root")!).render(<App />);
