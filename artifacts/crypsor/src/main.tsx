@@ -1,3 +1,4 @@
+import {requestJson} from './request-json.ts';
 import {
   useCallback,
   useEffect,
@@ -1927,7 +1928,7 @@ function TokenAvatar({token}:{token:Row}) {const [failed,setFailed]=useState(fal
 function ProviderSettings(){
  const [key,setKey]=useState(''),[status,setStatus]=useState<Row|null>(null),[message,setMessage]=useState(''),[saving,setSaving]=useState(false);
  const headers=()=>({Authorization:`Bearer ${sessionStorage.getItem('hunter.access')??''}`,'Content-Type':'application/json'});
- useEffect(()=>{fetch('/api/settings',{headers:headers()}).then(r=>r.ok?r.json():Promise.reject()).then(setStatus).catch(()=>setMessage('Settings unavailable; check the deployed API.'));},[]);
- async function save(e:FormEvent){e.preventDefault();setSaving(true);setMessage('Checking Helius connection…');try{const r=await fetch('/api/settings/helius',{method:'POST',headers:headers(),body:JSON.stringify({apiKey:key.trim()})});const data=await r.json();if(!r.ok)throw new Error(data.error);setKey('');setStatus({...status,heliusConfigured:true});setMessage('Helius connected. Key saved securely; no redeploy needed. Add wallets in Cabin / memory, then choose Full research for metadata and reports.');}catch(e){setMessage(e instanceof Error?e.message:'Could not save key');}finally{setSaving(false);}}
+ useEffect(()=>{requestJson('/api/settings',{headers:headers()}).then(setStatus).catch(e=>setMessage(e instanceof Error?e.message:'Settings unavailable.'));},[]);
+ async function save(e:FormEvent){e.preventDefault();setSaving(true);setMessage('Checking Helius connection…');try{await requestJson('/api/settings/helius',{method:'POST',headers:headers(),body:JSON.stringify({apiKey:key.trim()})});setKey('');setStatus({...status,heliusConfigured:true});setMessage('Helius connected. Key saved securely; no redeploy needed. Add wallets in Cabin / memory, then choose Full research for metadata and reports.');}catch(e){setMessage(e instanceof Error?e.message:'Could not save key');}finally{setSaving(false);}}
  return <Section title="Helius connection" kicker="MOBILE SETTINGS · SOLANA MAINNET"><p>{status?.heliusConfigured?'Helius key configured. Replace it below at any time.':'Add your own Helius API key to begin wallet polling.'}</p><form className="wallet-form" onSubmit={save}><label htmlFor="helius-key">Helius API key</label><input id="helius-key" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} required maxLength={256} placeholder="Paste your Helius key"/><button className="button primary" disabled={saving||!key.trim()}>Verify and save key</button><p role="status">{message}</p><small>Your key is encrypted in the database and is never returned to the browser. Polling runs while the Render service is awake. Free Render sleep still interrupts background work.</small></form></Section>;
 }

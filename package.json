@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm run typecheck && pnpm run build:render && pnpm run build:edge",
     "typecheck": "pnpm --filter @workspace/api-server run typecheck && pnpm --filter @workspace/crypsor run typecheck && pnpm --filter @workspace/hunter-edge run typecheck",
-    "test": "pnpm --filter @workspace/api-server test && pnpm --filter @workspace/hunter-edge test",
+    "test": "pnpm --filter @workspace/api-server test && pnpm --filter @workspace/hunter-edge test && pnpm test:web",
     "test:integration": "node --experimental-strip-types --test --test-concurrency=1 tests/*.integration.test.ts",
     "build:render": "pnpm --filter @workspace/api-server build && pnpm --filter @workspace/crypsor build",
     "build:edge": "pnpm --filter @workspace/hunter-edge build",
@@ -18,7 +18,8 @@
     "dev:web": "pnpm --filter @workspace/crypsor dev",
     "backup": "bash scripts/backup.sh",
     "restore:drill": "bash scripts/restore-drill.sh",
-    "test:browser": "node tests/browser-smoke.mjs"
+    "test:browser": "node tests/browser-smoke.mjs",
+    "test:web": "node --experimental-strip-types --test tests/request-json.test.ts"
   },
   "engines": {
     "node": ">=22 <25"

@@ -1,5 +1,5 @@
 import {runtimeConfig,saveHelius} from './settings.ts';
-import {heliusRpc} from './providers.ts';
+import {heliusRpc,ProviderUnavailable} from './providers.ts';
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -53,7 +53,12 @@ export function createApp(database:pg.Pool=pool) {
  app.post('/api/settings/helius',async(req,res)=>{
   const value=req.body?.apiKey;
   if(typeof value!=='string'||!value.trim()||value.length>256||/[\s]/.test(value)){res.status(400).json({error:'Enter a valid Helius API key'});return;}
-  try{await heliusRpc(database,'getHealth',[],undefined,{...process.env,HELIUS_API_KEY:value});}catch{res.status(400).json({error:'Helius connection could not be verified. Check the key, operator mode and request quota.'});return;}
+  try{await heliusRpc(database,'getHealth',[],undefined,{...process.env,HELIUS_API_KEY:value});}catch(error){
+   const code=error instanceof ProviderUnavailable?error.code:'UNKNOWN';
+   const errors:Record<string,[number,string]>={OPERATOR_PAUSED:[409,'Resume WATCH_ONLY or FULL mode before verifying a Helius key.'],REQUEST_CAP_EXHAUSTED:[429,'The Hunter Helius request cap is exhausted. Wait for the cap to reset; your key has not been saved.'],PROVIDER_RATE_LIMIT:[429,'Helius requests are temporarily rate limited. Wait a few seconds and retry.'],PROVIDER_HTTP_401:[422,'Helius rejected this key. Copy the API key from your Helius dashboard, not the RPC URL.'],PROVIDER_HTTP_403:[422,'Helius denied access. Check the key and its access restrictions in Helius.'],PROVIDER_HTTP_429:[429,'Helius quota or rate limit reached. Check your Helius dashboard and retry later.']};
+   const [status,message]=errors[code]??[503,'Helius verification is unavailable. Check Render outbound access and Helius status, then retry. Your key has not been saved.'];
+   res.status(status).json({error:message});return;
+  }
   await saveHelius(database,value);
   await database.query("INSERT INTO hunter.operator_audit(action,reason) VALUES('settings.helius','Helius key updated; secret excluded from audit')");
   res.json({ok:true,heliusConfigured:true});

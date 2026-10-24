@@ -28,6 +28,14 @@ test('mobile key settings authenticate, validate, encrypt, replace and never dis
   const status=await (await original(base+'/api/settings',{headers})).text();assert.ok(!status.includes(secret));
   const audit=JSON.stringify((await pool.query('SELECT * FROM hunter.operator_audit')).rows);assert.ok(!audit.includes(secret));
  }
+ await pool.query('DELETE FROM hunter.vendor_usage');
+ globalThis.fetch=async(input:any,init:any)=>String(input).startsWith('https://mainnet.helius-rpc.com/')?new Response('',{status:401}):original(input,init);
+ const denied=await original(base+'/api/settings/helius',{method:'POST',headers,body:JSON.stringify({apiKey:'synthetic-rejected-key'})});
+ assert.equal(denied.status,422);assert.match((await denied.json() as any).error,/rejected this key/);
+ assert.equal((await runtimeConfig(pool,{})).HELIUS_API_KEY,'synthetic-provider-key-two');
+ await pool.query("UPDATE hunter.operator_state SET mode='STOP_ALL'");
+ const stopped=await original(base+'/api/settings/helius',{method:'POST',headers,body:JSON.stringify({apiKey:'synthetic-rejected-key'})});assert.equal(stopped.status,409);
+ await pool.query("UPDATE hunter.operator_state SET mode='WATCH_ONLY'");
  const invalid=await original(base+'/api/settings/helius',{method:'POST',headers,body:JSON.stringify({apiKey:'bad key'})});assert.equal(invalid.status,400);
  const rejected=await original(base+'/api/wallets',{method:'POST',headers,body:JSON.stringify({network:'ethereum',address:'1'.repeat(32),label:'Wrong network'})});assert.equal(rejected.status,400);
 });
