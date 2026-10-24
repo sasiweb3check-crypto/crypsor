@@ -1,28 +1,17 @@
-# One always-on Node service serves the dashboard, API and wallet-buy poller.
+# Opt-in example only: no existing service has been changed or deployed.
 services:
   - type: web
-    name: crypsor
+    name: hunter-private-pilot
     runtime: node
-    plan: starter
-    region: oregon
-    branch: main
-    numInstances: 1
-    autoDeployTrigger: commit
-    healthCheckPath: /api/healthz
-    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm run build:render
-    startCommand: pnpm run start:render
+    plan: free
+    buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm build:render
+    startCommand: corepack pnpm start:api
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: NODE_VERSION
-        value: "22"
-      - key: PNPM_VERSION
-        value: "10"
-      - key: PG_POOL_MAX
-        value: "2"
+        value: 22
+      - key: HUNTER_API_TOKEN
+        sync: false
       - key: AIVEN_DATABASE_URL
         sync: false
-      - key: HELIUS_API_KEY
-        sync: false
-# Optional: add AIVEN_CA_CERT (the service's PEM CA) if Aiven uses a private CA.
-# Keep TLS verification enabled. REDIS_URL is optional; default jobs use PostgreSQL.
+      - key: PG_POOL_MAX
+        value: 2

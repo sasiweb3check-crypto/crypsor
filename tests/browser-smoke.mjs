@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { mkdir } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+
+// Use a separately launched API-only server on hunter_browser_test, never production.
+const database = new URL(process.env.DATABASE_URL || '');
+const origin = new URL(process.env.HUNTER_BROWSER_ORIGIN || 'http://127.0.0.1:3001');
+if (!['localhost','127.0.0.1'].includes(database.hostname) || database.pathname !== '/hunter_browser_test'
+    || !['localhost','127.0.0.1'].includes(origin.hostname)) throw new Error('Browser smoke requires isolated local hunter_browser_test');
+if (!process.env.HUNTER_API_TOKEN) throw new Error('Set HUNTER_API_TOKEN from your local test runtime');
+const reset = spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',
+  "import {pool,initialize} from './artifacts/api-server/src/db.ts'; await pool.query('DROP SCHEMA IF EXISTS hunter CASCADE'); await initialize(); await pool.end();"],{env:process.env,encoding:'utf8'});
+assert.equal(reset.status,0,'Isolated browser database reset failed');
+const browser = await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,args:['--no-sandbox']});
+const context = await browser.newContext({viewport:{width:1440,height:1000}});
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+const headers = {Authorization:`Bearer ${process.env.HUNTER_API_TOKEN}`};
+const wallet = '1'.repeat(32), mint = 'B'.repeat(32);
+const fixture = {signature:'s'.repeat(88),feePayer:wallet,timestamp:1700000000,slot:123,
+  events:{swap:{nativeInput:{account:wallet,amount:'1000000000'},tokenOutputs:[{mint,userAccount:wallet,rawTokenAmount:{tokenAmount:'1000000',decimals:6}}]}}};
+async function api(path, method='GET', data) {
+  const response = await context.request.fetch(origin.origin+path,{method,headers,data});
+  assert.ok(response.ok(), `Local API ${path} failed: ${response.status()}`);
+  return response.json();
+}
+async function nav(name) {await page.getByRole('navigation',{name:'Main navigation'}).getByRole('button').filter({hasText:name}).click();await page.waitForTimeout(150);}
+try {
+  await mkdir('test-results',{recursive:true});
+  await page.goto(origin.origin);
+  await page.getByLabel('API token',{exact:true}).fill(process.env.HUNTER_API_TOKEN);
+  await page.getByRole('button',{name:'Unlock workspace'}).click();
+  await page.getByRole('heading',{name:'Radar',exact:true}).waitFor();
+  await page.screenshot({path:'test-results/radar-empty.png',fullPage:true});
+  await nav('Cabin / memory');
+  await page.getByLabel('Public Solana address').fill(wallet);
+  await page.getByLabel(/Label/).fill('Synthetic browser sensor');
+  await page.getByRole('button',{name:'Watch wallet',exact:true}).click();
+  await page.getByText('Synthetic browser sensor',{exact:true}).waitFor();
+  await api('/api/ingest','POST',{transactions:[fixture]});
+  await nav('Radar');
+  await page.getByText(mint,{exact:true}).first().waitFor({timeout:2000}).catch(async()=>{
+    assert.equal((await api('/api/overview')).stats.tokens,1);
+  });
+  await nav('Operations');
+  await page.getByRole('button',{name:/Stop all/}).click();
+  await page.getByLabel('Reason for this change').fill('Synthetic browser STOP_ALL validation');
+  await page.getByRole('button',{name:'Confirm mode change'}).click();
+  await page.waitForTimeout(150);
+  assert.equal((await api('/api/operations')).mode,'STOP_ALL');
+  const blocked = await context.request.post(origin.origin+'/api/ingest',{headers,data:{transactions:[fixture]}});
+  assert.equal(blocked.status(),503);
+  await page.getByRole('button',{name:/Full research/}).click();
+  await page.getByLabel('Reason for this change').fill('Synthetic browser rule-journal validation');
+  await page.getByRole('button',{name:'Confirm mode change'}).click();
+  await page.waitForTimeout(150);
+  const result = spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',
+    `import {pool} from './artifacts/api-server/src/db.ts'; import {researchToken} from './artifacts/api-server/src/research.ts'; await researchToken(pool,'${mint}'); await pool.end();`],
+    {env:{...process.env,GEMINI_ENABLED:'false',TELEGRAM_ENABLED:'false'},encoding:'utf8'});
+  assert.equal(result.status,0,'Rule-only synthetic browser journal failed');
+  await nav('Decisions');
+  await page.getByText(/Hypothesis, not a forecast/).first().waitFor();
+  await nav('Cabin / memory');
+  await page.getByRole('button',{name:new RegExp(mint.slice(0,7))}).first().click();
+  await page.getByRole('heading',{name:'Token room',exact:true}).waitFor();
+  await page.getByText(/explicit provider-reported token swap output/).first().waitFor();
+  await page.screenshot({path:'test-results/token-room-synthetic.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  await page.waitForTimeout(300); // Allow the mobile drawer transition to finish.
+  await page.screenshot({path:'test-results/mobile-token-room.png',fullPage:true});
+  assert.ok(await page.locator('.sidebar').evaluate(el=>el.getBoundingClientRect().right<=1),'Mobile drawer remains visible when closed');
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Mobile document overflows horizontally');
+  assert.deepEqual(errors,[],'Browser runtime errors');
+  console.log(JSON.stringify({browser:'Chromium',pages:5,checks:['unlock','empty radar','wallet management','discovery','stop gate','full mode','versioned decision','token evidence','mobile overflow'],runtimeErrors:0,fixtures:'synthetic isolated hunter_browser_test only'}));
+} finally {await browser.close();}

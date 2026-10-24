@@ -1,24 +1,33 @@
 {
-  "name": "workspace",
-  "version": "0.0.0",
+  "name": "hunter",
+  "version": "0.2.0",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "build": "pnpm run typecheck && pnpm run build:render",
-    "typecheck": "pnpm --filter @workspace/api-server run typecheck && pnpm --filter @workspace/crypsor run typecheck",
-    "test": "pnpm --filter @workspace/api-server test",
-    "build:render": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/crypsor run build",
-    "start:render": "node artifacts/api-server/launch.mjs",
-    "start:api": "PROCESS_ROLE=api node artifacts/api-server/launch.mjs",
-    "start:worker": "PROCESS_ROLE=worker node artifacts/api-server/launch.mjs",
-    "test:integration": "pnpm --filter @workspace/api-server test:integration"
+    "build": "pnpm run typecheck && pnpm run build:render && pnpm run build:edge",
+    "typecheck": "pnpm --filter @workspace/api-server run typecheck && pnpm --filter @workspace/crypsor run typecheck && pnpm --filter @workspace/hunter-edge run typecheck",
+    "test": "pnpm --filter @workspace/api-server test && pnpm --filter @workspace/hunter-edge test",
+    "test:integration": "node --experimental-strip-types --test --test-concurrency=1 tests/*.integration.test.ts",
+    "build:render": "pnpm --filter @workspace/api-server build && pnpm --filter @workspace/crypsor build",
+    "build:edge": "pnpm --filter @workspace/hunter-edge build",
+    "start": "node artifacts/api-server/dist/index.mjs",
+    "start:render": "node artifacts/api-server/dist/index.mjs",
+    "start:api": "PROCESS_ROLE=api node artifacts/api-server/dist/index.mjs",
+    "start:worker": "PROCESS_ROLE=worker node artifacts/api-server/dist/index.mjs",
+    "migrate": "PROCESS_ROLE=migrate node artifacts/api-server/dist/index.mjs",
+    "dev:web": "pnpm --filter @workspace/crypsor dev",
+    "backup": "bash scripts/backup.sh",
+    "restore:drill": "bash scripts/restore-drill.sh",
+    "test:browser": "node tests/browser-smoke.mjs"
   },
   "engines": {
     "node": ">=22 <25"
   },
   "devDependencies": {
     "prettier": "^3.9.5",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "playwright": "1.64.1"
   },
-  "packageManager": "pnpm@10.34.4"
+  "packageManager": "pnpm@10.34.4",
+  "type": "module"
 }

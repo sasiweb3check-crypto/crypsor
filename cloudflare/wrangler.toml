@@ -1,0 +1,31 @@
+name = "hunter-pilot-ingress"
+main = "src/worker.ts"
+compatibility_date = "2026-10-24"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Deployment intentionally requires configuring a REAL Hyperdrive binding.
+# Verify certificate validation to Aiven before using the service.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "REPLACE_WITH_VERIFIED_HYPERDRIVE_ID"
+
+[[queues.producers]]
+binding = "EVENT_QUEUE"
+queue = "hunter-events"
+
+[[queues.consumers]]
+queue = "hunter-events"
+max_concurrency = 2
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 5
+retry_delay = 60
+dead_letter_queue = "hunter-events-dead"
+
+[triggers]
+crons = ["*/2 * * * *"]
+
+[vars]
+# No billing upgrades or paid research are enabled by this file.
+GEMINI_ENABLED = "false"

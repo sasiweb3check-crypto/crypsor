@@ -8,3 +8,8 @@ coverage/
 *.log
 .DS_Store
 .vscode/
+.cache/
+.wrangler/
+.dev.vars
+*.dump
+test-results/

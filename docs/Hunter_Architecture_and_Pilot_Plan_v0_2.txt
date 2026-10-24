@@ -1,0 +1,172 @@
+PRIVATE RESEARCH SYSTEM  /  SPECIFICATION ADDENDUM  /  OCTOBER 2026
+HUNTER
+Architecture & free-tier pilot plan  |  Revision 0.2
+Status: design only; no deployment, performance test, repository audit or paid upgrade has yet been performed. This addendum modifies the previous Technical Architecture v0.1 and Operating Costs & Validation v0.1; all unchanged security and data-correctness requirements continue to apply.
+1  What changes from v0.1
+Area
+v0.1 direction
+Revised v0.2 direction
+Hosting
+New low-cost VPS with locally hosted Postgres
+Reuse existing GitHub→Render app for UI; Cloudflare free event ingress; existing Aiven Postgres for memory.
+Brain
+Bounded AI investigators
+Explicit Omo-inspired READ → THINK → GATE → JOURNAL → REVISIT decision service, separate from ingest.
+Discovery
+Tracked wallets and optional launch feed
+All watched wallets are unconditional discovery sensors; separate wallet-relationship memory; independent launch radar deferred.
+Costs
+Approximately $35/month personal target
+Strict $0 incremental infrastructure target for 5-day trial, if vendor free quotas cover measured usage.
+Paid research
+Selective by priority
+Feature-flag paid-only social/graph/archival sources; store research gaps and retry later when enabled.
+Non-negotiables: Solana-first; private; read-only; no signing key or order execution; no GMGN integration; no Proxima/Luminos work. Price and latency forecasts are not performance guarantees.
+2  Free-tier deployment topology
+Recommended flow: Helius enhanced webhook → Cloudflare Worker (authenticated intake, quick 2xx acknowledgment) → Cloudflare Queue → lightweight, idempotent event normalizer and Aiven persistence → fast Telegram alert → token dossier jobs → Omo-style decision worker → journal and follow-up scheduler. A separate Cloudflare Cron periodically reconciles address signatures and overdue work.
+Piece
+First-pilot service
+Critical implementation rule
+Existing web UI
+Reuse Render deployment and GitHub repo where suitable
+Do not rely on a sleeping Render Free web service for webhook arrival; do not overwrite current app without code audit.
+Always-on endpoint
+Cloudflare Workers Free
+Tiny CPU-bound handler; authenticate source; enqueue fast; no AI on ingest.
+Durable queue
+Cloudflare Queues Free
+At-least-once; 24-hour retention; retry and write durable checkpoints.
+Database
+Existing Aiven PostgreSQL Free
+Separate hunter schema; indexes; unique event keys; max 20 connections; free 1 GB cap.
+Database access
+Cloudflare Hyperdrive, subject to connection test
+TLS certificate verification; pooled connections; restrict SQL/credentials.
+AI / research
+Gemini API free where eligible; optional
+Low-priority jobs only, caps per token and daily; disabled if free quota exhausted.
+Market evidence
+Helius RPC, Jupiter Tokens, DEX Screener
+Independent cross-checks; cache source timestamp; respect per-service quotas.
+Notifications
+Telegram Bot API
+Single-user chat allowlist; idempotent alert IDs and no spam.
+Render Free web services sleep after 15 minutes idle and can take about a minute to wake. A React static site can remain readily served on Render or Cloudflare; route dynamic reads through authenticated APIs rather than exposing the database. Cloudflare Workers Free has a 10 ms CPU budget per invocation: complicated holder graphs and large reports must be deferred, split into bounded tasks, or moved to paid compute.
+3  Omo brain: decisions without execution
+READ → collect reproducible facts and current candidate context. THINK → generate a provisional thesis, competing hypothesis, catalyst, invalidation trigger and questions to resolve. GATE → deterministic checks for source provenance, freshness, identity confidence, risky contract mechanics and budget eligibility. JOURNAL → persist a versioned decision with evidence and exact known-at timestamp. REVISIT → update after a meaningful state change and evaluate previous hypotheses.
+Brain output
+Semantics for a personal read-only Hunter
+ALERT_NOW
+Dispatch first wallet-discovery alert even when thesis not ready; say “unverified”.
+DEEP_RESEARCH
+Schedule bounded origin, holder, market-structure and narrative research.
+WATCH / RECHECK
+Persist triggers such as holder change, creator acknowledgment, liquidity move or source update.
+CONTRADICTION
+Correct or downgrade a prior claim; keep original decision and correction audit trail.
+DEPRIORITIZE
+Stop spending AI credits on this candidate; never discard original wallet event.
+INSUFFICIENT_EVIDENCE
+Keep uncertainties visible; do not fill gaps with imagined facts.
+Omo’s original public code has separate market read, AI-thesis, audit/gate and pipeline modules (omotrades/omo). Adapt the conceptual decision loop, not the trading execution code; do not import privileged wallet, signing, swap or transaction-commitment modules.
+4  Intelligence quality: observe everything, conclude carefully
+A strong Hunter keeps three distinct outputs: (A) research priority; (B) structural/manipulation risk; and (C) evidence confidence. None should override the others. The first alert contains observed facts; deeper reports contain model interpretations explicitly labeled as hypotheses.
+Token originality: compare prior mints with normalized names/tickers, metadata URIs, image fingerprints, deployer history and timestamped public source chronology. “Earliest found in covered datasets” is not proof of first-ever or official creator affiliation.
+Holder lifecycle: resolve token-account owners, concentrate on net changes, top-holder movements, funding paths, buyer dwell times, liquidity-pool vs externally owned accounts and multi-wallet interactions.
+Fake-volume / MEV / bot factors: spot opposing-leg churn, buy-volume-to-holder-growth divergence, repeated counterparties, same-slot activity, priority fee/tip context, wash-like patterns and common-funder evidence. Preserve confidence and alternative explanations; these are not decisive flags or proof of a named actor.
+Narratives: independently check primary creator posts, original meme evidence, token socials and any promised future updates. Unavailable X/TikTok/Instagram evidence remains UNKNOWN, not FALSE.
+Early warning: compare current token behavior to matched age, liquidity and launchpad cohorts; use falsifiable windows (15m, 1h, 24h), not guaranteed breakout forecasts.
+Surprise engine: allow bounded, scheduled anomaly/hypothesis generation from stored on-chain evidence; send only verified, material discoveries to the user; save unsuccessful hypotheses too.
+5  Permanent memory and control plane
+Use one Aiven Postgres schema, not a new graph or vector database. Core entities: watched_wallet, onchain_event, token, token_metadata_version, holder_snapshot, relation_edge, source_document, evidence_claim, investigation_job, decision_version, prediction, outcome, alert, vendor_usage and operator_state.
+A decision keeps: token mint, discovered source wallet(s), blockchain event signatures, normalized observations, evidence IDs, alternate hypotheses, contradiction list, timestamp known-at, reviewer result, model/rule versions, spend and next recheck trigger. Append; never silently overwrite historical judgments.
+Operator modes: FULL (free-capped research), WATCH_ONLY (ingest + non-AI alert), PAUSE_RESEARCH (save queued events but no new AI), STOP_ALL (disable new event handling and jobs as far as provider controls permit). STOP_ALL does not automatically cancel fixed vendor subscriptions; manual billing controls remain important.
+Resilience: unique (signature, instruction path, event kind) IDs; retries with bounded dead-letter status; confirmed/finalized reconciliation; source lag and last-success monitoring; daily cheap DB export and restore test. The 1 GB Aiven Free storage cap requires retention and aggregation rules: raw payloads are not kept indefinitely.
+6  Omo-inspired UI built from free components
+Reuse existing Render app if source/framework makes sense. Otherwise create a small React + TypeScript + Tailwind CSS + shadcn/ui frontend as a new branch. These components have no mandatory licensing fee. If possible deploy as a Render Static Site or Cloudflare Workers Static Assets to avoid dashboard cold starts.
+Page
+Pilot content
+Later expansion
+RADAR
+Live discovered tokens; immediate alert state; investigation status
+Independent new-launch radar and cohort anomaly scores
+TOKEN ROOM
+Research timeline, liquidity, holder movement, origin/duplicate checks, evidence links
+Social cross-validation, cluster maps and prediction comparisons
+DECISIONS
+Omo-style thesis, counter-thesis, rule-gate output and next action
+Automated reviewer and calibrated ranking
+CABIN / MEMORY
+Searchable wallet, token, narrative and claims history
+Time-versioned graph exploration and semantic memory
+OPERATIONS
+Webhook lag, quotas, errors, pause/stop, replay cursor
+Multi-provider failover and stronger reliability SLOs
+7  Free-tier reality, drawbacks and deliberate deferrals
+Risk or gap
+Effect on pilot
+Mitigation / deferred upgrade
+Render Free sleep and restart
+Unreliable primary ingestion; cold dashboard/API
+Webhook to Cloudflare; static UI or accept UI delay; paid compute only if required.
+Workers 10 ms CPU
+Deep parsing or LLM orchestration cannot be assumed
+Keep ingress trivial, batch/slice lightweight jobs; benchmark before paying.
+Aiven 1 GB / 20 connections / single node
+Storage/concurrency ceiling and downtime risk
+Indexes, TTL/aggregates, pooled connection, backups; upgrade when measured.
+Cloudflare free queue retention 24h
+Outage longer than retention can lose queued items
+Durable event checkpoints + Helius replay; monitor queue age.
+Helius free limits / webhook delivery gaps
+Coverage and timeliness not guaranteed
+Filter watched addresses, reconcile transactions by cursor.
+Jupiter Free 1 req/sec
+Burst enrichment backlog
+Cache, consolidate token requests, priority queue.
+Gemini free quota and privacy
+No guaranteed unlimited AI and free-tier data policy
+Opt in, sanitize prompts, use no sensitive keys; fallback to rule-based dossier.
+X/TikTok/Instagram automated sources
+Authenticity and broad reach cannot be guaranteed free
+Record public URLs/user links now; paid/approved sources later.
+Graph/MEV/advanced fake-volume inference
+Computational and data complexity
+Store basic features now; perform deeper clustering after enough historical labels.
+8  Five-day pilot / acceptance gates
+Day
+Build target
+Pass condition
+1
+Inspect existing GitHub app, branch safely; Aiven schema; endpoint auth
+Render current app untouched; DB migration and secured health check.
+2
+Helius → Cloudflare Worker → Queue → Aiven
+Replay-resistant ingestion, signature dedupe, persisted cursor and Telegram alert.
+3
+Token resolver, Jupiter/DEX market context, fast rules
+Mint identity, price/liquidity freshness and basic holder flags cited to sources.
+4
+Omo READ–THINK–GATE–JOURNAL; first token room
+Versioned thesis + counter-thesis + unknowns + next recheck in database.
+5
+Reconciliation/restore drill, cost ledger, stop modes, demo
+Measured latency + missing events + cost + failed-job recovery report.
+Five days is a pilot target, not a completion date for robust holder graphs, cross-platform social validation, verified originality at ecosystem scale, statistically calibrated learning or guaranteed sub-15-second alerts. Use a sample of 10–20 watched wallets before widening.
+9  Budget policy and upgrade triggers
+Pilot target: $0 incremental infrastructure if all existing accounts remain within free-tier quotas; engineering time is not included. No credit card or paid subscription should be enabled automatically. Separate any fixed Render/Aiven account fees already being paid from newly incurred application costs.
+Upgrade only after collecting real metrics. Worker CPU errors → paid Cloudflare Workers (published starting around $5/month). Render Free sleeps → switch UI to static assets or pay for always-on compute. DB 1 GB/storage or connection pressure → higher Aiven tier. Helius missed-event/credit depletion → adjust filters, then evaluate paid data. AI quota exhausted → pause full reasoning and keep watch-only facts. Purchase broader social access only after proving it changes decisions.
+The first upgrade purchase is optional, not scheduled automatically after day five. A hard controller checks daily and monthly request caps before each paid call, refuses new paid work at the limit and keeps the operator audit log. Third-party overages can still occur if vendor billing and local metering disagree; use vendor-side spending safeguards as available.
+10  Reference URLs and items needing validation
+Omo GitHub README and PROCESS: https://github.com/omotrades/omo
+Render Free deploy: https://render.com/docs/free
+Render static site: https://render.com/docs/static-sites
+Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
+Cloudflare Queues pricing: https://developers.cloudflare.com/queues/platform/pricing/
+Cloudflare Hyperdrive TLS: https://developers.cloudflare.com/hyperdrive/configuration/tls-ssl-certificates-for-hyperdrive/
+Aiven PostgreSQL Free: https://aiven.io/docs/products/postgresql/concepts/pg-free-tier
+Helius webhooks: https://github.com/helius-labs/core-ai/blob/main/helius-plugin/skills/build/references/webhooks.md
+Jupiter pricing: https://developers.jup.ag/pricing
+Gemini API billing / privacy: https://ai.google.dev/gemini-api/docs/billing and https://ai.google.dev/gemini-api/docs/pricing
+Telegram Bot API: https://core.telegram.org/bots/api
+Before implementation: obtain GitHub repository URL and existing Render framework/runtime details, confirm whether Aiven service is free or paid, test Hyperdrive TLS connectivity, check Helius webhook configuration/quota, and inspect Gemini free-tier entitlement. Do not share raw secrets in code or chat.

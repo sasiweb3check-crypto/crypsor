@@ -1,111 +1,112 @@
-# Crypsor
+# HUNTER · private Solana research pilot
 
-Mobile-friendly Solana wallet-buy intelligence: confirmed swap discovery, fixed
-entry prices, current/peak sampled gains, complete source attribution and token
-identity enrichment. Tokens are retained without quality scores or spend thresholds.
+Hunter replaces the previous Crypsor application on branch `hunter/pilot-v0.2`.
+It observes watched wallets and journals evidence-backed research. It has no
+signing key, swap builder, order placement, GMGN integration, or execution path.
+The supplied architecture v0.2 is preserved in [docs](docs/Hunter_Architecture_and_Pilot_Plan_v0_2.txt).
+The referenced v0.1 documents were not supplied; their unspecified requirements
+cannot be claimed as implemented.
 
-## Development
+## Run locally
 
-Node 22, pnpm 10.34.4, PostgreSQL 16+ (with pg_trgm).
+Requirements: Node 22, pnpm 10.34.4 and PostgreSQL 16+.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm run build
-pnpm test
-# Isolated loopback test database only; never a production connection:
-TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/crypsor_scale_test pnpm test:integration
-# Set DATABASE_URL for development, optionally HELIUS_API_KEY for live ingestion:
-pnpm run start:render
+pnpm build
+# Export DATABASE_URL and a random HUNTER_API_TOKEN (at least 24 characters)
+# through your environment. .env.example documents configuration; .env is
+# not automatically loaded by the production start command.
+pnpm migrate
+pnpm start
 ```
 
-`start:render` supervises separate API and worker Node processes on the existing
-web service. `start:api` and `start:worker` let them run on separate services later.
-The worker restarts with backoff; API health remains independent. Each process
-uses its own bounded database pool (API 2, worker 2 by default). The worker starts
-after the API has initialized PostgreSQL and opened its port. Temporary connection
-exhaustion retries at startup; invalid credentials and TLS failures still fail.
-Budget connections
-for overlapping instances during Render deployments; PG_POOL_MAX overrides each pool.
+Open the application through your deployment's HTTPS origin. The unlock screen
+uses your API token for private requests and keeps it only in this tab's session
+storage. Clear it with Lock. Do not put credentials in links. All `/api/*` reads,
+including health, require `Authorization: Bearer <HUNTER_API_TOKEN>`.
 
-Wallet addition, removal and manual scans are public at the user's request.
-There is no password, sign-in, session cookie or `/api/auth`. Public mutations
-have a modest per-IP rate limit. A Helius webhook secret authenticates provider
-requests; it is unrelated to wallet management.
+The application starts empty, in **WATCH_ONLY** mode. Add 10–20 watched Solana
+addresses in Cabin/Memory. No example coins, performance figures or imagined
+research are inserted. All configured wallets are discovery sensors without
+spend thresholds or quality-based exclusion. Supported enhanced swap outputs
+are token discoveries; other wallet activity is retained without claiming a buy.
+Provider-reported swaps remain unverified until reconciled against finalized
+signatures. Unsupported transaction layouts remain coverage gaps.
 
-## Reliability and scaling
+Frontend editing: `pnpm dev:web` starts Vite with `/api` forwarded to the API on
+port 3000. Backend changes require `pnpm build:render` and a restart.
+`pnpm start:api` and `pnpm start:worker` run separate roles. In production, do not
+run both Cloudflare and Render background workers without checking connection,
+quota and concurrency budgets.
 
-PostgreSQL is the durable job/outbox source of truth. Jobs are deduplicated,
-leased and fenced, with bounded concurrency, global provider request limits,
-exponential backoff, Retry-After handling, dead jobs and restart recovery.
-With REDIS_URL configured, BullMQ dispatches the same durable jobs. Without
-Redis, PostgreSQL consumers process them. Redis downtime cannot erase the outbox.
-Use the same queue backend across worker instances. Lease recovery and an elected
-scheduler permit multiple worker consumers without duplicate scheduling.
+## Components
 
-The first scan examines the latest 100 transactions without relying on Helius's
-SWAP label. Direct Pump.fun buy/buy_v2/buy_v3 and exact-input variants are decoded from
-the official program, instruction discriminator and user/mint account positions.
-This covers Token-2022 buys missing from enhanced events; ordinary transfers,
-other users' buys, failed calls and sell instructions remain excluded.
-Program layouts come from https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json.
-Other protocols use confirmed enhanced swap events or the conservative transfer fallback.
-One-time migrations recheck buy-less wallets; cards show transactions examined. Subsequent backlogs
-are processed in bounded chunks, saving progress and retaining the stable cursor
-until caught up. Idempotent `(wallet, mint, signature)` records handle retries
-and webhook duplicates. A signed Helius enhanced-transaction webhook can accelerate
-discovery, with polling retained for reconciliation.
+| Component | Responsibility |
+| --- | --- |
+| `artifacts/api-server/src` | Private Express API, PostgreSQL persistence, durable jobs, bounded providers, rule gates and append-only journal |
+| `artifacts/crypsor/src` | React/TypeScript Radar, Token Room, Decisions, Cabin/Memory, Operations |
+| `cloudflare` | Authenticated webhook → Queue → Hyperdrive persistence; cron reconciliation and jobs independent of Render availability |
+| `scripts` | Verified-TLS database backup and isolated restore drill |
+| `tests` | Database/API/recovery/provider integration tests using clearly synthetic fixtures |
 
-The dashboard uses 25-row keyset pages (maximum 50), indexed database search and
-server sorting. Sharded counters and per-wallet materialized statistics avoid
-scanning the entire catalogue for every page. Leaders are queried independently
-of the visible page. Summaries have a five-second API cache. Views trigger a
-bounded refresh request for the visible tokens.
+The retained artifact directory names are workspace paths, not the previous app.
+All Hunter tables live in the separate `hunter` schema. Historical decisions,
+evidence claims, outcomes and operator audit records reject updates/deletes.
+Events are deduplicated by signature, instruction path and kind. Jobs use leases,
+fenced completion, bounded retries and explicit dead-job replay. Raw source
+payloads expire after seven days; normalized facts and source references remain.
 
-New/viewed tokens target 30-second price updates, recently bought tokens 90 seconds,
-inactive tokens 15 minutes and tokens older than 30 days daily. These are targets;
-actual freshness depends on provider quotas and queue capacity. Missing prices
-remain unknown. Peak is the highest observed price since tracking, not a lifetime
-all-time high or realized wallet PnL. Historical SOL buys use a clearly marked USD
-price at detection; stablecoin purchase prices assume the stablecoin's USD peg.
+Research separates **priority**, **structural risk**, and **confidence**. The
+READ → THINK → GATE → JOURNAL → REVISIT loop always has a rule-only fallback.
+Theses and counter-theses are hypotheses. Missing holder classifications,
+creator affiliation, social evidence, originality, MEV attribution and cohort
+calibration are UNKNOWN, never asserted as negative or invented.
 
-Metadata has an independent Helius DAS / parsed on-chain RPC pipeline. It stores
-name, symbol, image, description, decimals, raw supply, authorities, creators,
-metadata URI and sources/timestamps where available. Market venues supply optional
-website/social links. Missing data stays unknown, and authority absence is shown
-only when the source confirms it. Metadata is enrichment, never a discovery gate.
+## Operator modes and external calls
 
-Versioned `facts-v1` intelligence stores wallet overlap, buy count, entry provenance,
-current/peak performance and momentum across timestamped observed samples. The
-underlying buy facts remain available for future intelligence versions.
+- **FULL:** bounded factual research and optional explicitly enabled free-tier AI.
+- **WATCH_ONLY:** ingestion, reconciliation and factual discovery alerts; no new research.
+- **PAUSE_RESEARCH:** retain incoming events; stop new research work.
+- **STOP_ALL:** stop new ingestion/leasing/provider calls as far as in-flight work permits. Disable the upstream webhook and vendor billing manually when needed.
 
-Recent charts are bounded JSON histories (30 active / six inactive samples).
-Raw provider receipts have seven-day retention; normalized buys and tokens remain.
-Optional S3-compatible archival uploads gzip receipts before allowing their deletion.
-When archival is configured and unavailable, unarchived receipts are retained.
-Use storage lifecycle policies and provision disk for the actual retention workload.
+Changes require a reason and enter the operator audit log. STOP_ALL cannot recall
+an already transmitted HTTP request or cancel vendor subscriptions.
 
-## Production
+Per-provider daily/monthly request caps and pacing reserve ledger capacity
+*before* requests. Optional Gemini additionally needs explicit enablement,
+free-tier confirmation, and a per-token cap. Paid-only social/graph/archival
+sources are disabled. Local zero-cost estimates are not vendor billing receipts
+or proof of free-tier entitlement. Use vendor-side limits; no paid plans are
+automatically enabled.
 
-Required: AIVEN_DATABASE_URL (or DATABASE_URL), HELIUS_API_KEY; AIVEN_CA_CERT when
-Aiven uses a private CA. Remote TLS certificates are verified. Optional:
+Telegram is off by default. Enabling delivery requires the bot token, chat ID,
+and a single matching allowed chat. Alerts have durable IDs. Ambiguous delivery
+outcomes require manual verification to avoid automatic duplicate spam. This
+repository's tests use fixtures and do not send real messages.
 
-- REDIS_URL: BullMQ backend; managed Redis should use TLS.
-- PROCESS_ROLE: all (default), api or worker.
-- HELIUS_WEBHOOK_SECRET: match the Authorization header configured in Helius.
-- WALLET_CONCURRENCY (4), HELIUS_RPS (3), DEXSCREENER_RPS (2), SOLANA_RPC_RPS (1).
-- WALLET_POLL_SECONDS (30), WALLET_PAGES_PER_JOB (3), PG_POOL_MAX.
-- ARCHIVE_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY;
-  optional ARCHIVE_ENDPOINT and ARCHIVE_PATH_STYLE for compatible object stores.
+## Validate
 
-Set credentials securely in Render. Do not commit `.env` values. No password is
-needed for wallet management. See docs/RENDER.md and docs/BENCHMARK.md.
+```sh
+pnpm build
+pnpm test
+# Destructive tests: ONLY the dedicated loopback hunter_pilot_test database.
+TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/hunter_pilot_test pnpm test:integration
+pnpm backup
+# Source writes must be paused for a stable row-content comparison.
+# ONLY drops/restores the local hunter_restore_test schema.
+RESTORE_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/hunter_restore_test pnpm restore:drill
+```
 
-`/api/healthz` verifies database/API readiness with one query, so deployment
-readiness does not compete with worker monitoring for scarce connection slots.
-`/api/monitoring` exposes queue depth, age, failures, stale wallets and pool pressure.
-The dashboard warns on failed jobs, missing workers and stale prices. Retry terminal
-jobs with `/api/jobs/retry`. No old Settings, Ward, scoring or trading APIs remain.
+Schedule `pnpm backup` daily outside the sleeping web service and store encrypted
+copies off-host. The scripts do not pretend a local backup survives host loss.
+Restore drills compare each table's row count and content fingerprint. Test
+fixtures never enter the development database. See [validation](docs/VALIDATION.md)
+for measured checks and remaining acceptance gates.
 
-`/api/wallets/:address/diagnostics` retains the latest nonempty scan's parser reasons
-and bounded transaction samples for investigating missed buys. Samples contain
-public transaction fields; incoming transfers are never admitted for debugging.
+## Deploy only after configuration
+
+See [deployment](docs/DEPLOYMENT.md) and [Cloudflare setup](cloudflare/README.md).
+No deployment, webhook registration, paid upgrade or five-day live pilot is
+implied by a local build. Cloudflare/Aiven/Helius/Telegram account access and
+current quotas must be verified before enabling real traffic.
