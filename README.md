@@ -110,3 +110,29 @@ See [deployment](docs/DEPLOYMENT.md) and [Cloudflare setup](cloudflare/README.md
 No deployment, webhook registration, paid upgrade or five-day live pilot is
 implied by a local build. Cloudflare/Aiven/Helius/Telegram account access and
 current quotas must be verified before enabling real traffic.
+
+## Mobile pilot setup
+
+After deploying the mobile-settings update, open Operations → Helius connection.
+Paste your own Helius key; Verify and save checks a read-only RPC call before
+encrypting it in PostgreSQL. The UI never retrieves the saved value. Rotation
+from the phone applies on the next poll without a redeploy. Encryption uses
+HUNTER_SETTINGS_KEY when provided, otherwise the existing HUNTER_API_TOKEN.
+Keep that encryption secret stable across restarts and services; after changing
+it, re-enter the provider key (or migrate encrypted settings before rotation).
+
+Use Add wallet → Cabin / memory to save a Solana public address and label.
+Solana public-key validation rejects EVM addresses and other network selections;
+public-key format alone does not establish ownership or prove on-chain activity.
+Choose FULL in Operations for metadata and reports. WATCH_ONLY only discovers
+and alerts. Polling checks due wallets about every two minutes; initial coverage
+is the latest 100 finalized signatures, with supported enhanced swap parsing.
+
+The Render API now runs durable jobs by default, including with start:api. Set
+HUNTER_DISABLE_BACKGROUND=true when using Cloudflare as the sole worker, or in
+API-only tests. Render Free sleep still interrupts polling; always-on Cloudflare
+ingress remains the planned next deployment step. No feature here guarantees
+complete metadata: missing fields remain unknown and unsupported swaps remain
+a documented coverage gap. Token images and descriptions are untrusted provider
+metadata, not proof of affiliation. New source fields include DAS metadata, DEX
+market snapshots, volume, FDV, market cap, venues and public source links.

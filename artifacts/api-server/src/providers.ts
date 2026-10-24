@@ -1,3 +1,4 @@
+import {runtimeConfig} from './settings.ts';
 import type { Pool } from 'pg';
 import { randomUUID, createHash } from 'node:crypto';
 import { ingestTransactions } from './ingest.ts';
@@ -69,6 +70,7 @@ async function httpJson(pool: Pool, provider: string, operation: string, url: st
   }
 }
 export async function heliusRpc(pool: Pool, method: string, params: unknown[], mint?: string, config: ProviderConfig = process.env) {
+  if(config===process.env)config=await runtimeConfig(pool,config);
   if (!config.HELIUS_API_KEY) throw new ProviderUnavailable('HELIUS_NOT_CONFIGURED');
   const result = await httpJson(pool,'helius',method,`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(config.HELIUS_API_KEY)}`,{
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'hunter',method,params}),
@@ -96,6 +98,7 @@ export function holderFeatures(holders: Array<{amount_raw:string}>, supply: stri
   return {top_accounts_supply_share:Number(total*1000000n/BigInt(supply))/1000000,owner_classification:'UNKNOWN',caveat:'Largest token accounts are not necessarily independent holders; liquidity-pool ownership is unclassified.'};
 }
 export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig=process.env) {
+  if(config===process.env)config=await runtimeConfig(pool,config);
   const state=(await pool.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0];
   if (!state || state.mode!=='FULL') return {skipped:'RESEARCH_PAUSED'};
   const errors: string[]=[];
@@ -105,6 +108,7 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
     const pair=chooseDexPair(payload,mint);
     const source=await document(pool,mint,'dexscreener',`https://api.dexscreener.com/token-pairs/v1/solana/${mint}`,payload);
     if(pair){
+      await pool.query('UPDATE hunter.token SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),image_uri=COALESCE($4,image_uri),market_data=$5 WHERE mint=$1',[mint,pair.baseToken?.name??null,pair.baseToken?.symbol??null,pair.info?.imageUrl??null,{venue:pair.dexId,pairUrl:pair.url,volume:pair.volume,priceChange:pair.priceChange,txns:pair.txns,marketCap:pair.marketCap,fdv:pair.fdv,websites:pair.info?.websites??[],socials:pair.info?.socials??[],observed_at:new Date().toISOString(),source:'dexscreener'}]);
       dexPrice=positiveNumber(pair.priceUsd);
       await pool.query('UPDATE hunter.token SET price_usd=$2,liquidity_usd=$3,market_updated_at=now() WHERE mint=$1',[mint,dexPrice,positiveNumber(pair.liquidity?.usd)]);
       await claim(pool,mint,source,'DEX Screener market observation; provider update timestamp unavailable',{price_usd:dexPrice,liquidity_usd:positiveNumber(pair.liquidity?.usd),pair:pair.pairAddress,provider_timestamp:null},'OBSERVED','MEDIUM');
@@ -128,6 +132,17 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
     await claim(pool,mint,null,'Independent market-price cross-check',{dexscreener:dexPrice,jupiter:jupPrice,relative_divergence:divergence,interpretation:'Provider differences may reflect timing or different venues; they do not prove manipulation.'},'OBSERVED','MEDIUM');
   }
   if(config.HELIUS_API_KEY){
+    try {
+      const asset=await heliusRpc(pool,'getAsset',{id:mint} as unknown as unknown[],mint,config);
+      const source=await document(pool,mint,'helius_das','https://mainnet.helius-rpc.com/',asset);
+      if(asset.id===mint){
+        const metadata=asset.content?.metadata??{};
+        const image=asset.content?.links?.image??asset.content?.files?.find((f:any)=>f.mime?.startsWith('image/'))?.uri??null;
+        await pool.query('UPDATE hunter.token SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),image_uri=COALESCE($4,image_uri),description=COALESCE($5,description) WHERE mint=$1',[mint,metadata.name??null,metadata.symbol??null,image,metadata.description??null]);
+        await pool.query('INSERT INTO hunter.token_metadata_version(mint,source_document_id,name,symbol,image_uri,metadata_uri,data) VALUES($1,$2,$3,$4,$5,$6,$7)',[mint,source,metadata.name??null,metadata.symbol??null,image,asset.content?.json_uri??null,{description:metadata.description??null,identity_source:'helius_das',official_affiliation:'UNKNOWN'}]);
+        await claim(pool,mint,source,'Helius DAS token metadata observed',{name:metadata.name??null,symbol:metadata.symbol??null,image,description:metadata.description??null},'OBSERVED','MEDIUM');
+      }
+    }catch{errors.push('metadata:UNAVAILABLE');}
     try {
       const result=await heliusRpc(pool,'getAccountInfo',[mint,{encoding:'jsonParsed',commitment:'finalized'}],mint,config);
       const info=result.value?.data?.parsed?.info;
@@ -202,6 +217,7 @@ export function reconciliationSlice(signatures:Array<{signature:string;err?:unkn
   return {selected:boundary>=0?signatures.slice(0,boundary):signatures,done:boundary>=0||signatures.length<100};
 }
 export async function reconcileWallet(pool:Pool,address:string,config:ProviderConfig=process.env){
+  if(config===process.env)config=await runtimeConfig(pool,config);
   if(!config.HELIUS_API_KEY)return {skipped:'HELIUS_NOT_CONFIGURED'};
   const leaseToken=randomUUID();
   const wallet=(await pool.query(`UPDATE hunter.watched_wallet SET reconcile_lease_token=$2,reconcile_lease_until=now()+interval '120 seconds'

@@ -418,7 +418,7 @@ function App() {
     radar: [
       "Discovery surface",
       "Radar",
-      "Every watched wallet. Every observed discovery.",
+      "Every watched wallet. Add addresses in Cabin / memory.",
     ],
     room: [
       "Evidence workspace",
@@ -629,6 +629,7 @@ function App() {
               <p>{heading[2]}</p>
             </div>
             <div className="heading-actions">
+              <button className="button primary" onClick={()=>navigate("memory")}><Plus size={16}/>Add wallet</button>
               <span className="refresh-time">
                 {lastRefresh
                   ? `Updated ${lastRefresh.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`
@@ -965,7 +966,7 @@ function App() {
                           onChange={(e) => setWalletAddress(e.target.value)}
                           pattern="[1-9A-HJ-NP-Za-km-z]{32,44}"
                           required
-                          placeholder="Public address only"
+                          placeholder="Solana address only — no EVM / 0x addresses"
                           autoComplete="off"
                         />
                         <label htmlFor="wallet-label">
@@ -1178,8 +1179,13 @@ function TokenTable({
   tokens: Row[];
   openToken: (mint: string) => void;
 }) {
+  const [search,setSearch]=useState('');
+  const [risk,setRisk]=useState('ALL');
+  const filtered=tokens.filter(t=>(risk==='ALL'||t.risk===risk)&&[t.name,t.symbol,t.mint,...(t.wallets??[])].join(' ').toLowerCase().includes(search.toLowerCase()));
   return tokens.length ? (
     <div className="table-scroll">
+      <div className="token-filters"><label>Search tokens<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name, ticker, mint or wallet" /></label><label>Structural risk<select value={risk} onChange={e=>setRisk(e.target.value)}><option value="ALL">All risks</option><option>UNKNOWN</option><option>UNASSESSED</option><option>ELEVATED</option></select></label><small>{filtered.length} results · latest 100 discoveries</small></div>
+      <div className="mobile-token-cards">{filtered.map(t=><button key={t.mint} className="mobile-token-card" onClick={()=>openToken(t.mint)}><div><TokenAvatar token={t}/><strong>{t.name||'Unresolved token'} <small>{t.symbol||'Symbol unknown'}</small></strong><ArrowUpRight size={18}/></div><code>{short(t.mint,10)}</code><p>{t.description||'Metadata description unavailable. Open the report for source evidence and research gaps.'}</p><div><span>Price {money(t.price_usd)}</span><span>Liquidity {money(t.liquidity_usd)}</span></div><div><Status value={t.risk} kind="risk"/><Status value={t.confidence} kind="confidence"/><span>{t.wallets?.length??0} wallets</span></div><small>Market observed {when(t.market_updated_at)} · {human(t.job_status)}</small></button>)}</div>
       <table className="token-table">
         <thead>
           <tr>
@@ -1196,16 +1202,14 @@ function TokenTable({
           </tr>
         </thead>
         <tbody>
-          {tokens.map((t) => (
+          {filtered.map((t) => (
             <tr key={t.mint}>
               <td>
                 <button
                   className="token-button"
                   onClick={() => openToken(t.mint)}
                 >
-                  <span className="token-avatar">
-                    {String(t.symbol ?? "?").slice(0, 2)}
-                  </span>
+                  <TokenAvatar token={t}/>
                   <span>
                     <strong>{t.name || "Unresolved token"}</strong>
                     <small>
@@ -1384,9 +1388,7 @@ function TokenRoom({
         </button>
       </div>
       <div className="token-identity">
-        <span className="token-avatar large">
-          {String(t.symbol ?? "?").slice(0, 2)}
-        </span>
+        <TokenAvatar token={t}/>
         <div>
           <h2>
             {t.name || "Unresolved token"}
@@ -1409,6 +1411,7 @@ function TokenRoom({
           <span>{when(t.discovered_at)}</span>
         </div>
       </div>
+      <Section title="Token brief" kicker="SOURCE-REPORTED METADATA"><p>{t.description||'A description has not been returned by the available sources. Creator affiliation and originality remain unverified.'}</p><p>Network: Solana mainnet · Market checked {when(t.market_updated_at)}</p><div className="brief-grid"><span>Market cap: {money(t.market_data?.marketCap)}</span><span>FDV: {money(t.market_data?.fdv)}</span><span>24h volume: {money(t.market_data?.volume?.h24)}</span><span>Venue: {t.market_data?.venue||'Unknown'}</span></div><div>{array(t.market_data?.websites).map((x,i)=><Source key={i} url={x.url} label={x.label||'Website'}/>)}{array(t.market_data?.socials).map((x,i)=><Source key={i} url={x.url} label={x.type||'Social'}/>)}</div><details><summary>All stored market observations</summary><Json value={t.market_data??{}}/></details></Section>
       <div className="stats-grid room-stats">
         <div className="stat-card">
           <div>
@@ -1629,6 +1632,7 @@ function Operations({
   const jobs = array(data.jobs);
   return (
     <>
+      <ProviderSettings />
       <div className="control-panel">
         <div className="control-heading">
           <div>
@@ -1918,3 +1922,12 @@ function Operations({
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
+
+function TokenAvatar({token}:{token:Row}) {const [failed,setFailed]=useState(false);const url=safeUrl(token.image_uri);return <span className="token-avatar">{url&&!failed?<img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" onError={()=>setFailed(true)}/>:String(token.symbol??'?').slice(0,2)}</span>;}
+function ProviderSettings(){
+ const [key,setKey]=useState(''),[status,setStatus]=useState<Row|null>(null),[message,setMessage]=useState(''),[saving,setSaving]=useState(false);
+ const headers=()=>({Authorization:`Bearer ${sessionStorage.getItem('hunter.access')??''}`,'Content-Type':'application/json'});
+ useEffect(()=>{fetch('/api/settings',{headers:headers()}).then(r=>r.ok?r.json():Promise.reject()).then(setStatus).catch(()=>setMessage('Settings unavailable; check the deployed API.'));},[]);
+ async function save(e:FormEvent){e.preventDefault();setSaving(true);setMessage('Checking Helius connection…');try{const r=await fetch('/api/settings/helius',{method:'POST',headers:headers(),body:JSON.stringify({apiKey:key.trim()})});const data=await r.json();if(!r.ok)throw new Error(data.error);setKey('');setStatus({...status,heliusConfigured:true});setMessage('Helius connected. Key saved securely; no redeploy needed. Add wallets in Cabin / memory, then choose Full research for metadata and reports.');}catch(e){setMessage(e instanceof Error?e.message:'Could not save key');}finally{setSaving(false);}}
+ return <Section title="Helius connection" kicker="MOBILE SETTINGS · SOLANA MAINNET"><p>{status?.heliusConfigured?'Helius key configured. Replace it below at any time.':'Add your own Helius API key to begin wallet polling.'}</p><form className="wallet-form" onSubmit={save}><label htmlFor="helius-key">Helius API key</label><input id="helius-key" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} required maxLength={256} placeholder="Paste your Helius key"/><button className="button primary" disabled={saving||!key.trim()}>Verify and save key</button><p role="status">{message}</p><small>Your key is encrypted in the database and is never returned to the browser. Polling runs while the Render service is awake. Free Render sleep still interrupts background work.</small></form></Section>;
+}

@@ -60,3 +60,18 @@ full Pump instruction fallback) remain an explicit parser coverage gap.
 
 See [Cloudflare runtime evidence](../cloudflare/LOCAL_VALIDATION.md) and
 [deployment acceptance sequence](DEPLOYMENT.md).
+
+## Mobile settings update
+
+The subsequent mobile update adds encrypted database-backed Helius settings,
+Solana-only network validation, source-backed token images/briefs/market facts,
+search/risk filters and mobile cards. Full builds, 29 unit/ingress checks, the
+14-test reported database suite (including parent) and Chromium five-page/mobile
+checks pass. New settings tests use mocked read-only RPC responses to verify
+authentication, validation of a replacement key rather than the old key, encrypted
+storage, subsequent runtime loading, secret omission from status/audit, and
+rejection of other network selections. No live provider key was supplied or
+real metadata completeness certified. The added runtime settings table brings
+the schema to 18 tables; the earlier 17-table restore result above predates it.
+Render now runs jobs by default in start:api; disable using
+HUNTER_DISABLE_BACKGROUND=true for sole-Cloudflare or API-only test setups.

@@ -1,5 +1,11 @@
 export const schemaSql = `
 CREATE SCHEMA IF NOT EXISTS hunter;
+CREATE TABLE IF NOT EXISTS hunter.runtime_setting (
+ name text PRIMARY KEY, ciphertext text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE IF EXISTS hunter.token ADD COLUMN IF NOT EXISTS image_uri text;
+ALTER TABLE IF EXISTS hunter.token ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE IF EXISTS hunter.token ADD COLUMN IF NOT EXISTS market_data jsonb NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS hunter.operator_state (
  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
  mode text NOT NULL DEFAULT 'WATCH_ONLY' CHECK(mode IN('FULL','WATCH_ONLY','PAUSE_RESEARCH','STOP_ALL')),
@@ -20,6 +26,9 @@ CREATE TABLE IF NOT EXISTS hunter.token (
  price_usd numeric, liquidity_usd numeric, market_updated_at timestamptz,
  priority text NOT NULL DEFAULT 'UNKNOWN', risk text NOT NULL DEFAULT 'UNKNOWN', confidence text NOT NULL DEFAULT 'LOW'
 );
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS image_uri text;
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS market_data jsonb NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS hunter.onchain_event (
  id bigserial PRIMARY KEY, signature text NOT NULL, instruction_path text NOT NULL, event_kind text NOT NULL,
  wallet_address text REFERENCES hunter.watched_wallet(address), mint text REFERENCES hunter.token(mint),

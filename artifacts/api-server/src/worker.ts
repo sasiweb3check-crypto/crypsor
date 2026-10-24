@@ -1,3 +1,4 @@
+import {runtimeConfig} from './settings.ts';
 import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { pool } from './db.ts';
@@ -40,7 +41,7 @@ export async function schedule(database:pg.Pool=pool) {
  const mode=(await database.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0].mode;
  if(mode==='STOP_ALL')return;
  await recoverJobs(database);
- if(process.env.HELIUS_API_KEY){
+ if((await runtimeConfig(database)).HELIUS_API_KEY){
   const wallets=(await database.query("SELECT address FROM hunter.watched_wallet WHERE active AND (last_success_at IS NULL OR last_success_at<now()-interval '2 minutes') ORDER BY last_success_at NULLS FIRST LIMIT 20")).rows;
   for(const {address} of wallets)await enqueue('reconcile',null,{address},`reconcile:${address}`,database);
  }

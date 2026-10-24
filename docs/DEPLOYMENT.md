@@ -59,7 +59,7 @@ to same-origin private API access.
 Follow `cloudflare/README.md`. Create real Queues and Hyperdrive bindings, run
 migrations once, and validate TLS from Hyperdrive to Aiven. Configure the exact
 webhook secret and selected wallet addresses in Helius. Consumer and cron operate
-without a live Render process. Do not run both workers indiscriminately.
+without a live Render process. The mobile pilot now runs background jobs in the Render process, even with start:api. Set HUNTER_DISABLE_BACKGROUND=true when Cloudflare becomes the sole background processor. Render Free sleep still interrupts these jobs. Do not run both workers indiscriminately.
 
 Free-tier CPU, account quotas, queue retention, Helius replay coverage and API
 entitlements require current vendor confirmation and staging measurements.
