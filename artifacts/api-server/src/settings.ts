@@ -1,0 +1,7 @@
+import {createCipheriv,createDecipheriv,randomBytes,createHash} from 'node:crypto';
+import type {Pool} from 'pg';
+function key(){const value=process.env.HUNTER_SETTINGS_KEY||process.env.HUNTER_API_TOKEN;if(!value||value.length<24)throw new Error('Settings encryption key unavailable');return createHash('sha256').update(value).digest();}
+export function encryptSetting(value:string){const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',key(),iv);const body=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),body]).toString('base64');}
+export function decryptSetting(value:string){const data=Buffer.from(value,'base64');const cipher=createDecipheriv('aes-256-gcm',key(),data.subarray(0,12));cipher.setAuthTag(data.subarray(12,28));return Buffer.concat([cipher.update(data.subarray(28)),cipher.final()]).toString('utf8');}
+export async function runtimeConfig(pool:Pool,base:Record<string,string|undefined>=process.env){const config={...base};const row=(await pool.query("SELECT ciphertext FROM hunter.runtime_setting WHERE name='HELIUS_API_KEY'")).rows[0];if(row)config.HELIUS_API_KEY=decryptSetting(row.ciphertext);return config;}
+export async function saveHelius(pool:Pool,value:string){await pool.query("INSERT INTO hunter.runtime_setting(name,ciphertext) VALUES('HELIUS_API_KEY',$1) ON CONFLICT(name) DO UPDATE SET ciphertext=$1,updated_at=now()",[encryptSetting(value)]);}

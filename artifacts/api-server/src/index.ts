@@ -10,7 +10,7 @@ else {
  const port=Number(process.env.PORT??3000);
  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Invalid PORT');
  const server=role==='worker'?undefined:createApp().listen(port,'0.0.0.0',()=>console.log(`Hunter private API listening on ${port}`));
- const worker=role==='api'?undefined:startWorker();
+ const worker=process.env.HUNTER_DISABLE_BACKGROUND==='true'?undefined:startWorker();
  let stopping=false;
  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{
   if(stopping)return;stopping=true;

@@ -1,3 +1,5 @@
+import {runtimeConfig,saveHelius} from './settings.ts';
+import {heliusRpc} from './providers.ts';
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -47,10 +49,21 @@ export function createApp(database:pg.Pool=pool) {
   res.json(await ingestTransactions(database,req.body,{source:'helius_webhook'}));
  });
  app.use('/api',auth,express.json({limit:'1mb'}));
+ app.get('/api/settings',async(_req,res)=>{const config=await runtimeConfig(database);res.json({heliusConfigured:Boolean(config.HELIUS_API_KEY),network:'solana-mainnet',backgroundEnabled:process.env.HUNTER_DISABLE_BACKGROUND!=='true'});});
+ app.post('/api/settings/helius',async(req,res)=>{
+  const value=req.body?.apiKey;
+  if(typeof value!=='string'||!value.trim()||value.length>256||/[\s]/.test(value)){res.status(400).json({error:'Enter a valid Helius API key'});return;}
+  try{await heliusRpc(database,'getHealth',[],undefined,{...process.env,HELIUS_API_KEY:value});}catch{res.status(400).json({error:'Helius connection could not be verified. Check the key, operator mode and request quota.'});return;}
+  await saveHelius(database,value);
+  await database.query("INSERT INTO hunter.operator_audit(action,reason) VALUES('settings.helius','Helius key updated; secret excluded from audit')");
+  res.json({ok:true,heliusConfigured:true});
+ });
+ app.delete('/api/settings/helius',async(_req,res)=>{await database.query("DELETE FROM hunter.runtime_setting WHERE name='HELIUS_API_KEY'");res.json({ok:true});});
  app.get('/api/healthz',async(_req,res)=>{await database.query('SELECT 1');res.json({ok:true,service:'hunter',readOnly:true});});
  app.get('/api/wallets',async(_req,res)=>res.json({wallets:(await database.query('SELECT * FROM hunter.watched_wallet ORDER BY created_at DESC LIMIT 200')).rows}));
  app.post('/api/wallets',async(req,res)=>{
-  const {address,label=''}=req.body??{};
+  const {address,label='',network='solana'}=req.body??{};
+  if(network!=='solana'){res.status(400).json({error:'Only Solana addresses are supported'});return;}
   if(!isSolanaAddress(address)||typeof label!=='string'||label.length>100){res.status(400).json({error:'Enter a valid Solana address and label up to 100 characters'});return;}
   const result=await withTransaction(async c=>{
    await c.query("SELECT pg_advisory_xact_lock(hashtext('hunter:wallet-limit'))");
@@ -112,10 +125,11 @@ export function createApp(database:pg.Pool=pool) {
    database.query("SELECT id,updated_at,last_error,updated_at>now()-interval '2 minutes' AS healthy FROM hunter.worker_heartbeat"),
    database.query('SELECT address,label,cursor,pending_cursor,last_success_at,last_error FROM hunter.watched_wallet WHERE active ORDER BY created_at LIMIT 20')
   ]);
+  const runtime=await runtimeConfig(database);
   const names=['HELIUS_API_KEY','HELIUS_WEBHOOK_SECRET','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','JUPITER_API_KEY','GEMINI_API_KEY','AIVEN_DATABASE_URL','AIVEN_CA_CERT'];
   res.json({mode:state.rows[0].mode,state:state.rows[0],jobs:jobs.rows,usage:usage.rows,audit:audit.rows,metrics:metrics.rows[0],workers:workers.rows,wallets:wallets.rows,
-   providers:[{name:'Helius',configured:Boolean(process.env.HELIUS_API_KEY)},{name:'DEX Screener',configured:true},{name:'Jupiter',configured:Boolean(process.env.JUPITER_API_KEY)},{name:'Telegram',configured:process.env.TELEGRAM_ENABLED==='true'&&Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID)},{name:'Gemini',configured:process.env.GEMINI_ENABLED==='true'&&process.env.GEMINI_FREE_TIER_CONFIRMED==='true'&&Boolean(process.env.GEMINI_API_KEY),reason:'Optional; requires explicit enablement and confirmed free-tier entitlement'}],
-   configuration:names.map(name=>({name,status:process.env[name]?'set':'missing'})),policy:{paidCallsEnabled:false,defaultMode:'WATCH_ONLY',walletLimit:20,rawRetentionDays:7,databaseAccountCapBytes:1000000000,subscriptionControl:'Manual vendor billing controls required'}});
+   providers:[{name:'Helius',configured:Boolean(runtime.HELIUS_API_KEY)},{name:'DEX Screener',configured:true},{name:'Jupiter',configured:Boolean(process.env.JUPITER_API_KEY)},{name:'Telegram',configured:process.env.TELEGRAM_ENABLED==='true'&&Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID)},{name:'Gemini',configured:process.env.GEMINI_ENABLED==='true'&&process.env.GEMINI_FREE_TIER_CONFIRMED==='true'&&Boolean(process.env.GEMINI_API_KEY),reason:'Optional; requires explicit enablement and confirmed free-tier entitlement'}],
+   configuration:names.map(name=>({name,status:runtime[name]?'set':'missing'})),policy:{paidCallsEnabled:false,defaultMode:'WATCH_ONLY',walletLimit:20,rawRetentionDays:7,databaseAccountCapBytes:1000000000,subscriptionControl:'Manual vendor billing controls required'}});
  });
  app.post('/api/operator/mode',async(req,res)=>{
   const {mode,reason}=req.body??{};
