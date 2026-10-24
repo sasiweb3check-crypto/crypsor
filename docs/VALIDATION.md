@@ -75,3 +75,27 @@ real metadata completeness certified. The added runtime settings table brings
 the schema to 18 tables; the earlier 17-table restore result above predates it.
 Render now runs jobs by default in start:api; disable using
 HUNTER_DISABLE_BACKGROUND=true for sole-Cloudflare or API-only test setups.
+
+## Unknown-data flow correction
+
+Basic identity/market enrichment now runs in WATCH_ONLY (no AI/holder research),
+with cache reuse, explicit pending/running/partial/ready state and source error
+codes. FULL still controls the research journal and holder snapshots. Poll
+intervals scale to the local daily/monthly request allowance and wallet count;
+quota-limited jobs defer without becoming terminal failures. Legacy jobs marked
+dead solely for known quota codes are recovered with an audit record. This does
+not validate Helius credit entitlement or supply uninterrupted Free Render uptime.
+
+Market retrieval freshness now uses fetched_at separately from unknown provider
+update times. UI reports retain this limitation. Verified authorities set
+structural risk to ELEVATED or UNASSESSED, never SAFE. Missing provider fields
+still remain missing. All private API calls reject HTML instead of displaying
+fabricated empty/unknown state after a mismatched frontend-only deployment.
+
+Tests include the WATCH_ONLY discovery→job→DEX/DAS/RPC→persisted metadata flow
+with synthetic provider responses, cache reuse, adaptive polling math and quota
+deferral; the complete database runner reports 17 tests. Chromium checks the
+populated mobile card, local fixture image, search, report and operator controls.
+No synthetic token was inserted in production. A real Chromium attempt to load
+the production URL failed from this execution environment; production browser
+behavior and real data remain unverified.

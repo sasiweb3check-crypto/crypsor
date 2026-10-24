@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS hunter.token (
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS image_uri text;
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS description text;
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS market_data jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS enrichment_state text NOT NULL DEFAULT 'pending';
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS enrichment_checked_at timestamptz;
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS coverage jsonb NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS hunter.onchain_event (
  id bigserial PRIMARY KEY, signature text NOT NULL, instruction_path text NOT NULL, event_kind text NOT NULL,
  wallet_address text REFERENCES hunter.watched_wallet(address), mint text REFERENCES hunter.token(mint),
@@ -70,6 +73,11 @@ CREATE TABLE IF NOT EXISTS hunter.investigation_job (
  lease_until timestamptz, lease_token text, last_error text, created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz,
  dedupe_key text UNIQUE
 );
+WITH recovered AS (
+ UPDATE hunter.investigation_job SET status='queued',attempts=0,run_after=now()+interval '1 hour',finished_at=NULL
+ WHERE status='dead' AND last_error IN('REQUEST_CAP_EXHAUSTED','PROVIDER_RATE_LIMIT','PROVIDER_HTTP_429') RETURNING id
+) INSERT INTO hunter.operator_audit(action,reason,data)
+ SELECT 'quota.recovery','Recover legacy quota-dead jobs under deferred quota retry policy',jsonb_build_object('count',count(*)) FROM recovered HAVING count(*)>0;
 CREATE INDEX IF NOT EXISTS job_due ON hunter.investigation_job(status,run_after);
 CREATE TABLE IF NOT EXISTS hunter.decision_version (
  id bigserial PRIMARY KEY, mint text NOT NULL REFERENCES hunter.token(mint), version int NOT NULL, action text NOT NULL,

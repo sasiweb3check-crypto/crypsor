@@ -114,7 +114,7 @@ export async function ingestTransactions(pool: Pool, transactions: unknown[], op
       const alert = await db.query(`INSERT INTO hunter.alert(id,mint,event_id,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id`,[alertId,event.mint,inserted.rows[0].id,{wallet:event.wallet,signature:event.signature,verification:event.observations.verification,unverified:event.commitment === "provider_reported"}]);
       if (alert.rowCount) await db.query(`INSERT INTO hunter.investigation_job(kind,mint,payload,dedupe_key) VALUES('alert',$1,$2,$3) ON CONFLICT(dedupe_key) DO NOTHING`,[event.mint,{alertId},`alert:${alertId}`]);
       // Enrichment is public factual research, independent of optional AI credits.
-      if (state.rows[0]?.mode === "FULL") {
+      if (["FULL","WATCH_ONLY"].includes(state.rows[0]?.mode)) {
         await db.query(`INSERT INTO hunter.investigation_job(kind,mint,payload,dedupe_key) VALUES('enrich',$1,'{}',$2) ON CONFLICT(dedupe_key) DO NOTHING`,[event.mint,`enrich:${event.mint}:initial`]);
       }
     }

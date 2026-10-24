@@ -100,10 +100,14 @@ export function holderFeatures(holders: Array<{amount_raw:string}>, supply: stri
 export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig=process.env) {
   if(config===process.env)config=await runtimeConfig(pool,config);
   const state=(await pool.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0];
-  if (!state || state.mode!=='FULL') return {skipped:'RESEARCH_PAUSED'};
+  if (!state || ['STOP_ALL','PAUSE_RESEARCH'].includes(state.mode)) return {skipped:'RESEARCH_PAUSED'};
+  await pool.query("UPDATE hunter.token SET enrichment_state='running',enrichment_checked_at=now() WHERE mint=$1",[mint]);
   const errors: string[]=[];
   let dexPrice: number|null=null,jupPrice:number|null=null;
-  try {
+  const cached=await pool.query("SELECT provider FROM hunter.source_document WHERE mint=$1 AND fetched_at>now()-interval '24 hours' AND ((provider='helius_das' AND payload->>'id'=$1) OR (provider='helius_rpc' AND payload#>>'{value,data,parsed,type}'='mint'))",[mint]);
+  const has=(provider:string)=>cached.rows.some(row=>row.provider===provider);
+  const marketFresh=(await pool.query("SELECT 1 FROM hunter.token WHERE mint=$1 AND market_updated_at>now()-interval '15 minutes' AND price_usd IS NOT NULL",[mint])).rowCount;
+  if(!marketFresh)try {
     const payload=await httpJson(pool,'dexscreener','token_pairs',`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`,{},mint,config);
     const pair=chooseDexPair(payload,mint);
     const source=await document(pool,mint,'dexscreener',`https://api.dexscreener.com/token-pairs/v1/solana/${mint}`,payload);
@@ -132,7 +136,7 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
     await claim(pool,mint,null,'Independent market-price cross-check',{dexscreener:dexPrice,jupiter:jupPrice,relative_divergence:divergence,interpretation:'Provider differences may reflect timing or different venues; they do not prove manipulation.'},'OBSERVED','MEDIUM');
   }
   if(config.HELIUS_API_KEY){
-    try {
+    if(!has('helius_das'))try {
       const asset=await heliusRpc(pool,'getAsset',{id:mint} as unknown as unknown[],mint,config);
       const source=await document(pool,mint,'helius_das','https://mainnet.helius-rpc.com/',asset);
       if(asset.id===mint){
@@ -142,18 +146,19 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
         await pool.query('INSERT INTO hunter.token_metadata_version(mint,source_document_id,name,symbol,image_uri,metadata_uri,data) VALUES($1,$2,$3,$4,$5,$6,$7)',[mint,source,metadata.name??null,metadata.symbol??null,image,asset.content?.json_uri??null,{description:metadata.description??null,identity_source:'helius_das',official_affiliation:'UNKNOWN'}]);
         await claim(pool,mint,source,'Helius DAS token metadata observed',{name:metadata.name??null,symbol:metadata.symbol??null,image,description:metadata.description??null},'OBSERVED','MEDIUM');
       }
-    }catch{errors.push('metadata:UNAVAILABLE');}
-    try {
+    }catch(error){errors.push(error instanceof ProviderUnavailable?`metadata:${error.code}`:'metadata:FAILED');}
+    if(!has('helius_rpc')||state.mode==='FULL'&&!(await pool.query("SELECT 1 FROM hunter.holder_snapshot WHERE mint=$1 AND captured_at>now()-interval '6 hours'",[mint])).rowCount)try {
       const result=await heliusRpc(pool,'getAccountInfo',[mint,{encoding:'jsonParsed',commitment:'finalized'}],mint,config);
       const info=result.value?.data?.parsed?.info;
       const allowedOwners=['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
       const source=await document(pool,mint,'helius_rpc','https://mainnet.helius-rpc.com/',result);
       if(!allowedOwners.includes(result.value?.owner)||result.value?.data?.parsed?.type!=='mint'||!info) throw new ProviderUnavailable('MINT_IDENTITY_UNVERIFIED');
       const authorityVerified=['mintAuthority','freezeAuthority'].every(key=>Object.prototype.hasOwnProperty.call(info,key)&&(info[key]===null||typeof info[key]==='string'));
+      if(authorityVerified)await pool.query('UPDATE hunter.token SET risk=$2 WHERE mint=$1',[mint,info.mintAuthority||info.freezeAuthority?'ELEVATED':'UNASSESSED']);
       await pool.query('INSERT INTO hunter.token_metadata_version(mint,source_document_id,decimals,supply,mint_authority,freeze_authority,data) VALUES($1,$2,$3,$4,$5,$6,$7)',[mint,source,info.decimals,info.supply,info.mintAuthority??null,info.freezeAuthority??null,JSON.stringify({authoritySourceVerified:authorityVerified,program:result.value.owner,extensions:info.extensions??[],commitment:'finalized',slot:result.context?.slot})]);
       await claim(pool,mint,source,'Finalized parsed mint account',{mint_authority:info.mintAuthority===null?null:info.mintAuthority??'UNKNOWN',freeze_authority:info.freezeAuthority===null?null:info.freezeAuthority??'UNKNOWN',program:result.value.owner,extensions:info.extensions??[],decimals:info.decimals,supply:info.supply},'OBSERVED','HIGH');
       // Each task is bounded. RPC calls are rate limited independently; the next retry can fill a missing snapshot.
-      try {
+      if(state.mode==='FULL')try {
         const largest=await heliusRpc(pool,'getTokenLargestAccounts',[mint,{commitment:'finalized'}],mint,config);
         const accounts=(largest.value??[]).slice(0,20);
         const owners=accounts.length?await heliusRpc(pool,'getMultipleAccounts',[accounts.map((a:any)=>a.address),{encoding:'jsonParsed',commitment:'finalized'}],mint,config):{value:[]};
@@ -164,7 +169,11 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
     }catch(error){errors.push(error instanceof ProviderUnavailable?`helius:${error.code}`:'helius:FAILED');}
   }else errors.push('helius:NOT_CONFIGURED');
   if(errors.length) await claim(pool,mint,null,'Research coverage gaps',{gaps:errors,social:'UNKNOWN',creator_affiliation:'UNKNOWN',originality:'UNKNOWN',mev_attribution:'UNKNOWN'},'UNKNOWN');
-  return {errors};
+  await pool.query("UPDATE hunter.token SET priority=CASE WHEN (SELECT count(DISTINCT wallet_address) FROM hunter.onchain_event WHERE mint=$1)>=3 THEN 'HIGH' WHEN (SELECT count(DISTINCT wallet_address) FROM hunter.onchain_event WHERE mint=$1)>=2 THEN 'MEDIUM' ELSE 'LOW' END WHERE mint=$1",[mint]);
+  const fields=(await pool.query('SELECT name,symbol,image_uri,price_usd FROM hunter.token WHERE mint=$1',[mint])).rows[0]??{};
+  const missing=Object.keys({name:1,symbol:1,image_uri:1,price_usd:1}).filter(field=>fields[field]==null||fields[field]==='');
+  await pool.query('UPDATE hunter.token SET enrichment_state=$2,enrichment_checked_at=now(),coverage=$3 WHERE mint=$1',[mint,missing.length?'partial':'ready',{missing_fields:missing,source_errors:errors,checked_at:new Date().toISOString(),scope:'Identity and market observations; ready does not certify originality or complete research'}]);
+  return {errors,missing};
 }
 
 export function allowedTelegramChat(config:ProviderConfig):string|null {

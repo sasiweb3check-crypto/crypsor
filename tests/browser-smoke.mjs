@@ -40,7 +40,19 @@ try {
   await page.getByRole('button',{name:'Watch wallet',exact:true}).click();
   await page.getByText('Synthetic browser sensor',{exact:true}).waitFor();
   await api('/api/ingest','POST',{transactions:[fixture]});
+  const enrichment = spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',
+    "import {pool} from './artifacts/api-server/src/db.ts'; import {runOne} from './artifacts/api-server/src/worker.ts'; import {fixtureFetch} from './tests/flow-fixtures.mjs'; globalThis.fetch=fixtureFetch; await runOne(pool); await runOne(pool); await pool.end();"],{env:{...process.env,HELIUS_API_KEY:'synthetic-test-only',TELEGRAM_ENABLED:'false'},encoding:'utf8'});
+  assert.equal(enrichment.status,0,'Fixture-backed metadata pipeline failed');
+  const populated=await api('/api/tokens/'+mint);
+  assert.equal(populated.token.name,'Synthetic Flow Token');assert.equal(populated.token.enrichment_state,'ready');assert.ok(populated.token.price_usd);
   await nav('Radar');
+  await page.getByText('Synthetic Flow Token',{exact:true}).first().waitFor();
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(300);
+  assert.equal(await page.locator('.mobile-token-card').count(),1);
+  await page.getByLabel('Search tokens').fill('no-match');assert.equal(await page.locator('.mobile-token-card').count(),0);
+  await page.getByLabel('Search tokens').fill('TEST');assert.equal(await page.locator('.mobile-token-card').count(),1);
+  await page.screenshot({path:'test-results/mobile-radar-populated.png',fullPage:true});
+  await page.setViewportSize({width:1440,height:1000});await page.waitForTimeout(300);
   await page.getByText(mint,{exact:true}).first().waitFor({timeout:2000}).catch(async()=>{
     assert.equal((await api('/api/overview')).stats.tokens,1);
   });

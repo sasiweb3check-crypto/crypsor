@@ -21,7 +21,7 @@ export async function runOne(database:pg.Pool=pool):Promise<boolean> {
    case 'enrich':
     if(!job.mint)throw new Error('MissingMint');
     await enrichToken(database,job.mint);
-    await enqueue('research',job.mint,{},`research:${job.mint}`,database);break;
+    if(mode==='FULL')await enqueue('research',job.mint,{},`research:${job.mint}`,database);break;
    case 'research': if(!job.mint)throw new Error('MissingMint');await researchToken(database,job.mint);break;
    case 'reconcile': await reconcileWallet(database,String(job.payload.address??''));break;
    case 'retention':case 'maintenance':
@@ -41,9 +41,16 @@ export async function schedule(database:pg.Pool=pool) {
  const mode=(await database.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0].mode;
  if(mode==='STOP_ALL')return;
  await recoverJobs(database);
- if((await runtimeConfig(database)).HELIUS_API_KEY){
-  const wallets=(await database.query("SELECT address FROM hunter.watched_wallet WHERE active AND (last_success_at IS NULL OR last_success_at<now()-interval '2 minutes') ORDER BY last_success_at NULLS FIRST LIMIT 20")).rows;
+ const config=await runtimeConfig(database);
+ if(config.HELIUS_API_KEY){
+  const count=Number((await database.query('SELECT count(*) FROM hunter.watched_wallet WHERE active')).rows[0].count);
+  const interval=pollIntervalSeconds(count,config);
+  const wallets=(await database.query("SELECT address FROM hunter.watched_wallet WHERE active AND (last_success_at IS NULL OR last_success_at<now()-make_interval(secs=>$1::int)) ORDER BY last_success_at NULLS FIRST LIMIT 20",[interval])).rows;
   for(const {address} of wallets)await enqueue('reconcile',null,{address},`reconcile:${address}`,database);
+ }
+ if(['FULL','WATCH_ONLY'].includes(mode)){
+  const due=(await database.query("SELECT mint FROM hunter.token t WHERE (enrichment_checked_at IS NULL OR enrichment_checked_at<now()-interval '1 hour') AND NOT EXISTS(SELECT 1 FROM hunter.investigation_job j WHERE j.mint=t.mint AND j.kind='enrich' AND j.status IN('queued','running','dead')) ORDER BY enrichment_checked_at NULLS FIRST LIMIT 10")).rows;
+  for(const {mint} of due)await enqueue('enrich',mint,{},`metadata-refresh:${mint}`,database);
  }
  if(mode==='FULL'){
   // Existing watched-only discoveries become researchable after opt-in. Dead work
@@ -69,4 +76,13 @@ export function startWorker(database:pg.Pool=pool) {
   }
  })();
  return {stop:async()=>{stopping=true;if(wake)clearTimeout(wake);wakeResolve?.();/* let in-flight bounded task finish */ await Promise.race([done,new Promise(resolve=>setTimeout(resolve,2500))]);}};
+}
+
+/** Split half of the local request allowance to polling; reserve the rest for metadata.
+ * This is a request budget, not a claim about Helius free-tier credit entitlement. */
+export function pollIntervalSeconds(wallets:number,config:Record<string,string|undefined>){
+ const daily=Number(config.HELIUS_DAILY_REQUEST_CAP??500),monthly=Number(config.HELIUS_MONTHLY_REQUEST_CAP??10000);
+ const allowance=Math.min(Number.isFinite(daily)?daily:500,(Number.isFinite(monthly)?monthly:10000)/31);
+ if(allowance<=0)return 86400;
+ return Math.min(2147483647,Math.max(120,Math.ceil(Math.max(1,wallets)*2*86400/(allowance*0.5))));
 }

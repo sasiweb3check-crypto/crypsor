@@ -1,3 +1,4 @@
+import {pollIntervalSeconds} from './worker.ts';
 import {runtimeConfig,saveHelius} from './settings.ts';
 import {heliusRpc,ProviderUnavailable} from './providers.ts';
 import express from 'express';
@@ -64,6 +65,14 @@ export function createApp(database:pg.Pool=pool) {
   res.json({ok:true,heliusConfigured:true});
  });
  app.delete('/api/settings/helius',async(_req,res)=>{await database.query("DELETE FROM hunter.runtime_setting WHERE name='HELIUS_API_KEY'");res.json({ok:true});});
+ app.post('/api/wallets/scan',async(_req,res)=>{
+  const mode=(await database.query('SELECT mode FROM hunter.operator_state')).rows[0]?.mode;
+  if(mode==='STOP_ALL'){res.status(409).json({error:'Resume wallet tracking before scanning'});return;}
+  const config=await runtimeConfig(database);if(!config.HELIUS_API_KEY){res.status(409).json({error:'Save a Helius key in Operations first'});return;}
+  const wallets=(await database.query('SELECT address FROM hunter.watched_wallet WHERE active LIMIT 20')).rows;
+  for(const {address} of wallets)await enqueue('reconcile',null,{address},`reconcile:${address}`,database);
+  res.json({queued:wallets.length});
+ });
  app.get('/api/healthz',async(_req,res)=>{await database.query('SELECT 1');res.json({ok:true,service:'hunter',readOnly:true});});
  app.get('/api/wallets',async(_req,res)=>res.json({wallets:(await database.query('SELECT * FROM hunter.watched_wallet ORDER BY created_at DESC LIMIT 200')).rows}));
  app.post('/api/wallets',async(req,res)=>{
@@ -131,8 +140,10 @@ export function createApp(database:pg.Pool=pool) {
    database.query('SELECT address,label,cursor,pending_cursor,last_success_at,last_error FROM hunter.watched_wallet WHERE active ORDER BY created_at LIMIT 20')
   ]);
   const runtime=await runtimeConfig(database);
+  const requestUsage=(await database.query("SELECT COALESCE(sum(requests) FILTER(WHERE recorded_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)::int used_today,COALESCE(sum(requests),0)::int used_month FROM hunter.vendor_usage WHERE provider='helius' AND recorded_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0];
+  const polling={intervalSeconds:pollIntervalSeconds(wallets.rows.length,runtime),dailyRequestCap:Number(runtime.HELIUS_DAILY_REQUEST_CAP??500),monthlyRequestCap:Number(runtime.HELIUS_MONTHLY_REQUEST_CAP??10000),usedToday:requestUsage.used_today,usedMonth:requestUsage.used_month,policy:'Local request allowance, not verified Helius credit entitlement; half reserved for enrichment'};
   const names=['HELIUS_API_KEY','HELIUS_WEBHOOK_SECRET','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','JUPITER_API_KEY','GEMINI_API_KEY','AIVEN_DATABASE_URL','AIVEN_CA_CERT'];
-  res.json({mode:state.rows[0].mode,state:state.rows[0],jobs:jobs.rows,usage:usage.rows,audit:audit.rows,metrics:metrics.rows[0],workers:workers.rows,wallets:wallets.rows,
+  res.json({polling,mode:state.rows[0].mode,state:state.rows[0],jobs:jobs.rows,usage:usage.rows,audit:audit.rows,metrics:metrics.rows[0],workers:workers.rows,wallets:wallets.rows,
    providers:[{name:'Helius',configured:Boolean(runtime.HELIUS_API_KEY)},{name:'DEX Screener',configured:true},{name:'Jupiter',configured:Boolean(process.env.JUPITER_API_KEY)},{name:'Telegram',configured:process.env.TELEGRAM_ENABLED==='true'&&Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID)},{name:'Gemini',configured:process.env.GEMINI_ENABLED==='true'&&process.env.GEMINI_FREE_TIER_CONFIRMED==='true'&&Boolean(process.env.GEMINI_API_KEY),reason:'Optional; requires explicit enablement and confirmed free-tier entitlement'}],
    configuration:names.map(name=>({name,status:runtime[name]?'set':'missing'})),policy:{paidCallsEnabled:false,defaultMode:'WATCH_ONLY',walletLimit:20,rawRetentionDays:7,databaseAccountCapBytes:1000000000,subscriptionControl:'Manual vendor billing controls required'}});
  });

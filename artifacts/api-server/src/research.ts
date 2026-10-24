@@ -93,17 +93,19 @@ export async function researchToken(pool: Pool, mint: string, config: ProviderCo
     const [events, sources, evidence, metadata, holders, previous] = results;
     const now = new Date();
     const wallets = [...new Set(events.rows.map(x=>x.wallet_address))];
-    const freshMarkets = sources.rows.filter(x => /dexscreener|jupiter/i.test(x.provider) && x.source_timestamp && now.getTime()-new Date(x.source_timestamp).getTime() >= -60_000 && now.getTime()-new Date(x.source_timestamp).getTime() <= 300_000);
+    const freshMarkets = sources.rows.filter(x => /dexscreener|jupiter/i.test(x.provider) && x.fetched_at && now.getTime()-new Date(x.fetched_at).getTime() >= -60_000 && now.getTime()-new Date(x.fetched_at).getTime() <= 300_000);
     const identitySource = sources.rows.find(x => /helius.*(mint|rpc)|solana.*mint/i.test(x.provider) && (x.payload?.value?.data?.parsed?.type === "mint" || x.payload?.result?.value?.data?.parsed?.type === "mint" || x.payload?.type === "mint"));
     const latestMetadata = metadata.rows[0];
     const authoritySourceVerified = Boolean(latestMetadata?.data?.authoritySourceVerified);
     const result = evaluateGate({
       walletCount: wallets.length,eventCount:events.rowCount ?? 0,confirmedCount:events.rows.filter(x=>["confirmed","finalized"].includes(x.commitment)).length,
-      hasIdentity:Boolean(identitySource),marketTimestamp:freshMarkets[0]?.source_timestamp ?? null,
+      hasIdentity:Boolean(identitySource),marketTimestamp:freshMarkets[0]?.fetched_at ?? null,
       independentMarketSources:new Set(freshMarkets.map(x=>x.provider.toLowerCase().includes("jupiter") ? "jupiter" : "dexscreener")).size,
       mintAuthority:latestMetadata?.mint_authority,freezeAuthority:latestMetadata?.freeze_authority,
       authoritySourceVerified,sourceCount:sources.rowCount ?? 0,holderSnapshots:holders.rowCount ?? 0,
     },now);
+    if(freshMarkets.some(source=>!source.source_timestamp))result.unknowns.push("Market freshness measures retrieval time; provider update time is unavailable for some sources and latency is not verified");
+    result.gate.result="Retrieval freshness checked separately from provider update timestamps; rules never authorize trades";
     const prior = previous.rows[0];
     const contradictions: Record<string,unknown>[] = [];
     if (prior) {

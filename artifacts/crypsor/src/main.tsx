@@ -278,25 +278,12 @@ function App() {
   }, []);
   const api = useCallback(
     async (path: string, options: RequestInit = {}) => {
-      const response = await fetch(`/api${path}`, {
-        ...options,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          ...options.headers,
-        },
-      });
-      const result = await response
-        .json()
-        .catch(() => ({ error: "The API returned an unreadable response." }));
-      if (!response.ok) {
-        if (response.status === 401) {
-          logout();
-          throw new Error("Access denied. Check your private API token.");
-        }
-        throw new Error(result.error ?? `Request failed (${response.status}).`);
+      try {
+        return await requestJson(`/api${path}`,{...options,headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`,...options.headers}});
+      } catch(error) {
+        if(error instanceof Error&&error.message.includes('session expired'))logout();
+        throw error;
       }
-      return result;
     },
     [token, logout],
   );
@@ -630,6 +617,7 @@ function App() {
               <p>{heading[2]}</p>
             </div>
             <div className="heading-actions">
+              <button className="button secondary" onClick={()=>void mutate("/wallets/scan")} disabled={busy}>Scan wallets</button>
               <button className="button primary" onClick={()=>navigate("memory")}><Plus size={16}/>Add wallet</button>
               <span className="refresh-time">
                 {lastRefresh
@@ -1412,6 +1400,7 @@ function TokenRoom({
           <span>{when(t.discovered_at)}</span>
         </div>
       </div>
+      <Section title="Data readiness" kicker="INGEST → METADATA → REPORT"><p>Metadata: <Status value={t.enrichment_state??'pending'}/> · Last attempt {when(t.enrichment_checked_at)}</p><p>{t.coverage?.missing_fields?.length?'Fields not returned: '+t.coverage.missing_fields.join(', '):t.enrichment_state==='ready'?'Identity and market fields received. This is not verification of creator affiliation.':'Waiting for metadata retrieval.'}</p>{t.coverage?.source_errors?.length>0&&<Json value={t.coverage.source_errors}/>}</Section>
       <Section title="Token brief" kicker="SOURCE-REPORTED METADATA"><p>{t.description||'A description has not been returned by the available sources. Creator affiliation and originality remain unverified.'}</p><p>Network: Solana mainnet · Market checked {when(t.market_updated_at)}</p><div className="brief-grid"><span>Market cap: {money(t.market_data?.marketCap)}</span><span>FDV: {money(t.market_data?.fdv)}</span><span>24h volume: {money(t.market_data?.volume?.h24)}</span><span>Venue: {t.market_data?.venue||'Unknown'}</span></div><div>{array(t.market_data?.websites).map((x,i)=><Source key={i} url={x.url} label={x.label||'Website'}/>)}{array(t.market_data?.socials).map((x,i)=><Source key={i} url={x.url} label={x.type||'Social'}/>)}</div><details><summary>All stored market observations</summary><Json value={t.market_data??{}}/></details></Section>
       <div className="stats-grid room-stats">
         <div className="stat-card">
@@ -1634,6 +1623,7 @@ function Operations({
   return (
     <>
       <ProviderSettings />
+      {data.polling&&<Section title="Free-budget polling" kicker="HELIUS REQUEST ALLOWANCE"><p>Automatic scan interval: approximately {Math.ceil(data.polling.intervalSeconds/60)} minutes per wallet. Today: {data.polling.usedToday} / {data.polling.dailyRequestCap} requests. Month: {data.polling.usedMonth} / {data.polling.monthlyRequestCap}.</p><p>This local allowance reserves requests for metadata. Scan wallets requests an earlier scan within the same hard caps. Helius credit usage and entitlement must be checked in your provider dashboard.</p></Section>}
       <div className="control-panel">
         <div className="control-heading">
           <div>
@@ -1929,6 +1919,6 @@ function ProviderSettings(){
  const [key,setKey]=useState(''),[status,setStatus]=useState<Row|null>(null),[message,setMessage]=useState(''),[saving,setSaving]=useState(false);
  const headers=()=>({Authorization:`Bearer ${sessionStorage.getItem('hunter.access')??''}`,'Content-Type':'application/json'});
  useEffect(()=>{requestJson('/api/settings',{headers:headers()}).then(setStatus).catch(e=>setMessage(e instanceof Error?e.message:'Settings unavailable.'));},[]);
- async function save(e:FormEvent){e.preventDefault();setSaving(true);setMessage('Checking Helius connection…');try{await requestJson('/api/settings/helius',{method:'POST',headers:headers(),body:JSON.stringify({apiKey:key.trim()})});setKey('');setStatus({...status,heliusConfigured:true});setMessage('Helius connected. Key saved securely; no redeploy needed. Add wallets in Cabin / memory, then choose Full research for metadata and reports.');}catch(e){setMessage(e instanceof Error?e.message:'Could not save key');}finally{setSaving(false);}}
+ async function save(e:FormEvent){e.preventDefault();setSaving(true);setMessage('Checking Helius connection…');try{await requestJson('/api/settings/helius',{method:'POST',headers:headers(),body:JSON.stringify({apiKey:key.trim()})});setKey('');setStatus({...status,heliusConfigured:true});setMessage('Helius connected. Add a wallet, then tap Scan wallets. Basic metadata works in Watch only; Full research adds holder snapshots and the decision journal.');}catch(e){setMessage(e instanceof Error?e.message:'Could not save key');}finally{setSaving(false);}}
  return <Section title="Helius connection" kicker="MOBILE SETTINGS · SOLANA MAINNET"><p>{status?.heliusConfigured?'Helius key configured. Replace it below at any time.':'Add your own Helius API key to begin wallet polling.'}</p><form className="wallet-form" onSubmit={save}><label htmlFor="helius-key">Helius API key</label><input id="helius-key" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} required maxLength={256} placeholder="Paste your Helius key"/><button className="button primary" disabled={saving||!key.trim()}>Verify and save key</button><p role="status">{message}</p><small>Your key is encrypted in the database and is never returned to the browser. Polling runs while the Render service is awake. Free Render sleep still interrupts background work.</small></form></Section>;
 }
