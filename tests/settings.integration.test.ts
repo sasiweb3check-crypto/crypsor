@@ -39,3 +39,12 @@ test('mobile key settings authenticate, validate, encrypt, replace and never dis
  const invalid=await original(base+'/api/settings/helius',{method:'POST',headers,body:JSON.stringify({apiKey:'bad key'})});assert.equal(invalid.status,400);
  const rejected=await original(base+'/api/wallets',{method:'POST',headers,body:JSON.stringify({network:'ethereum',address:'1'.repeat(32),label:'Wrong network'})});assert.equal(rejected.status,400);
 });
+
+test('mobile request allowance is validated, persisted and read by the scheduler without redeploy',async()=>{
+ const headers={Authorization:`Bearer ${process.env.HUNTER_API_TOKEN}`,'Content-Type':'application/json'};
+ assert.equal((await original(base+'/api/settings/tracking',{method:'POST',headers,body:JSON.stringify({dailyRequestCap:-1,monthlyRequestCap:5000})})).status,400);
+ const result=await original(base+'/api/settings/tracking',{method:'POST',headers,body:JSON.stringify({dailyRequestCap:1000,monthlyRequestCap:20000})});assert.equal(result.status,200);
+ const runtime=await runtimeConfig(pool,{});assert.equal(runtime.HELIUS_DAILY_REQUEST_CAP,'1000');assert.equal(runtime.HELIUS_MONTHLY_REQUEST_CAP,'20000');
+ const settings=await (await original(base+'/api/settings',{headers})).json() as any;assert.equal(settings.heliusDailyRequestCap,1000);assert.equal(settings.heliusMonthlyRequestCap,20000);
+ const operations=await (await original(base+'/api/operations',{headers})).json() as any;assert.equal(operations.polling.dailyRequestCap,1000);
+});

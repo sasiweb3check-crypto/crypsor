@@ -16,11 +16,19 @@ after(async()=>{globalThis.fetch=original;await pool.end();});
 test('Watch Only discovery flows through jobs into populated identity, price, image and explicit readiness',async()=>{
  const wallet='1'.repeat(32);await pool.query('INSERT INTO hunter.watched_wallet(address) VALUES($1)',[wallet]);
  await ingestTransactions(pool,[{signature:'s'.repeat(88),feePayer:wallet,events:{swap:{nativeInput:{account:wallet,amount:'1'},tokenOutputs:[{mint:fixtureMint,userAccount:wallet,rawTokenAmount:{tokenAmount:'1',decimals:6}}]}}}]);
- await runOne(pool);await runOne(pool);
+ for(let i=0;i<4;i++)await runOne(pool);
  const token=(await pool.query('SELECT * FROM hunter.token WHERE mint=$1',[fixtureMint])).rows[0];
  assert.equal(token.name,'Synthetic Flow Token');assert.equal(token.symbol,'TEST');assert.equal(token.price_usd,'0.25');assert.ok(token.image_uri);assert.ok(token.description);assert.equal(token.enrichment_state,'ready');assert.equal(token.risk,'UNASSESSED');assert.equal(token.priority,'LOW');assert.deepEqual(token.coverage.missing_fields,[]);
  assert.ok(!requests.includes('getTokenLargestAccounts'),'Watch Only must not spend requests on deep holder research');
  const count=requests.length;await enrichToken(pool,fixtureMint);assert.equal(requests.length,count,'fresh source cache should avoid redundant requests');
+});
+test('repeated identical provider facts do not append duplicate evidence or diagnostic gaps',async()=>{
+ const before=Number((await pool.query('SELECT count(*) FROM hunter.evidence_claim')).rows[0].count);
+ await pool.query("UPDATE hunter.source_document SET fetched_at=now()-interval '25 hours'");
+ await enrichToken(pool,fixtureMint);
+ assert.equal(Number((await pool.query('SELECT count(*) FROM hunter.evidence_claim')).rows[0].count),before);
+ assert.equal((await pool.query("SELECT count(*)::int n FROM hunter.evidence_claim WHERE claim='Research coverage gaps'")).rows[0].n,0);
+ const token=(await pool.query('SELECT coverage FROM hunter.token')).rows[0];assert.equal(token.coverage.optional_sources.jupiter,'not_enabled');assert.ok(!token.coverage.source_errors.includes('jupiter:NOT_CONFIGURED'));
 });
 test('polling scales with wallet count and reserves half of request allowance',()=>{
  const one=pollIntervalSeconds(1,{}),twenty=pollIntervalSeconds(20,{});assert.ok(twenty>=one*19);

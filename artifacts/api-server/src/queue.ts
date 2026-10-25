@@ -4,7 +4,7 @@ import { pool, type Queryable } from './db.ts';
 export type Job = {id:string;kind:string;mint:string|null;payload:Record<string,unknown>;attempts:number;max_attempts:number;lease_token:string;};
 export async function enqueue(kind:string,mint:string|null,payload:Record<string,unknown>={},dedupeKey?:string,database:Queryable=pool) {
  return (await database.query(`INSERT INTO hunter.investigation_job(kind,mint,payload,dedupe_key) VALUES($1,$2,$3,$4)
- ON CONFLICT(dedupe_key) DO UPDATE SET status='queued',attempts=0,run_after=now(),finished_at=NULL,last_error=NULL
+ ON CONFLICT(dedupe_key) DO UPDATE SET status='queued',payload=EXCLUDED.payload,attempts=0,run_after=now(),finished_at=NULL,last_error=NULL
  WHERE hunter.investigation_job.status='done' RETURNING *`,[kind,mint,payload,dedupeKey??null])).rows[0];
 }
 export async function claimJob(database:pg.Pool=pool):Promise<Job|undefined> {
@@ -12,7 +12,7 @@ export async function claimJob(database:pg.Pool=pool):Promise<Job|undefined> {
  const result=await database.query(`UPDATE hunter.investigation_job SET status='running',attempts=attempts+1,lease_until=now()+interval '120 seconds',lease_token=$1
  WHERE id=(SELECT j.id FROM hunter.investigation_job j CROSS JOIN hunter.operator_state o
  WHERE j.status='queued' AND j.run_after<=now() AND o.singleton AND o.mode<>'STOP_ALL'
- AND (o.mode='FULL' OR j.kind IN('alert','reconcile','retention','maintenance') OR (o.mode='WATCH_ONLY' AND j.kind='enrich')) ORDER BY CASE WHEN j.kind='alert' THEN 0 ELSE 1 END,j.run_after,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1) RETURNING *`,[token]);
+ AND (o.mode='FULL' OR j.kind IN('alert','reconcile','parse_transaction','prices','retention','maintenance') OR (o.mode='WATCH_ONLY' AND j.kind='enrich')) ORDER BY CASE WHEN j.kind IN('reconcile','parse_transaction') THEN 0 WHEN j.kind='prices' THEN 1 WHEN j.kind='alert' THEN 2 ELSE 3 END,j.run_after,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1) RETURNING *`,[token]);
  return result.rows[0];
 }
 export async function finishJob(job:Job,database:Queryable=pool) {

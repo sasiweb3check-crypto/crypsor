@@ -4,14 +4,16 @@ import { randomUUID } from 'node:crypto';
 import { pool } from './db.ts';
 import { claimJob,enqueue,failJob,finishJob,recoverJobs } from './queue.ts';
 import { researchToken } from './research.ts';
-import { enrichToken,deliverAlert,reconcileWallet } from './providers.ts';
+import { enrichToken,deliverAlert,reconcileWallet,parseTransaction,collectPrices,pricePollSeconds } from './providers.ts';
 let sharedWorkerId=process.env.WORKER_ID;
+const heartbeatTimes=new WeakMap<pg.Pool,number>();
 function getWorkerId(){return sharedWorkerId??=randomUUID();}
 export async function runOne(database:pg.Pool=pool):Promise<boolean> {
  const workerId=getWorkerId();
- await database.query(`INSERT INTO hunter.worker_heartbeat(id) VALUES($1) ON CONFLICT(id) DO UPDATE SET updated_at=now(),last_error=NULL`,[workerId]);
+ if(Date.now()-(heartbeatTimes.get(database)??0)>30000){await database.query(`INSERT INTO hunter.worker_heartbeat(id) VALUES($1) ON CONFLICT(id) DO UPDATE SET updated_at=now(),last_error=NULL`,[workerId]);heartbeatTimes.set(database,Date.now());}
  const job=await claimJob(database);
  if(!job)return false;
+ let catchUpAddress:string|undefined;
  try {
   // Re-check after lease claim so a recently activated STOP_ALL blocks new calls.
   const mode=(await database.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0].mode;
@@ -23,14 +25,17 @@ export async function runOne(database:pg.Pool=pool):Promise<boolean> {
     await enrichToken(database,job.mint);
     if(mode==='FULL')await enqueue('research',job.mint,{},`research:${job.mint}`,database);break;
    case 'research': if(!job.mint)throw new Error('MissingMint');await researchToken(database,job.mint);break;
-   case 'reconcile': await reconcileWallet(database,String(job.payload.address??''));break;
+   case 'reconcile': {const result=await reconcileWallet(database,String(job.payload.address??''),undefined,{replayRecent:job.payload.replayRecent===true,jobLease:{id:job.id,token:job.lease_token}});if('complete' in result&&result.complete===false)catchUpAddress=String(job.payload.address);break;}
+   case 'parse_transaction':await parseTransaction(database,String(job.payload.signature??''));break;
+   case 'prices':await collectPrices(database);break;
    case 'retention':case 'maintenance':
     await database.query("UPDATE hunter.source_document SET payload=NULL WHERE expires_at<now() AND payload IS NOT NULL");
     await database.query("DELETE FROM hunter.investigation_job WHERE status='done' AND finished_at<now()-interval '7 days'");
     await database.query("DELETE FROM hunter.worker_heartbeat WHERE updated_at<now()-interval '1 day'");break;
    default: throw new Error('UnsupportedJobKind');
   }
-  await finishJob(job,database);
+  const finished=await finishJob(job,database);
+  if(finished&&catchUpAddress)await enqueue('reconcile',null,{address:catchUpAddress},`reconcile:${catchUpAddress}`,database);
  }catch(error){
   await failJob(job,error,database);
   await database.query('UPDATE hunter.worker_heartbeat SET last_error=$2 WHERE id=$1',[workerId,error instanceof Error?error.name:'UnknownError']);
@@ -45,9 +50,14 @@ export async function schedule(database:pg.Pool=pool) {
  if(config.HELIUS_API_KEY){
   const count=Number((await database.query('SELECT count(*) FROM hunter.watched_wallet WHERE active')).rows[0].count);
   const interval=pollIntervalSeconds(count,config);
-  const wallets=(await database.query("SELECT address FROM hunter.watched_wallet WHERE active AND (last_success_at IS NULL OR last_success_at<now()-make_interval(secs=>$1::int)) ORDER BY last_success_at NULLS FIRST LIMIT 20",[interval])).rows;
+  const wallets=(await database.query("SELECT address FROM hunter.watched_wallet WHERE active AND (pending_cursor IS NOT NULL OR last_success_at IS NULL OR last_success_at<now()-make_interval(secs=>$1::int)) ORDER BY last_success_at NULLS FIRST LIMIT 20",[interval])).rows;
   for(const {address} of wallets)await enqueue('reconcile',null,{address},`reconcile:${address}`,database);
+  const repairs=(await database.query('SELECT address FROM hunter.watched_wallet WHERE active AND cursor IS NOT NULL AND purchase_replay_version<1 LIMIT 20')).rows;
+  for(const {address} of repairs)await enqueue('reconcile',null,{address,replayRecent:true},`recent-replay:${address}`,database);
  }
+ if((await database.query(`SELECT 1 FROM hunter.token t WHERE EXISTS(SELECT 1 FROM hunter.wallet_purchase b WHERE b.mint=t.mint)
+  AND (price_checked_at IS NULL OR price_checked_at<now()-make_interval(secs=>$1::int)) LIMIT 1`,[pricePollSeconds(config)])).rowCount)
+  await enqueue('prices',null,{},'prices:batch',database);
  if(['FULL','WATCH_ONLY'].includes(mode)){
   const due=(await database.query("SELECT mint FROM hunter.token t WHERE (enrichment_checked_at IS NULL OR enrichment_checked_at<now()-interval '1 hour') AND NOT EXISTS(SELECT 1 FROM hunter.investigation_job j WHERE j.mint=t.mint AND j.kind='enrich' AND j.status IN('queued','running','dead')) ORDER BY enrichment_checked_at NULLS FIRST LIMIT 10")).rows;
   for(const {mint} of due)await enqueue('enrich',mint,{},`metadata-refresh:${mint}`,database);
@@ -72,7 +82,7 @@ export function startWorker(database:pg.Pool=pool) {
   while(!stopping){
    try{if(Date.now()-lastSchedule>60000){await schedule(database);lastSchedule=Date.now();}const worked=await runOne(database);if(worked)continue;}
    catch(error){console.error('Hunter worker iteration failed',{type:error instanceof Error?error.name:'UnknownError'});}
-   await new Promise<void>(resolve=>{wakeResolve=resolve;wake=setTimeout(resolve,1000);});
+   await new Promise<void>(resolve=>{wakeResolve=resolve;wake=setTimeout(resolve,3000);});
   }
  })();
  return {stop:async()=>{stopping=true;if(wake)clearTimeout(wake);wakeResolve?.();/* let in-flight bounded task finish */ await Promise.race([done,new Promise(resolve=>setTimeout(resolve,2500))]);}};

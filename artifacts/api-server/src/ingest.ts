@@ -1,3 +1,4 @@
+import {purchaseEntry} from './purchase-entry.ts';
 import type { Pool } from "pg";
 
 type Json = Record<string, any>;
@@ -65,7 +66,7 @@ export function normalizeTransactions(transactions: unknown[], watched: Iterable
         observations: { parser: "hunter-enhanced-v1", sourcePath: `events.swap.tokenOutputs[${index}]`, rawTokenAmount: output.rawTokenAmount ?? null,
           tokenAmount: output.tokenAmount ?? null, nativePaidLamports: nativePaid ? String(swap.nativeInput.amount) : null,
           inputMints: inputs.map(x => x.mint).filter(Boolean), purchaseEstablished: true,
-          verification: trustedCommitment ? `Reconciled ${trustedCommitment} transaction` : "Unverified provider-reported enhanced swap; not independently confirmed" } });
+          entry:purchaseEntry(swap,wallet,output),amountParser:tx.parser==='hunter-rpc-transfers-v1'?tx.parser:'hunter-enhanced-v1',verification: trustedCommitment ? `Reconciled ${trustedCommitment} transaction` : "Unverified provider-reported enhanced swap; not independently confirmed" } });
     }
   }
   return observations;
@@ -82,10 +83,19 @@ export async function ingestTransactions(pool: Pool, transactions: unknown[], op
     const wallets = await db.query("SELECT address FROM hunter.watched_wallet WHERE active=true");
     const normalized = normalizeTransactions(transactions, wallets.rows.map(w => w.address), options.trustedCommitment);
     for (const event of normalized) {
+      // A later RPC fallback can repair an already recorded enhanced observation.
+      // Reuse its event identity rather than creating a second buy for the same mint.
+      if(event.mint){const prior=(await db.query("SELECT instruction_path FROM hunter.onchain_event WHERE signature=$1 AND wallet_address=$2 AND mint=$3 AND event_kind='SWAP_BUY' ORDER BY id LIMIT 1",[event.signature,event.wallet,event.mint])).rows[0];if(prior)event.instructionPath=prior.instruction_path;}
       if (event.mint) await db.query("INSERT INTO hunter.token(mint) VALUES($1) ON CONFLICT DO NOTHING", [event.mint]);
       const inserted = await db.query(`INSERT INTO hunter.onchain_event(signature,instruction_path,event_kind,wallet_address,mint,slot,block_time,commitment,observations)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(signature,instruction_path,event_kind) DO NOTHING RETURNING id`,
         [event.signature,event.instructionPath,event.kind,event.wallet,event.mint,event.slot,event.blockTime,event.commitment,{...event.observations,source: options.source ?? "helius_webhook"}]);
+      if(event.mint&&event.commitment!=='provider_reported'&&event.observations.entry){
+        const entry=event.observations.entry;
+        await db.query(`INSERT INTO hunter.wallet_purchase(event_id,wallet_address,mint,signature,quote_mint,quote_symbol,quote_raw,quote_decimals,token_raw,token_decimals,entry_quote_price,block_time,verification,data)
+          SELECT id,$4,$5,$1,$6,$7,$8,$9,$10,$11,($8::numeric/power(10::numeric,$9::int))/($10::numeric/power(10::numeric,$11::int)),$12,$13,$14 FROM hunter.onchain_event WHERE signature=$1 AND instruction_path=$2 AND event_kind=$3
+          ON CONFLICT DO NOTHING`,[event.signature,event.instructionPath,event.kind,event.wallet,event.mint,entry.quoteMint,entry.quoteSymbol,entry.quoteRaw,entry.quoteDecimals,entry.tokenRaw,entry.tokenDecimals,event.blockTime,event.commitment,{amount_source:event.observations.amountParser==='hunter-rpc-transfers-v1'?'rpc_parsed_swap_transfers':entry.amountSource,fee_scope:event.observations.amountParser==='hunter-rpc-transfers-v1'?'Parsed transfers within a recognized swap instruction; network fees and account creation instructions excluded. Separate protocol transfers inside the swap are included.':entry.feeScope,coverage:'Confirmed/finalized signature with decoded amounts; not proof of the first lifetime wallet buy'}]);
+      }
       if (!inserted.rowCount) {
         duplicates++;
         if (options.trustedCommitment) {
@@ -117,6 +127,10 @@ export async function ingestTransactions(pool: Pool, transactions: unknown[], op
       if (["FULL","WATCH_ONLY"].includes(state.rows[0]?.mode)) {
         await db.query(`INSERT INTO hunter.investigation_job(kind,mint,payload,dedupe_key) VALUES('enrich',$1,'{}',$2) ON CONFLICT(dedupe_key) DO NOTHING`,[event.mint,`enrich:${event.mint}:initial`]);
       }
+    }
+    if(!options.trustedCommitment&&normalized.length){
+      for(const wallet of new Set(normalized.map(e=>e.wallet)))await db.query(`INSERT INTO hunter.investigation_job(kind,payload,dedupe_key) VALUES('reconcile',$1,$2)
+       ON CONFLICT(dedupe_key) DO UPDATE SET status='queued',attempts=0,run_after=now(),finished_at=NULL,last_error=NULL WHERE hunter.investigation_job.status='done'`,[{address:wallet},`reconcile:${wallet}`]);
     }
     await db.query("COMMIT");
     return { accepted, duplicates, activities, ignored: Math.max(0, transactions.length - new Set(normalized.map(x=>x.signature)).size), stopped:false };

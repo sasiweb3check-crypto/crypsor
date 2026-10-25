@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import type { Pool } from "pg";
 import { geminiHypotheses, type ProviderConfig } from "./providers.ts";
 
@@ -23,10 +24,6 @@ export function evaluateGate(facts: Facts, at = new Date()) {
     ...(!independentMarkets ? ["Independent market-source cross-check is incomplete"] : []),
     ...(!facts.authoritySourceVerified ? ["Mint/freeze authority state is UNKNOWN"] : []),
     ...(facts.holderSnapshots === 0 ? ["Holder ownership and concentration have not been measured"] : []),
-    "Token originality and creator affiliation are UNKNOWN; observed metadata similarity is not proof of origin",
-    "Primary social narratives are UNKNOWN; unavailable sources are not FALSE",
-    "Manipulation, MEV actor attribution, common funding, and complete holder history are UNKNOWN",
-    "No calibrated cohort model or guaranteed return/latency forecast is available",
   ];
   const confidence = provenance && confirmed && identity && marketFresh && independentMarkets ? "MEDIUM" : "LOW";
   const priority = facts.walletCount >= 3 ? "HIGH" : facts.walletCount >= 2 ? "MEDIUM" : "LOW";
@@ -93,14 +90,14 @@ export async function researchToken(pool: Pool, mint: string, config: ProviderCo
     const [events, sources, evidence, metadata, holders, previous] = results;
     const now = new Date();
     const wallets = [...new Set(events.rows.map(x=>x.wallet_address))];
-    const freshMarkets = sources.rows.filter(x => /dexscreener|jupiter/i.test(x.provider) && x.fetched_at && now.getTime()-new Date(x.fetched_at).getTime() >= -60_000 && now.getTime()-new Date(x.fetched_at).getTime() <= 300_000);
+    const freshMarkets = sources.rows.filter(x => /dexscreener|jupiter|geckoterminal/i.test(x.provider) && x.fetched_at && now.getTime()-new Date(x.fetched_at).getTime() >= -60_000 && now.getTime()-new Date(x.fetched_at).getTime() <= 300_000);
     const identitySource = sources.rows.find(x => /helius.*(mint|rpc)|solana.*mint/i.test(x.provider) && (x.payload?.value?.data?.parsed?.type === "mint" || x.payload?.result?.value?.data?.parsed?.type === "mint" || x.payload?.type === "mint"));
     const latestMetadata = metadata.rows[0];
     const authoritySourceVerified = Boolean(latestMetadata?.data?.authoritySourceVerified);
     const result = evaluateGate({
       walletCount: wallets.length,eventCount:events.rowCount ?? 0,confirmedCount:events.rows.filter(x=>["confirmed","finalized"].includes(x.commitment)).length,
       hasIdentity:Boolean(identitySource),marketTimestamp:freshMarkets[0]?.fetched_at ?? null,
-      independentMarketSources:new Set(freshMarkets.map(x=>x.provider.toLowerCase().includes("jupiter") ? "jupiter" : "dexscreener")).size,
+      independentMarketSources:new Set(freshMarkets.map(x=>x.provider.toLowerCase())).size,
       mintAuthority:latestMetadata?.mint_authority,freezeAuthority:latestMetadata?.freeze_authority,
       authoritySourceVerified,sourceCount:sources.rowCount ?? 0,holderSnapshots:holders.rowCount ?? 0,
     },now);
@@ -113,22 +110,34 @@ export async function researchToken(pool: Pool, mint: string, config: ProviderCo
       if (prior.context?.risk && prior.context.risk !== result.risk) contradictions.push({decisionId:prior.id,reason:"Authority/risk evidence changed",before:prior.context.risk,after:result.risk});
     }
     const action = contradictions.length ? "CONTRADICTION" : result.action;
-    const thesis = `Hypothesis, not a forecast: ${wallets.length} watched wallet(s) have ${events.rowCount ?? 0} recorded explicit swap output(s) for this mint. This warrants reproducible observation; wallet overlap alone does not establish token quality, coordination, creator affiliation or future returns.`;
-    const counterThesis = "Competing hypothesis: the observed swaps may reflect unrelated speculation, short-lived routing or accounts under shared control. Provider parsing may be incomplete. Price and liquidity observations can become stale, and concentrated or authority-controlled supply can invalidate a positive interpretation.";
-    const next = new Date(now.getTime()+15*60_000);
+    const evidenceSummary = [
+      `In the latest ${events.rowCount??0} recorded swap output${events.rowCount===1?'':'s'}, ${wallets.length} watched wallet${wallets.length===1?' is':'s are'} represented.`,
+      `${events.rows.filter(x=>['confirmed','finalized'].includes(x.commitment)).length} output(s) reconciled against confirmed/finalized signatures.`,
+      token.price_usd!==null?`Last market observation: $${token.price_usd} per token; liquidity ${token.liquidity_usd===null?'not returned':'$'+token.liquidity_usd}.`:'No market price was returned.',
+      authoritySourceVerified?`Mint authority ${latestMetadata.mint_authority===null?'revoked':'present'}; freeze authority ${latestMetadata.freeze_authority===null?'revoked':'present'}.`:'Mint/freeze authority checks remain incomplete.'
+    ];
+    const thesis = evidenceSummary.join(' ');
+    const counterThesis = result.gate.riskyAuthorities?'An active mint or freeze authority requires review. Authority presence alone does not prove malicious use.':!result.gate.independentChainConfirmation?'The swap evidence remains provider-reported; do not treat it as independent chain confirmation.':result.gate.independentMarkets?'Two market APIs were retrieved, but may report the same underlying venues. Cross-source agreement is not a return forecast.':'Only one market provider is available. Price has no independent cross-check; wallet overlap does not establish token quality.';
+    const fingerprint=createHash('sha256').update(JSON.stringify({events:events.rows.map(e=>[e.id,e.commitment]),price:token.price_usd,liquidity:token.liquidity_usd,authorities:latestMetadata?[latestMetadata.mint_authority,latestMetadata.freeze_authority]:null,holders:holders.rows[0]?.features,action,confidence:result.confidence,risk:result.risk,gaps:result.unknowns,modelHypotheses})).digest('hex');
+    const next = new Date(now.getTime()+60*60_000);
+    if(prior?.context?.evidenceFingerprint===fingerprint){
+      await db.query(`INSERT INTO hunter.investigation_job(kind,mint,payload,run_after,dedupe_key) VALUES('enrich',$1,$2,$3,$4) ON CONFLICT(dedupe_key) DO NOTHING`,[mint,{reason:'unchanged-evidence-revisit'},next,`revisit-unchanged:${mint}:${Math.floor(next.getTime()/3600000)}`]);
+      await db.query('COMMIT');return {...prior,unchanged:true};
+    }
     const context = {
+      evidenceFingerprint:fingerprint,evidenceSummary,classification:"Rule-based observation summary, not an AI thesis or trade signal",
       process:["READ","THINK","GATE","JOURNAL","REVISIT"],priority:result.priority,risk:result.risk,confidence:result.confidence,
       sourceWallets:wallets,signatures:[...new Set(events.rows.map(x=>x.signature))],observations:events.rows.map(x=>({id:x.id,signature:x.signature,commitment:x.commitment,observations:x.observations})),
       sourceIds:sources.rows.map(x=>x.id),sourceUrls:sources.rows.map(x=>x.url),
       catalyst:"Recheck after independently confirmed wallet events, new authority/holder evidence, material liquidity change, or new primary-source evidence",
       invalidationTrigger:"Claim unsupported by its source, failed chain confirmation, fresh contradictory evidence, or stale observations",
-      nextRecheckTrigger:{at:next.toISOString(),reason:"15 minute evidence freshness and state-change check",minimumMaterialChange:"New event, source timestamp, authority change, or contradictory claim"},
+      nextRecheckTrigger:{at:next.toISOString(),reason:"Hourly evidence review within provider budget",minimumMaterialChange:"New event, source timestamp, authority change, or contradictory claim"},
       gaps:[...result.unknowns,...(modelGap?[modelGap]:[])],interpretation:"Deterministic research hypothesis; optional model output is separate and unverified",
       modelHypotheses,modelGap,paidSourceFlags:{social:false,graph:false,archival:false},
     };
     const version = Number(prior?.version ?? 0)+1;
     const decision = await db.query(`INSERT INTO hunter.decision_version(mint,version,action,thesis,counter_thesis,unknowns,evidence_ids,contradictions,gate,reviewer_result,model_version,rule_version,known_at,next_recheck_at,context)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,'hunter-rules-v1',$11,$12,$13) RETURNING *`,
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,'hunter-facts-v2',$11,$12,$13) RETURNING *`,
       [mint,version,action,thesis,counterThesis,JSON.stringify(result.unknowns),JSON.stringify(evidence.rows.map(x=>x.id)),JSON.stringify(contradictions),result.gate,
         "Deterministic gate completed; independent human/model review pending",now,next,context,modelHypotheses?.model ?? "none"]);
     await db.query("UPDATE hunter.token SET priority=$2,risk=$3,confidence=$4 WHERE mint=$1",[mint,result.priority,result.risk,result.confidence]);

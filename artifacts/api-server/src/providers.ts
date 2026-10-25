@@ -1,12 +1,17 @@
+import {dexObservation,geckoObservation,type MarketObservation} from './market-sources.ts';
+import {assetMetadata,approvedMetadataUrl,publicMediaUrl,readPublicMetadata} from './asset-metadata.ts';
 import {runtimeConfig} from './settings.ts';
 import type { Pool } from 'pg';
 import { randomUUID, createHash } from 'node:crypto';
 import { ingestTransactions } from './ingest.ts';
+import {normalizeTransactions} from './ingest.ts';
+import {parsedSwapTransaction} from './parsed-swap.ts';
+import {enqueue} from './queue.ts';
 
 export type ProviderConfig = Record<string, string | undefined>;
 const defaults: Record<string, [number, number, number]> = {
-  helius: [500, 10000, 400], dexscreener: [300, 6000, 600], jupiter: [100, 2000, 1100],
-  telegram: [100, 2000, 1000], gemini: [10, 100, 6500],
+  helius: [500, 10000, 400], geckoterminal:[200,4000,2200], dexscreener: [300, 6000, 600], jupiter: [100, 2000, 1100],
+  metadata: [100, 1000, 1000], telegram: [100, 2000, 1000], gemini: [10, 100, 6500],
 };
 function cap(value: string | undefined, fallback: number) {
   if (value === undefined || value === '') return fallback;
@@ -86,7 +91,8 @@ async function document(pool: Pool,mint: string,provider: string,url: string,pay
   return (await pool.query('INSERT INTO hunter.source_document(mint,provider,url,payload,source_timestamp) VALUES($1,$2,$3,$4,$5) RETURNING id',[mint,provider,url,bounded,sourceTimestamp ?? null])).rows[0].id;
 }
 async function claim(pool: Pool,mint: string,sourceId: string|number|null,text: string,data: unknown,status='OBSERVED',confidence='LOW') {
-  await pool.query('INSERT INTO hunter.evidence_claim(mint,source_document_id,claim,status,confidence,data) VALUES($1,$2,$3,$4,$5,$6)',[mint,sourceId,text,status,confidence,JSON.stringify(data)]);
+  const fingerprint=createHash('sha256').update(JSON.stringify([mint,text,status,confidence,data])).digest('hex');
+  await pool.query('INSERT INTO hunter.evidence_claim(mint,source_document_id,claim,status,confidence,data,fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(fingerprint) WHERE fingerprint IS NOT NULL DO NOTHING',[mint,sourceId,text,status,confidence,JSON.stringify(data),fingerprint]);
 }
 export function chooseDexPair(payload: unknown,mint: string): any|null {
   const pairs = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.pairs) ? (payload as any).pairs : [];
@@ -104,20 +110,40 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
   await pool.query("UPDATE hunter.token SET enrichment_state='running',enrichment_checked_at=now() WHERE mint=$1",[mint]);
   const errors: string[]=[];
   let dexPrice: number|null=null,jupPrice:number|null=null;
-  const cached=await pool.query("SELECT provider FROM hunter.source_document WHERE mint=$1 AND fetched_at>now()-interval '24 hours' AND ((provider='helius_das' AND payload->>'id'=$1) OR (provider='helius_rpc' AND payload#>>'{value,data,parsed,type}'='mint'))",[mint]);
+  const cached=await pool.query("SELECT provider,payload FROM hunter.source_document WHERE mint=$1 AND fetched_at>now()-interval '24 hours' AND ((provider='helius_das' AND payload->>'id'=$1) OR (provider='helius_rpc' AND payload#>>'{value,data,parsed,type}'='mint'))",[mint]);
   const has=(provider:string)=>cached.rows.some(row=>row.provider===provider);
   const marketFresh=(await pool.query("SELECT 1 FROM hunter.token WHERE mint=$1 AND market_updated_at>now()-interval '15 minutes' AND price_usd IS NOT NULL",[mint])).rowCount;
-  if(!marketFresh)try {
-    const payload=await httpJson(pool,'dexscreener','token_pairs',`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`,{},mint,config);
-    const pair=chooseDexPair(payload,mint);
-    const source=await document(pool,mint,'dexscreener',`https://api.dexscreener.com/token-pairs/v1/solana/${mint}`,payload);
-    if(pair){
-      await pool.query('UPDATE hunter.token SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),image_uri=COALESCE($4,image_uri),market_data=$5 WHERE mint=$1',[mint,pair.baseToken?.name??null,pair.baseToken?.symbol??null,pair.info?.imageUrl??null,{venue:pair.dexId,pairUrl:pair.url,volume:pair.volume,priceChange:pair.priceChange,txns:pair.txns,marketCap:pair.marketCap,fdv:pair.fdv,websites:pair.info?.websites??[],socials:pair.info?.socials??[],observed_at:new Date().toISOString(),source:'dexscreener'}]);
-      dexPrice=positiveNumber(pair.priceUsd);
-      await pool.query('UPDATE hunter.token SET price_usd=$2,liquidity_usd=$3,market_updated_at=now() WHERE mint=$1',[mint,dexPrice,positiveNumber(pair.liquidity?.usd)]);
-      await claim(pool,mint,source,'DEX Screener market observation; provider update timestamp unavailable',{price_usd:dexPrice,liquidity_usd:positiveNumber(pair.liquidity?.usd),pair:pair.pairAddress,provider_timestamp:null},'OBSERVED','MEDIUM');
-    }else await claim(pool,mint,source,'No matching Solana base-token market pair returned',{},'UNKNOWN');
-  }catch(error){errors.push(error instanceof ProviderUnavailable?`dexscreener:${error.code}`:'dexscreener:FAILED');}
+  const marketFailures:string[]=[];
+  const observations:MarketObservation[]=[];
+  if(!marketFresh){
+   try{
+    const url=`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`;
+    const payload=await httpJson(pool,'dexscreener','token_pairs',url,{},mint,config);
+    const observation=dexObservation(payload,mint);
+    if(observation)observations.push(observation);else marketFailures.push('dexscreener:NO_MATCHING_QUOTE');
+   }catch(error){marketFailures.push(error instanceof ProviderUnavailable?`dexscreener:${error.code}`:'dexscreener:FAILED');}
+  }
+  const needsQuote=(await pool.query(`SELECT 1 FROM hunter.wallet_purchase b WHERE b.mint=$1 AND NOT EXISTS(SELECT 1 FROM hunter.price_sample p WHERE p.mint=b.mint AND p.quote_mint=b.quote_mint AND p.observed_at>now()-interval '15 minutes') LIMIT 1`,[mint])).rowCount;
+  const geckoCached=(await pool.query("SELECT 1 FROM hunter.source_document WHERE mint=$1 AND provider='geckoterminal' AND fetched_at>now()-interval '15 minutes' LIMIT 1",[mint])).rowCount;
+  if((!marketFresh&&!observations.length||needsQuote)&&!geckoCached){
+   try{
+    const url=`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${encodeURIComponent(mint)}/pools?include=base_token,quote_token`;
+    const payload=await httpJson(pool,'geckoterminal','token_pools',url,{},mint,config);
+    const observation=geckoObservation(payload,mint);
+    if(observation)observations.push(observation);else marketFailures.push('geckoterminal:NO_MATCHING_QUOTE');
+   }catch(error){marketFailures.push(error instanceof ProviderUnavailable?`geckoterminal:${error.code}`:'geckoterminal:FAILED');}
+  }
+  for(const [index,observation] of observations.entries()){
+   const source=await document(pool,mint,observation.source,observation.url,observation);
+   await claim(pool,mint,source,`${observation.source} market observation`,{price_usd:observation.priceUsd,liquidity_usd:observation.liquidityUsd,quote_mint:observation.quoteMint,quote_price:observation.quotePrice,provider_timestamp:null},'OBSERVED','MEDIUM');
+   await recordPrice(pool,mint,'USD',observation.priceUsd,observation.source,observation.url);
+   if(observation.quoteMint&&observation.quotePrice)await recordPrice(pool,mint,observation.quoteMint,observation.quotePrice,observation.source,observation.url);
+   if(index===0){
+    dexPrice=observation.source==='dexscreener'?observation.priceUsd:null;
+    await pool.query('UPDATE hunter.token SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),image_uri=COALESCE($4,image_uri),market_data=$5,price_usd=$6,liquidity_usd=$7,market_updated_at=now() WHERE mint=$1',[mint,observation.name,observation.symbol,observation.image,{...observation.data,observed_at:new Date().toISOString(),source:observation.source,fallback_reasons:marketFailures},observation.priceUsd,observation.liquidityUsd]);
+   }
+  }
+  if(!marketFresh&&!observations.length)errors.push(...marketFailures);
   if(config.JUPITER_API_KEY){
     try {
       const payload=await httpJson(pool,'jupiter','token_identity',`https://api.jup.ag/tokens/v2/search?query=${encodeURIComponent(mint)}`,{headers:{'x-api-key':config.JUPITER_API_KEY}},mint,config);
@@ -130,18 +156,22 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
         await claim(pool,mint,source,'Jupiter identity and market observation',{name:token.name,symbol:token.symbol,price_usd:jupPrice,official_affiliation:'UNKNOWN'},'OBSERVED','MEDIUM');
       }else await claim(pool,mint,source,'Jupiter returned no exact mint match',{},'UNKNOWN');
     }catch(error){errors.push(error instanceof ProviderUnavailable?`jupiter:${error.code}`:'jupiter:FAILED');}
-  }else errors.push('jupiter:NOT_CONFIGURED');
+  }
   if(dexPrice!==null&&jupPrice!==null){
     const divergence=Math.max(dexPrice,jupPrice)>0?Math.abs(dexPrice-jupPrice)/Math.max(dexPrice,jupPrice):0;
     await claim(pool,mint,null,'Independent market-price cross-check',{dexscreener:dexPrice,jupiter:jupPrice,relative_divergence:divergence,interpretation:'Provider differences may reflect timing or different venues; they do not prove manipulation.'},'OBSERVED','MEDIUM');
   }
   if(config.HELIUS_API_KEY){
+    const savedAsset=cached.rows.find(row=>row.provider==='helius_das')?.payload;
+    if(savedAsset){const normalized=assetMetadata(savedAsset);if(normalized.imageCandidates.length)await pool.query('UPDATE hunter.token SET image_candidates=$2 WHERE mint=$1',[mint,JSON.stringify(normalized.imageCandidates)]);await pool.query('UPDATE hunter.token SET image_uri=COALESCE(image_uri,$2),description=COALESCE(description,$3) WHERE mint=$1',[mint,normalized.image,normalized.description]);}
     if(!has('helius_das'))try {
-      const asset=await heliusRpc(pool,'getAsset',{id:mint} as unknown as unknown[],mint,config);
+      const asset=await heliusRpc(pool,'getAsset',{id:mint,options:{showFungible:true}} as unknown as unknown[],mint,config);
       const source=await document(pool,mint,'helius_das','https://mainnet.helius-rpc.com/',asset);
       if(asset.id===mint){
-        const metadata=asset.content?.metadata??{};
-        const image=asset.content?.links?.image??asset.content?.files?.find((f:any)=>f.mime?.startsWith('image/'))?.uri??null;
+        const normalized=assetMetadata(asset);
+        if(normalized.imageCandidates.length)await pool.query('UPDATE hunter.token SET image_candidates=$2 WHERE mint=$1',[mint,JSON.stringify(normalized.imageCandidates)]);
+        const metadata={name:normalized.name,symbol:normalized.symbol,description:normalized.description};
+        const image=normalized.image;
         await pool.query('UPDATE hunter.token SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),image_uri=COALESCE($4,image_uri),description=COALESCE($5,description) WHERE mint=$1',[mint,metadata.name??null,metadata.symbol??null,image,metadata.description??null]);
         await pool.query('INSERT INTO hunter.token_metadata_version(mint,source_document_id,name,symbol,image_uri,metadata_uri,data) VALUES($1,$2,$3,$4,$5,$6,$7)',[mint,source,metadata.name??null,metadata.symbol??null,image,asset.content?.json_uri??null,{description:metadata.description??null,identity_source:'helius_das',official_affiliation:'UNKNOWN'}]);
         await claim(pool,mint,source,'Helius DAS token metadata observed',{name:metadata.name??null,symbol:metadata.symbol??null,image,description:metadata.description??null},'OBSERVED','MEDIUM');
@@ -156,7 +186,7 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
       const authorityVerified=['mintAuthority','freezeAuthority'].every(key=>Object.prototype.hasOwnProperty.call(info,key)&&(info[key]===null||typeof info[key]==='string'));
       if(authorityVerified)await pool.query('UPDATE hunter.token SET risk=$2 WHERE mint=$1',[mint,info.mintAuthority||info.freezeAuthority?'ELEVATED':'UNASSESSED']);
       await pool.query('INSERT INTO hunter.token_metadata_version(mint,source_document_id,decimals,supply,mint_authority,freeze_authority,data) VALUES($1,$2,$3,$4,$5,$6,$7)',[mint,source,info.decimals,info.supply,info.mintAuthority??null,info.freezeAuthority??null,JSON.stringify({authoritySourceVerified:authorityVerified,program:result.value.owner,extensions:info.extensions??[],commitment:'finalized',slot:result.context?.slot})]);
-      await claim(pool,mint,source,'Finalized parsed mint account',{mint_authority:info.mintAuthority===null?null:info.mintAuthority??'UNKNOWN',freeze_authority:info.freezeAuthority===null?null:info.freezeAuthority??'UNKNOWN',program:result.value.owner,extensions:info.extensions??[],decimals:info.decimals,supply:info.supply},'OBSERVED','HIGH');
+      await claim(pool,mint,source,'Finalized parsed mint account',{rpc_method:'getAccountInfo',slot:result.context?.slot??null,commitment:'finalized',mint_authority:info.mintAuthority===null?null:info.mintAuthority??'UNKNOWN',freeze_authority:info.freezeAuthority===null?null:info.freezeAuthority??'UNKNOWN',program:result.value.owner,extensions:info.extensions??[],decimals:info.decimals,supply:info.supply},'OBSERVED','HIGH');
       // Each task is bounded. RPC calls are rate limited independently; the next retry can fill a missing snapshot.
       if(state.mode==='FULL')try {
         const largest=await heliusRpc(pool,'getTokenLargestAccounts',[mint,{commitment:'finalized'}],mint,config);
@@ -168,11 +198,25 @@ export async function enrichToken(pool: Pool,mint: string,config: ProviderConfig
       }catch(error){errors.push(error instanceof ProviderUnavailable?`holders:${error.code}`:'holders:FAILED');}
     }catch(error){errors.push(error instanceof ProviderUnavailable?`helius:${error.code}`:'helius:FAILED');}
   }else errors.push('helius:NOT_CONFIGURED');
-  if(errors.length) await claim(pool,mint,null,'Research coverage gaps',{gaps:errors,social:'UNKNOWN',creator_affiliation:'UNKNOWN',originality:'UNKNOWN',mev_attribution:'UNKNOWN'},'UNKNOWN');
+  // Fill only missing off-chain fields; no key is sent to public gateways.
+  const current=(await pool.query('SELECT name,symbol,image_uri,description FROM hunter.token WHERE mint=$1',[mint])).rows[0]??{};
+  if(!current.image_uri||!current.description){
+   const record=(await pool.query("SELECT metadata_uri FROM hunter.token_metadata_version WHERE mint=$1 AND metadata_uri IS NOT NULL ORDER BY observed_at DESC,id DESC LIMIT 1",[mint])).rows[0];
+   const uri=approvedMetadataUrl(record?.metadata_uri);
+   const previous=(await pool.query("SELECT payload FROM hunter.source_document WHERE mint=$1 AND provider='offchain_metadata' AND fetched_at>now()-interval '24 hours' ORDER BY fetched_at DESC LIMIT 1",[mint])).rows[0];
+   if(uri){try{
+    let payload=previous?.payload;
+    if(!payload){const reservation=await reserveVendorCall(pool,'metadata','token_json',mint,config);try{payload=await readPublicMetadata(uri);await pool.query("UPDATE hunter.vendor_usage SET outcome='success' WHERE id=$1",[reservation]);}catch(error){await pool.query("UPDATE hunter.vendor_usage SET outcome='failed' WHERE id=$1",[reservation]);throw error;}}
+    const source=previous?null:await document(pool,mint,'offchain_metadata',uri,payload);
+    const normalized=assetMetadata({content:{metadata:payload,links:{image:payload.image}}});
+    await pool.query('UPDATE hunter.token SET image_uri=COALESCE(image_uri,$2),description=COALESCE(description,$3),name=COALESCE(name,$4),symbol=COALESCE(symbol,$5) WHERE mint=$1',[mint,normalized.image,normalized.description,normalized.name,normalized.symbol]);
+    if(source)await claim(pool,mint,source,'Publisher-provided metadata; creator affiliation not verified',{image:normalized.image,description:normalized.description},'OBSERVED','LOW');
+   }catch(error){errors.push(error instanceof ProviderUnavailable?`offchain:${error.code}`:'offchain:UNAVAILABLE');}}
+  }
   await pool.query("UPDATE hunter.token SET priority=CASE WHEN (SELECT count(DISTINCT wallet_address) FROM hunter.onchain_event WHERE mint=$1)>=3 THEN 'HIGH' WHEN (SELECT count(DISTINCT wallet_address) FROM hunter.onchain_event WHERE mint=$1)>=2 THEN 'MEDIUM' ELSE 'LOW' END WHERE mint=$1",[mint]);
   const fields=(await pool.query('SELECT name,symbol,image_uri,price_usd FROM hunter.token WHERE mint=$1',[mint])).rows[0]??{};
   const missing=Object.keys({name:1,symbol:1,image_uri:1,price_usd:1}).filter(field=>fields[field]==null||fields[field]==='');
-  await pool.query('UPDATE hunter.token SET enrichment_state=$2,enrichment_checked_at=now(),coverage=$3 WHERE mint=$1',[mint,missing.length?'partial':'ready',{missing_fields:missing,source_errors:errors,checked_at:new Date().toISOString(),scope:'Identity and market observations; ready does not certify originality or complete research'}]);
+  await pool.query('UPDATE hunter.token SET enrichment_state=$2,enrichment_checked_at=now(),coverage=$3 WHERE mint=$1',[mint,missing.length?'partial':'ready',{missing_fields:missing,source_errors:errors,checked_at:new Date().toISOString(),optional_sources:{jupiter:config.JUPITER_API_KEY?'enabled':'not_enabled'},scope:'Identity and market observations; ready does not certify originality or complete research'}]);
   return {errors,missing};
 }
 
@@ -225,7 +269,7 @@ export function reconciliationSlice(signatures:Array<{signature:string;err?:unkn
   const boundary=stableCursor?signatures.findIndex(s=>s.signature===stableCursor):-1;
   return {selected:boundary>=0?signatures.slice(0,boundary):signatures,done:boundary>=0||signatures.length<100};
 }
-export async function reconcileWallet(pool:Pool,address:string,config:ProviderConfig=process.env){
+export async function reconcileWallet(pool:Pool,address:string,config:ProviderConfig=process.env,options:{replayRecent?:boolean;jobLease?:{id:string;token:string}}={}){
   if(config===process.env)config=await runtimeConfig(pool,config);
   if(!config.HELIUS_API_KEY)return {skipped:'HELIUS_NOT_CONFIGURED'};
   const leaseToken=randomUUID();
@@ -233,19 +277,37 @@ export async function reconcileWallet(pool:Pool,address:string,config:ProviderCo
     WHERE address=$1 AND active=true AND (reconcile_lease_until IS NULL OR reconcile_lease_until<now()) RETURNING *`,[address,leaseToken])).rows[0];
   if(!wallet)return {skipped:'INACTIVE_OR_BUSY'};
   try{
-    const params:any={limit:100,commitment:'finalized'};if(wallet.pending_cursor)params.before=wallet.pending_cursor;
+    const params:any={limit:100,commitment:'finalized'};if(wallet.pending_cursor&&!options.replayRecent)params.before=wallet.pending_cursor;
     const signatures=await heliusRpc(pool,'getSignaturesForAddress',[address,params],undefined,config);
     if(!Array.isArray(signatures))throw new ProviderUnavailable('INVALID_SIGNATURES_RESPONSE');
-    const slice=reconciliationSlice(signatures,wallet.cursor);
+    const slice=reconciliationSlice(signatures,options.replayRecent?null:wallet.cursor);
     const selected=slice.selected.filter(s=>!s.err).map(s=>s.signature);
     // Separate paced invocations; callers retry on PROVIDER_RATE_LIMIT without advancing a checkpoint.
     if(selected.length){
       await new Promise(resolve=>setTimeout(resolve,410));
-      const decoded=await httpJson(pool,'helius','enhanced_transactions',`https://api.helius.xyz/v0/transactions?api-key=${encodeURIComponent(config.HELIUS_API_KEY)}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transactions:selected})},undefined,config);
-      if(!Array.isArray(decoded)||selected.some(signature=>!decoded.some(tx=>tx.signature===signature)))throw new ProviderUnavailable('INCOMPLETE_TRANSACTION_REPLAY');
-      const ingestion=await ingestTransactions(pool,decoded,{source:'helius_reconciliation',trustedCommitment:'finalized'});
-      if(ingestion.stopped) throw new ProviderUnavailable('OPERATOR_PAUSED');
+      const response=await httpJson(pool,'helius','enhanced_transactions',`https://api.helius.xyz/v0/transactions?api-key=${encodeURIComponent(config.HELIUS_API_KEY)}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transactions:selected})},undefined,config);
+      if(!Array.isArray(response)||selected.some(signature=>!response.some(tx=>tx?.signature===signature)))throw new ProviderUnavailable('INCOMPLETE_TRANSACTION_REPLAY');
+      const decoded=[...new Map(response.filter(tx=>selected.includes(tx?.signature)).map(tx=>[tx.signature,tx])).values()];
+      // Small committed chunks bound transaction size on a distant database.
+      // Renew only owned, live leases; retries replay chunks idempotently.
+      for(let offset=0;offset<decoded.length;offset+=10){
+       const renewed=await pool.query("UPDATE hunter.watched_wallet SET reconcile_lease_until=now()+interval '120 seconds' WHERE address=$1 AND reconcile_lease_token=$2 AND reconcile_lease_until>now()",[address,leaseToken]);
+       if(!renewed.rowCount)throw new ProviderUnavailable('RECONCILE_LEASE_OR_MODE_CHANGED');
+       if(options.jobLease){const lease=await pool.query("UPDATE hunter.investigation_job SET lease_until=now()+interval '120 seconds' WHERE id=$1 AND lease_token=$2 AND status='running' AND lease_until>now()",[options.jobLease.id,options.jobLease.token]);if(!lease.rowCount)throw new ProviderUnavailable('RECONCILE_LEASE_OR_MODE_CHANGED');}
+       const ingestion=await ingestTransactions(pool,decoded.slice(offset,offset+10),{source:'helius_reconciliation',trustedCommitment:'finalized'});
+       if(ingestion.stopped) throw new ProviderUnavailable('OPERATOR_PAUSED');
+      }
+      // Unsupported enhanced layouts must not silently vanish behind a moved cursor.
+      // Durable, independently metered RPC jobs fill Pump/Jupiter transfer layouts.
+      for(const tx of decoded){
+        if(tx.transactionError!=null)continue;
+        const buys=normalizeTransactions([tx],[address],'finalized').filter(e=>e.kind==='SWAP_BUY');
+        if((tx.type==='SWAP'||/PUMP|JUPITER/.test(String(tx.source)))&&(!buys.length||buys.some(e=>!e.observations.entry)))
+          await enqueue('parse_transaction',null,{signature:tx.signature},`parse-transaction-v1:${tx.signature}`,pool);
+      }
     }
+    await pool.query('UPDATE hunter.watched_wallet SET last_scan_at=now(),last_scan_count=$2,purchase_replay_version=1 WHERE address=$1 AND reconcile_lease_token=$3',[address,selected.length,leaseToken]);
+    if(options.replayRecent)return {replayed:true,signatures:selected.length,history_limit:100,cursor_unchanged:true};
     const head=wallet.backfill_head??signatures[0]?.signature??wallet.cursor;
     // The first scan is deliberately the latest 100 finalized signatures. Later scans paginate all gaps.
     const done=!wallet.cursor||slice.done;
@@ -255,6 +317,60 @@ export async function reconcileWallet(pool:Pool,address:string,config:ProviderCo
     return {signatures:selected.length,complete:done,initial_history_limit:!wallet.cursor?100:null};
   }catch(error){await pool.query('UPDATE hunter.watched_wallet SET last_error=$2 WHERE address=$1 AND reconcile_lease_token=$3',[address,error instanceof ProviderUnavailable?error.code:'RECONCILIATION_FAILED',leaseToken]);throw error;}
   finally{await pool.query('UPDATE hunter.watched_wallet SET reconcile_lease_token=null,reconcile_lease_until=null WHERE address=$1 AND reconcile_lease_token=$2',[address,leaseToken]);}
+}
+
+export async function parseTransaction(pool:Pool,signature:string,config:ProviderConfig=process.env){
+ if(!/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(signature))throw new ProviderUnavailable('INVALID_SIGNATURE');
+ const raw=await heliusRpc(pool,'getTransaction',[signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:0}],undefined,config);
+ if(!raw)throw new ProviderUnavailable('TRANSACTION_NOT_AVAILABLE');
+ const wallets=(await pool.query('SELECT address FROM hunter.watched_wallet WHERE active')).rows.map(w=>w.address);
+ const tx=parsedSwapTransaction(raw,signature,wallets);
+ if(tx)return ingestTransactions(pool,[tx],{source:'helius_rpc_parsed_transfers',trustedCommitment:'finalized'});
+ // Persist a classified gap, so the operator can distinguish an unsupported route
+ // from an empty scan. Never replace an ambiguous cost with a market quote.
+ await pool.query("INSERT INTO hunter.source_document(provider,url,payload) VALUES('transaction_parse_gap',$1,$2)",[ `https://solscan.io/tx/${signature}`,{signature,reason:'No unambiguous supported swap transfer layout',parser:'hunter-rpc-transfers-v1'}]);
+ return {unsupported:true};
+}
+
+/** Price-only batches are independent of metadata and optional research/AI. */
+export async function collectPrices(pool:Pool,config:ProviderConfig=process.env){
+ if(config===process.env)config=await runtimeConfig(pool,config);
+ const tokens=(await pool.query(`SELECT t.mint,array_agg(DISTINCT b.quote_mint) quotes FROM hunter.token t JOIN hunter.wallet_purchase b ON b.mint=t.mint
+  WHERE t.price_checked_at IS NULL OR t.price_checked_at<now()-make_interval(secs=>$1::int)
+  GROUP BY t.mint ORDER BY t.price_fallback_checked_at NULLS FIRST,t.price_checked_at NULLS FIRST,t.mint LIMIT 30`,[pricePollSeconds(config)])).rows;
+ if(!tokens.length)return {checked:0};
+ let payload:any=null,batchError:string|null=null;
+ try{payload=await httpJson(pool,'dexscreener','price_batch',`https://api.dexscreener.com/tokens/v1/solana/${tokens.map(t=>t.mint).join(',')}`,{},undefined,config);}
+ catch(error){batchError=error instanceof ProviderUnavailable?error.code:'PRICE_REQUEST_FAILED';}
+ let fallbackCalls=0;
+ for(const token of tokens){
+  let primary=dexObservation(payload,token.mint),missing:string[]=[];
+  if(primary){await recordPrice(pool,token.mint,'USD',primary.priceUsd,primary.source,primary.url);await pool.query('UPDATE hunter.token SET price_usd=$2,liquidity_usd=$3,market_updated_at=now() WHERE mint=$1',[token.mint,primary.priceUsd,primary.liquidityUsd]);}
+  for(const quote of token.quotes){
+   const observation=dexObservation(payload,token.mint,quote);
+   if(observation?.quotePrice)await recordPrice(pool,token.mint,quote,observation.quotePrice,observation.source,observation.url);
+   else missing.push(quote);
+  }
+  if((!primary||missing.length)&&fallbackCalls++<3){
+   await pool.query('UPDATE hunter.token SET price_fallback_checked_at=now() WHERE mint=$1',[token.mint]);
+   try{
+    const url=`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${token.mint}/pools?include=base_token,quote_token`;
+    const data=await httpJson(pool,'geckoterminal','price_fallback',url,{},token.mint,config);
+    const fallback=geckoObservation(data,token.mint);
+    if(fallback){
+     await recordPrice(pool,token.mint,'USD',fallback.priceUsd,fallback.source,fallback.url);
+     if(!primary){primary=fallback;await pool.query('UPDATE hunter.token SET price_usd=$2,liquidity_usd=$3,market_updated_at=now() WHERE mint=$1',[token.mint,fallback.priceUsd,fallback.liquidityUsd]);}
+     for(const quote of [...missing]){const sample=geckoObservation(data,token.mint,quote);if(sample?.quotePrice){await recordPrice(pool,token.mint,quote,sample.quotePrice,sample.source,sample.url);missing=missing.filter(q=>q!==quote);}}
+    }
+   }catch(error){batchError=error instanceof ProviderUnavailable?error.code:'PRICE_FALLBACK_FAILED';}
+  }
+  await pool.query('UPDATE hunter.token SET price_checked_at=now(),price_error=$2 WHERE mint=$1',[token.mint,missing.length?batchError??'MATCHING_QUOTE_UNAVAILABLE':null]);
+ }
+ return {checked:tokens.length};
+}
+export function pricePollSeconds(config:ProviderConfig){
+ const allowance=Math.min(cap(config.DEXSCREENER_DAILY_REQUEST_CAP,300),cap(config.DEXSCREENER_MONTHLY_REQUEST_CAP,6000)/31)*0.75;
+ return Math.min(2147483647,Math.max(120,Number(config.PRICE_POLL_SECONDS)||300,Math.ceil(86400/Math.max(allowance,1))));
 }
 
 /** Optional free-tier AI. Its output remains untrusted hypotheses, never deterministic gate input. */
@@ -267,4 +383,10 @@ export async function geminiHypotheses(pool:Pool,mint:string,publicFacts:unknown
   if(typeof text!=='string'||text.length>10000)throw new ProviderUnavailable('INVALID_AI_OUTPUT');
   let parsed:any;try{parsed=JSON.parse(text);}catch{throw new ProviderUnavailable('INVALID_AI_OUTPUT');}
   return {model,untrusted_hypotheses:parsed,reviewer_result:'MODEL_OUTPUT_UNVERIFIED'};
+}
+
+async function recordPrice(pool:Pool,mint:string,quote:string,price:number,source:string,url:string){
+ if(!Number.isFinite(price)||price<=0)return;
+ const fingerprint=createHash('sha256').update(JSON.stringify([mint,quote,price,source,Math.floor(Date.now()/60000)])).digest('hex');
+ await pool.query('INSERT INTO hunter.price_sample(mint,quote_mint,price,source,source_url,fingerprint) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(fingerprint) DO NOTHING',[mint,quote,String(price),source,url,fingerprint]);
 }

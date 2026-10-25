@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS hunter.watched_wallet (
 );
 ALTER TABLE hunter.watched_wallet ADD COLUMN IF NOT EXISTS reconcile_lease_until timestamptz;
 ALTER TABLE hunter.watched_wallet ADD COLUMN IF NOT EXISTS reconcile_lease_token text;
+ALTER TABLE hunter.watched_wallet ADD COLUMN IF NOT EXISTS purchase_replay_version int NOT NULL DEFAULT 0;
+ALTER TABLE hunter.watched_wallet ADD COLUMN IF NOT EXISTS last_scan_at timestamptz;
+ALTER TABLE hunter.watched_wallet ADD COLUMN IF NOT EXISTS last_scan_count int;
 CREATE TABLE IF NOT EXISTS hunter.token (
  mint text PRIMARY KEY, name text, symbol text, discovered_at timestamptz NOT NULL DEFAULT now(),
  price_usd numeric, liquidity_usd numeric, market_updated_at timestamptz,
@@ -29,9 +32,13 @@ CREATE TABLE IF NOT EXISTS hunter.token (
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS image_uri text;
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS description text;
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS market_data jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS image_candidates jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS enrichment_state text NOT NULL DEFAULT 'pending';
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS enrichment_checked_at timestamptz;
 ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS coverage jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS price_checked_at timestamptz;
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS price_error text;
+ALTER TABLE hunter.token ADD COLUMN IF NOT EXISTS price_fallback_checked_at timestamptz;
 CREATE TABLE IF NOT EXISTS hunter.onchain_event (
  id bigserial PRIMARY KEY, signature text NOT NULL, instruction_path text NOT NULL, event_kind text NOT NULL,
  wallet_address text REFERENCES hunter.watched_wallet(address), mint text REFERENCES hunter.token(mint),
@@ -40,12 +47,30 @@ CREATE TABLE IF NOT EXISTS hunter.onchain_event (
 );
 CREATE INDEX IF NOT EXISTS event_mint_time ON hunter.onchain_event(mint,observed_at DESC);
 CREATE INDEX IF NOT EXISTS event_wallet_time ON hunter.onchain_event(wallet_address,observed_at DESC);
+CREATE TABLE IF NOT EXISTS hunter.wallet_purchase (
+ id bigserial PRIMARY KEY,event_id bigint NOT NULL UNIQUE REFERENCES hunter.onchain_event(id),wallet_address text NOT NULL,mint text NOT NULL REFERENCES hunter.token(mint),signature text NOT NULL,
+ quote_mint text NOT NULL,quote_symbol text NOT NULL,quote_raw numeric NOT NULL CHECK(quote_raw>0),quote_decimals int NOT NULL CHECK(quote_decimals BETWEEN 0 AND 30),
+ token_raw numeric NOT NULL CHECK(token_raw>0),token_decimals int NOT NULL CHECK(token_decimals BETWEEN 0 AND 30),entry_quote_price numeric NOT NULL CHECK(entry_quote_price>0),
+ block_time timestamptz,known_at timestamptz NOT NULL DEFAULT now(),verification text NOT NULL,data jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS purchase_mint ON hunter.wallet_purchase(mint,block_time,id);
+CREATE UNIQUE INDEX IF NOT EXISTS purchase_signature_wallet_mint ON hunter.wallet_purchase(signature,wallet_address,mint);
+CREATE TABLE IF NOT EXISTS hunter.price_sample (
+ id bigserial PRIMARY KEY,mint text NOT NULL REFERENCES hunter.token(mint),quote_mint text NOT NULL,price numeric NOT NULL CHECK(price>0),source text NOT NULL,source_url text NOT NULL,
+ observed_at timestamptz NOT NULL DEFAULT now(),provider_updated_at timestamptz, fingerprint text UNIQUE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sample_mint_quote_time ON hunter.price_sample(mint,quote_mint,observed_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS hunter.replay_experiment (
+ id bigserial PRIMARY KEY,mint text NOT NULL REFERENCES hunter.token(mint),purchase_id bigint NOT NULL REFERENCES hunter.wallet_purchase(id),created_at timestamptz NOT NULL DEFAULT now(),
+ parameters jsonb NOT NULL,result jsonb NOT NULL,dataset_fingerprint text NOT NULL,classification text NOT NULL DEFAULT 'retrospective_sample_replay'
+);
 CREATE TABLE IF NOT EXISTS hunter.source_document (
  id bigserial PRIMARY KEY, mint text REFERENCES hunter.token(mint), provider text NOT NULL, url text,
  fetched_at timestamptz NOT NULL DEFAULT now(), source_timestamp timestamptz, payload jsonb,
  expires_at timestamptz NOT NULL DEFAULT now()+interval '7 days'
 );
 CREATE INDEX IF NOT EXISTS source_mint ON hunter.source_document(mint,fetched_at DESC);
+CREATE INDEX IF NOT EXISTS source_provider_time ON hunter.source_document(provider,fetched_at DESC);
 CREATE TABLE IF NOT EXISTS hunter.token_metadata_version (
  id bigserial PRIMARY KEY, mint text NOT NULL REFERENCES hunter.token(mint), source_document_id bigint REFERENCES hunter.source_document(id),
  observed_at timestamptz NOT NULL DEFAULT now(), name text, symbol text, metadata_uri text, image_uri text,
@@ -66,6 +91,10 @@ CREATE TABLE IF NOT EXISTS hunter.evidence_claim (
  known_at timestamptz NOT NULL DEFAULT now(), data jsonb NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS evidence_mint ON hunter.evidence_claim(mint,known_at DESC);
+ALTER TABLE hunter.evidence_claim ADD COLUMN IF NOT EXISTS fingerprint text;
+CREATE UNIQUE INDEX IF NOT EXISTS evidence_fingerprint ON hunter.evidence_claim(fingerprint) WHERE fingerprint IS NOT NULL;
+CREATE INDEX IF NOT EXISTS metadata_mint_time ON hunter.token_metadata_version(mint,observed_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS holders_mint_time ON hunter.holder_snapshot(mint,captured_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS hunter.investigation_job (
  id bigserial PRIMARY KEY, kind text NOT NULL, mint text REFERENCES hunter.token(mint), payload jsonb NOT NULL DEFAULT '{}',
  status text NOT NULL DEFAULT 'queued' CHECK(status IN('queued','running','done','dead')),
@@ -101,6 +130,8 @@ CREATE TABLE IF NOT EXISTS hunter.alert (
  kind text NOT NULL DEFAULT 'DISCOVERY', status text NOT NULL DEFAULT 'pending', payload jsonb NOT NULL DEFAULT '{}',
  created_at timestamptz NOT NULL DEFAULT now(), sent_at timestamptz, last_error text, telegram_message_id text
 );
+CREATE INDEX IF NOT EXISTS alert_mint_time ON hunter.alert(mint,created_at DESC);
+CREATE INDEX IF NOT EXISTS job_mint_time ON hunter.investigation_job(mint,created_at DESC);
 CREATE TABLE IF NOT EXISTS hunter.vendor_usage (
  id bigserial PRIMARY KEY, provider text NOT NULL, operation text NOT NULL, requests int NOT NULL DEFAULT 1,
  estimated_cost_usd numeric NOT NULL DEFAULT 0 CHECK(estimated_cost_usd>=0), mint text, recorded_at timestamptz NOT NULL DEFAULT now(), outcome text NOT NULL DEFAULT 'reserved'
@@ -112,7 +143,7 @@ CREATE TABLE IF NOT EXISTS hunter.worker_heartbeat (
 CREATE OR REPLACE FUNCTION hunter.deny_history_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
  BEGIN RAISE EXCEPTION 'Hunter historical records are append-only'; END $$;
 DO $$ DECLARE name text; BEGIN
- FOREACH name IN ARRAY ARRAY['decision_version','evidence_claim','operator_audit','outcome'] LOOP
+ FOREACH name IN ARRAY ARRAY['decision_version','evidence_claim','operator_audit','outcome','wallet_purchase','price_sample','replay_experiment'] LOOP
   IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='append_only_'||name AND tgrelid=('hunter.'||name)::regclass) THEN
    EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE OR DELETE ON hunter.%I FOR EACH ROW EXECUTE FUNCTION hunter.deny_history_mutation()', 'append_only_'||name,name);
   END IF;

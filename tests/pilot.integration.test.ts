@@ -117,6 +117,7 @@ test('private API, durable discovery, operator controls, append-only memory and 
     await ingestTransactions(pool, [fixture], { source: 'synthetic_finalized_reconciliation', trustedCommitment: 'finalized' });
     const second = await researchToken(pool, mint) as any;
     assert.equal(second.version, 2);
+    const unchanged=await researchToken(pool,mint) as any;assert.equal(unchanged.version,2);assert.equal(unchanged.unchanged,true);
     assert.ok(Number((await pool.query('SELECT count(*) FROM hunter.evidence_claim')).rows[0].count) > before);
     assert.equal((await pool.query("SELECT commitment FROM hunter.onchain_event WHERE event_kind='SWAP_BUY'")).rows[0].commitment, 'finalized');
     assert.equal(Number((await pool.query('SELECT count(*) FROM hunter.onchain_event')).rows[0].count), 4);

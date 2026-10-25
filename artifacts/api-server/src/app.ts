@@ -1,6 +1,7 @@
+import {purchasePerformanceSelect,purchasePerformanceSql,replayPurchase} from './performance.ts';
 import {pollIntervalSeconds} from './worker.ts';
-import {runtimeConfig,saveHelius} from './settings.ts';
-import {heliusRpc,ProviderUnavailable} from './providers.ts';
+import {runtimeConfig,saveHelius,encryptSetting} from './settings.ts';
+import {heliusRpc,ProviderUnavailable,pricePollSeconds} from './providers.ts';
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
@@ -50,7 +51,16 @@ export function createApp(database:pg.Pool=pool) {
   res.json(await ingestTransactions(database,req.body,{source:'helius_webhook'}));
  });
  app.use('/api',auth,express.json({limit:'1mb'}));
- app.get('/api/settings',async(_req,res)=>{const config=await runtimeConfig(database);res.json({heliusConfigured:Boolean(config.HELIUS_API_KEY),network:'solana-mainnet',backgroundEnabled:process.env.HUNTER_DISABLE_BACKGROUND!=='true'});});
+ app.get('/api/settings',async(_req,res)=>{const config=await runtimeConfig(database);res.json({heliusConfigured:Boolean(config.HELIUS_API_KEY),network:'solana-mainnet',backgroundEnabled:process.env.HUNTER_DISABLE_BACKGROUND!=='true',heliusDailyRequestCap:Number(config.HELIUS_DAILY_REQUEST_CAP??500),heliusMonthlyRequestCap:Number(config.HELIUS_MONTHLY_REQUEST_CAP??10000)});});
+ app.post('/api/settings/tracking',async(req,res)=>{
+  const daily=req.body?.dailyRequestCap,monthly=req.body?.monthlyRequestCap;
+  if(!Number.isSafeInteger(daily)||daily<0||daily>20000||!Number.isSafeInteger(monthly)||monthly<0||monthly>500000){res.status(400).json({error:'Enter integer local request limits: daily 0–20,000 and monthly 0–500,000'});return;}
+  await withTransaction(async c=>{
+   for(const [name,value] of [['HELIUS_DAILY_REQUEST_CAP',daily],['HELIUS_MONTHLY_REQUEST_CAP',monthly]] as const)await c.query('INSERT INTO hunter.runtime_setting(name,ciphertext) VALUES($1,$2) ON CONFLICT(name) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,updated_at=now()',[name,encryptSetting(String(value))]);
+   await c.query("INSERT INTO hunter.operator_audit(action,reason,data) VALUES('settings.tracking','Operator changed local request allowance; vendor credit entitlement is not verified',$1)",[{daily,monthly}]);
+  },database);
+  res.json({ok:true,dailyRequestCap:daily,monthlyRequestCap:monthly});
+ });
  app.post('/api/settings/helius',async(req,res)=>{
   const value=req.body?.apiKey;
   if(typeof value!=='string'||!value.trim()||value.length>256||/[\s]/.test(value)){res.status(400).json({error:'Enter a valid Helius API key'});return;}
@@ -65,16 +75,22 @@ export function createApp(database:pg.Pool=pool) {
   res.json({ok:true,heliusConfigured:true});
  });
  app.delete('/api/settings/helius',async(_req,res)=>{await database.query("DELETE FROM hunter.runtime_setting WHERE name='HELIUS_API_KEY'");res.json({ok:true});});
- app.post('/api/wallets/scan',async(_req,res)=>{
+ app.post('/api/wallets/scan',async(req,res)=>{
   const mode=(await database.query('SELECT mode FROM hunter.operator_state')).rows[0]?.mode;
   if(mode==='STOP_ALL'){res.status(409).json({error:'Resume wallet tracking before scanning'});return;}
   const config=await runtimeConfig(database);if(!config.HELIUS_API_KEY){res.status(409).json({error:'Save a Helius key in Operations first'});return;}
   const wallets=(await database.query('SELECT address FROM hunter.watched_wallet WHERE active LIMIT 20')).rows;
-  for(const {address} of wallets)await enqueue('reconcile',null,{address},`reconcile:${address}`,database);
+  for(const {address} of wallets)await enqueue('reconcile',null,{address,replayRecent:req.body?.replayRecent===true},`${req.body?.replayRecent===true?'recent-replay':'reconcile'}:${address}`,database);
   res.json({queued:wallets.length});
  });
  app.get('/api/healthz',async(_req,res)=>{await database.query('SELECT 1');res.json({ok:true,service:'hunter',readOnly:true});});
  app.get('/api/wallets',async(_req,res)=>res.json({wallets:(await database.query('SELECT * FROM hunter.watched_wallet ORDER BY created_at DESC LIMIT 200')).rows}));
+ app.get('/api/buys',async(req,res)=>{
+  const offset=Number(req.query.offset??0);if(!Number.isSafeInteger(offset)||offset<0){res.status(400).json({error:'Invalid offset'});return;}
+  const mint=req.query.mint?String(req.query.mint):null;
+  const result=await database.query(`${purchasePerformanceSelect} WHERE ($1::text IS NULL OR b.mint=$1) ORDER BY b.block_time DESC NULLS LAST,b.id DESC LIMIT 50 OFFSET $2`,[mint,offset]);
+  res.json({buys:result.rows,offset,nextOffset:result.rowCount===50?offset+50:null});
+ });
  app.post('/api/wallets',async(req,res)=>{
   const {address,label='',network='solana'}=req.body??{};
   if(network!=='solana'){res.status(400).json({error:'Only Solana addresses are supported'});return;}
@@ -96,8 +112,8 @@ export function createApp(database:pg.Pool=pool) {
  });
  app.get('/api/overview',async(_req,res)=>{
   const [stats,tokens,state]=await Promise.all([
-   database.query(`SELECT (SELECT count(*)::int FROM hunter.watched_wallet WHERE active) wallets,(SELECT count(*)::int FROM hunter.token) tokens,(SELECT count(*)::int FROM hunter.onchain_event) events,(SELECT count(*)::int FROM hunter.decision_version) decisions,(SELECT count(*)::int FROM hunter.investigation_job WHERE status IN('queued','running')) AS "pendingJobs"`),
-   database.query(`SELECT t.*,(SELECT jsonb_agg(DISTINCT wallet_address) FROM hunter.onchain_event e WHERE e.mint=t.mint) wallets,
+   database.query(`SELECT (SELECT count(*)::int FROM hunter.watched_wallet WHERE active) wallets,(SELECT count(*)::int FROM hunter.token) tokens,(SELECT count(*)::int FROM hunter.onchain_event) events,(SELECT count(*)::int FROM hunter.wallet_purchase) buys,(SELECT count(*)::int FROM hunter.decision_version) decisions,(SELECT count(*)::int FROM hunter.investigation_job WHERE status IN('queued','running')) AS "pendingJobs"`),
+   database.query(`SELECT t.*,(SELECT count(*)::int FROM hunter.wallet_purchase b WHERE b.mint=t.mint) buy_count,(SELECT row_to_json(entry) FROM (${purchasePerformanceSql.replaceAll('$1','t.mint')}) entry LIMIT 1) gain_summary,(SELECT jsonb_agg(DISTINCT wallet_address) FROM hunter.onchain_event e WHERE e.mint=t.mint) wallets,
    (SELECT status FROM hunter.alert a WHERE a.mint=t.mint ORDER BY created_at DESC LIMIT 1) alert_status,
    (SELECT status FROM hunter.investigation_job j WHERE j.mint=t.mint ORDER BY created_at DESC LIMIT 1) job_status
    FROM hunter.token t ORDER BY t.discovered_at DESC LIMIT 100`),database.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')
@@ -105,16 +121,42 @@ export function createApp(database:pg.Pool=pool) {
   res.json({stats:stats.rows[0],tokens:tokens.rows,mode:state.rows[0].mode});
  });
  app.get('/api/tokens/:mint',async(req,res)=>{
-  const mint=req.params.mint;
-  const token=(await database.query('SELECT * FROM hunter.token WHERE mint=$1',[mint])).rows[0];
-  if(!token){res.status(404).json({error:'Token not observed'});return;}
-  const queries:[string,string][]=[['events','SELECT * FROM hunter.onchain_event WHERE mint=$1 ORDER BY observed_at DESC LIMIT 100'],['evidence','SELECT e.*,s.provider,s.url,s.source_timestamp FROM hunter.evidence_claim e LEFT JOIN hunter.source_document s ON s.id=e.source_document_id WHERE e.mint=$1 ORDER BY e.known_at DESC LIMIT 200'],['decisions','SELECT * FROM hunter.decision_version WHERE mint=$1 ORDER BY version DESC LIMIT 50'],['metadata','SELECT * FROM hunter.token_metadata_version WHERE mint=$1 ORDER BY observed_at DESC LIMIT 25'],['holders','SELECT * FROM hunter.holder_snapshot WHERE mint=$1 ORDER BY captured_at DESC LIMIT 25'],['relations','SELECT * FROM hunter.relation_edge WHERE mint=$1 ORDER BY last_seen_at DESC LIMIT 100'],['jobs','SELECT * FROM hunter.investigation_job WHERE mint=$1 ORDER BY created_at DESC LIMIT 50'],['alerts','SELECT * FROM hunter.alert WHERE mint=$1 ORDER BY created_at DESC LIMIT 50']];
-  const results=await Promise.all(queries.map(async([key,sql])=>[key,(await database.query(sql,[mint])).rows]));
-  res.json({token,...Object.fromEntries(results)});
+  const history=req.query.history==='1';
+  const mint=String(req.params.mint);
+  // One database round trip and one consistent snapshot; large history is opt-in.
+  const sections:Record<string,string>={
+   purchases:`${purchasePerformanceSelect} WHERE b.mint=$1 ORDER BY b.block_time DESC NULLS LAST,b.id DESC LIMIT 50`,
+   events:`SELECT * FROM hunter.onchain_event WHERE mint=$1 ORDER BY observed_at DESC,id DESC LIMIT ${history?100:12}`,
+   evidence:history?`SELECT e.*,s.provider,s.url,s.source_timestamp,s.fetched_at FROM hunter.evidence_claim e LEFT JOIN hunter.source_document s ON s.id=e.source_document_id WHERE e.mint=$1 ORDER BY e.known_at DESC,e.id DESC LIMIT 100`:
+    `SELECT * FROM (SELECT DISTINCT ON(e.claim,e.status,e.data) e.*,s.provider,s.url,s.source_timestamp,s.fetched_at FROM hunter.evidence_claim e LEFT JOIN hunter.source_document s ON s.id=e.source_document_id WHERE e.mint=$1 AND e.claim<>'Research coverage gaps' ORDER BY e.claim,e.status,e.data,e.known_at DESC,e.id DESC) latest ORDER BY known_at DESC,id DESC LIMIT 12`,
+   decisions:`SELECT id,mint,version,action,thesis,counter_thesis,unknowns,evidence_ids,contradictions,gate,reviewer_result,model_version,rule_version,known_at,next_recheck_at,spend_usd,${history?'context':"context-ARRAY['observations','sourceUrls'] AS context"} FROM hunter.decision_version WHERE mint=$1 ORDER BY version DESC LIMIT ${history?25:1}`,
+   metadata:`SELECT * FROM hunter.token_metadata_version WHERE mint=$1 ORDER BY observed_at DESC,id DESC LIMIT ${history?25:2}`,
+   holders:`SELECT * FROM hunter.holder_snapshot WHERE mint=$1 ORDER BY captured_at DESC,id DESC LIMIT ${history?25:1}`,
+   relations:`SELECT * FROM hunter.relation_edge WHERE mint=$1 ORDER BY last_seen_at DESC LIMIT ${history?100:12}`,
+   jobs:`SELECT * FROM hunter.investigation_job WHERE mint=$1 ORDER BY created_at DESC LIMIT ${history?50:5}`,
+   alerts:`SELECT * FROM hunter.alert WHERE mint=$1 ORDER BY created_at DESC LIMIT ${history?50:5}`
+  };
+  const pairs=Object.entries(sections).map(([key,sql])=>`'${key}',COALESCE((SELECT jsonb_agg(row_to_json(rows)) FROM (${sql}) rows),'[]'::jsonb)`);
+  const result=await database.query(`SELECT jsonb_build_object('token',to_jsonb(t),'purchase_count',(SELECT count(*)::int FROM hunter.wallet_purchase WHERE mint=$1),'history_loaded',${history?'true':'false'},${pairs.join(',')}) AS report FROM hunter.token t WHERE t.mint=$1`,[mint]);
+  if(!result.rows[0]){res.status(404).json({error:'Token not observed'});return;}
+  res.json(result.rows[0].report);
  });
+ app.get('/api/tokens/:mint/replay',async(req,res)=>{
+  try{res.json(await replayPurchase(database,String(req.params.mint),req.query.purchase_id?String(req.query.purchase_id):undefined,Number(req.query.take_profit??20),Number(req.query.stop_loss??10)));}
+  catch(error){if(error instanceof Error&&error.message.startsWith('Invalid')){res.status(400).json({error:error.message});return;}throw error;}
+ });
+ app.post('/api/tokens/:mint/experiments',async(req,res)=>{
+  if(![Number(req.body?.takeProfit??20),Number(req.body?.stopLoss??10)].every(Number.isFinite)||Number(req.body?.takeProfit??20)<=0||Number(req.body?.takeProfit??20)>10000||Number(req.body?.stopLoss??10)<=0||Number(req.body?.stopLoss??10)>100||(req.body?.purchaseId&&!/^\d+$/.test(String(req.body.purchaseId)))){res.status(400).json({error:'Invalid replay parameters'});return;}
+  const replay=await replayPurchase(database,String(req.params.mint),req.body?.purchaseId?String(req.body.purchaseId):undefined,Number(req.body?.takeProfit??20),Number(req.body?.stopLoss??10));
+  if(!replay.available){res.status(409).json({error:replay.reason});return;}
+  if(req.body?.datasetFingerprint&&req.body.datasetFingerprint!==replay.dataset_fingerprint){res.status(409).json({error:'Price memory changed. Run the replay again before saving.'});return;}
+  const row=(await database.query('INSERT INTO hunter.replay_experiment(mint,purchase_id,parameters,result,dataset_fingerprint) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at',[req.params.mint,replay.purchase.id,replay.parameters,{...replay.result,limitations:replay.limitations,sample_count:replay.samples.length},replay.dataset_fingerprint])).rows[0];
+  res.status(201).json({saved:true,experiment:row,classification:replay.classification});
+ });
+ app.get('/api/experiments',async(_req,res)=>res.json({experiments:(await database.query('SELECT * FROM hunter.replay_experiment ORDER BY created_at DESC LIMIT 100')).rows}));
  app.post('/api/tokens/:mint/research',async(req,res)=>{
   const mode=(await database.query('SELECT mode FROM hunter.operator_state WHERE singleton=true')).rows[0].mode;
-  if(mode!=='FULL'){res.status(409).json({error:'Enable FULL mode for bounded research'});return;}
+  if(!['FULL','WATCH_ONLY'].includes(mode)){res.status(409).json({error:'Resume Watch Only or Full mode before refreshing a report'});return;}
   if(!(await database.query('SELECT 1 FROM hunter.token WHERE mint=$1',[req.params.mint])).rowCount){res.status(404).json({error:'Token not observed'});return;}
   const job=await enqueue('enrich',String(req.params.mint),{},`enrich:${req.params.mint}`,database);
   res.status(202).json({queued:true,job:job??null});
@@ -127,23 +169,24 @@ export function createApp(database:pg.Pool=pool) {
    database.query('SELECT * FROM hunter.token WHERE mint ILIKE $1 OR name ILIKE $1 OR symbol ILIKE $1 ORDER BY discovered_at DESC LIMIT 50',[query]),
    database.query('SELECT * FROM hunter.evidence_claim WHERE claim ILIKE $1 OR mint ILIKE $1 ORDER BY known_at DESC LIMIT 100',[query]),
    database.query('SELECT * FROM hunter.relation_edge WHERE source ILIKE $1 OR target ILIKE $1 OR kind ILIKE $1 ORDER BY last_seen_at DESC LIMIT 100',[query])
-  ]);res.json({wallets:wallets.rows,tokens:tokens.rows,claims:claims.rows,relations:relations.rows});
+  ]);res.json({wallets:wallets.rows,tokens:tokens.rows,claims:claims.rows,relations:relations.rows,experiments:(await database.query('SELECT * FROM hunter.replay_experiment WHERE mint ILIKE $1 ORDER BY created_at DESC LIMIT 50',[query])).rows});
  });
  app.get('/api/operations',async(_req,res)=>{
-  const [state,jobs,usage,audit,metrics,workers,wallets]=await Promise.all([
+  const [state,jobs,usage,audit,metrics,workers,wallets,parseGaps]=await Promise.all([
    database.query('SELECT * FROM hunter.operator_state WHERE singleton=true'),
    database.query('SELECT * FROM hunter.investigation_job ORDER BY created_at DESC LIMIT 100'),
    database.query(`SELECT provider,operation,sum(requests)::int requests,sum(estimated_cost_usd) estimated_cost_usd,max(recorded_at) last_request_at FROM hunter.vendor_usage WHERE recorded_at>=date_trunc('day',now()) GROUP BY provider,operation`),
    database.query('SELECT * FROM hunter.operator_audit ORDER BY created_at DESC LIMIT 50'),
    database.query(`SELECT (SELECT count(*)::int FROM hunter.investigation_job WHERE status='dead') failed_jobs,(SELECT count(*)::int FROM hunter.investigation_job WHERE status='queued') queued_jobs,(SELECT max(observed_at) FROM hunter.onchain_event) last_event_at,(SELECT max(EXTRACT(EPOCH FROM observed_at-block_time)) FROM hunter.onchain_event WHERE block_time IS NOT NULL) max_observed_source_lag_seconds,(SELECT COALESCE(sum(pg_total_relation_size(c.oid)),0)::bigint FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='hunter' AND c.relkind='r') schema_bytes`),
    database.query("SELECT id,updated_at,last_error,updated_at>now()-interval '2 minutes' AS healthy FROM hunter.worker_heartbeat"),
-   database.query('SELECT address,label,cursor,pending_cursor,last_success_at,last_error FROM hunter.watched_wallet WHERE active ORDER BY created_at LIMIT 20')
+   database.query('SELECT address,label,cursor,pending_cursor,last_success_at,last_scan_at,last_scan_count,last_error FROM hunter.watched_wallet WHERE active ORDER BY created_at LIMIT 20'),
+   database.query("SELECT DISTINCT ON(payload->>'signature') url,payload,fetched_at FROM hunter.source_document s WHERE provider='transaction_parse_gap' AND fetched_at>now()-interval '7 days' AND NOT EXISTS(SELECT 1 FROM hunter.wallet_purchase b WHERE b.signature=s.payload->>'signature') ORDER BY payload->>'signature',fetched_at DESC LIMIT 20")
   ]);
   const runtime=await runtimeConfig(database);
   const requestUsage=(await database.query("SELECT COALESCE(sum(requests) FILTER(WHERE recorded_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)::int used_today,COALESCE(sum(requests),0)::int used_month FROM hunter.vendor_usage WHERE provider='helius' AND recorded_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")).rows[0];
   const polling={intervalSeconds:pollIntervalSeconds(wallets.rows.length,runtime),dailyRequestCap:Number(runtime.HELIUS_DAILY_REQUEST_CAP??500),monthlyRequestCap:Number(runtime.HELIUS_MONTHLY_REQUEST_CAP??10000),usedToday:requestUsage.used_today,usedMonth:requestUsage.used_month,policy:'Local request allowance, not verified Helius credit entitlement; half reserved for enrichment'};
   const names=['HELIUS_API_KEY','HELIUS_WEBHOOK_SECRET','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','JUPITER_API_KEY','GEMINI_API_KEY','AIVEN_DATABASE_URL','AIVEN_CA_CERT'];
-  res.json({polling,mode:state.rows[0].mode,state:state.rows[0],jobs:jobs.rows,usage:usage.rows,audit:audit.rows,metrics:metrics.rows[0],workers:workers.rows,wallets:wallets.rows,
+  res.json({polling,parseGaps:parseGaps.rows,tracking:{backgroundEnabled:process.env.HUNTER_DISABLE_BACKGROUND!=='true',workerHealthy:workers.rows.some(w=>w.healthy),priceBatchIntervalSeconds:pricePollSeconds(runtime),priceBatchSize:30,initialSignatureLimit:100},mode:state.rows[0].mode,state:state.rows[0],jobs:jobs.rows,usage:usage.rows,audit:audit.rows,metrics:metrics.rows[0],workers:workers.rows,wallets:wallets.rows,
    providers:[{name:'Helius',configured:Boolean(runtime.HELIUS_API_KEY)},{name:'DEX Screener',configured:true},{name:'Jupiter',configured:Boolean(process.env.JUPITER_API_KEY)},{name:'Telegram',configured:process.env.TELEGRAM_ENABLED==='true'&&Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID)},{name:'Gemini',configured:process.env.GEMINI_ENABLED==='true'&&process.env.GEMINI_FREE_TIER_CONFIRMED==='true'&&Boolean(process.env.GEMINI_API_KEY),reason:'Optional; requires explicit enablement and confirmed free-tier entitlement'}],
    configuration:names.map(name=>({name,status:runtime[name]?'set':'missing'})),policy:{paidCallsEnabled:false,defaultMode:'WATCH_ONLY',walletLimit:20,rawRetentionDays:7,databaseAccountCapBytes:1000000000,subscriptionControl:'Manual vendor billing controls required'}});
  });
